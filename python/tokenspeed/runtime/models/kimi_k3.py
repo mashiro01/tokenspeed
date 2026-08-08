@@ -1700,6 +1700,11 @@ class KimiLinearDecoderLayer(nn.Module):
                 out_cache_loc=out_cache_loc,
                 comm_manager=self.comm_manager,
             )
+            if ar_combine is not None and fork._active:
+                # The fused AR below reads `scratch` inside the fork scope,
+                # before the scope-exit join — without this edge the aux
+                # branch's attnres partial can still be writing it.
+                fork.join_event.wait(torch.cuda.current_stream())
             prefix_sum, h_fused = self._reduce_attn_accumulate(
                 attn_out, prefix_sum, combine=ar_combine
             )
