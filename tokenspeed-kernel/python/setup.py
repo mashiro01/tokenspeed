@@ -74,6 +74,7 @@ DEFAULT_CUDA_ARCHS = ("100a", "103a")
 # Architectures whose generic build target uses an architecture-specific suffix.
 # Explicit suffixes supplied by users are preserved for all architectures.
 CUDA_ARCHS_WITH_A_SUFFIX = frozenset({(9, 0), (10, 0), (10, 3)})
+ATTN_RES_CUDA_ARCHS = frozenset(DEFAULT_CUDA_ARCHS)
 
 # CUDA kernels source and output directories
 CUDA_CSRC_DIR = THIRDPARTY_DIR / "cuda" / "csrc"
@@ -527,6 +528,11 @@ class CudaKernelBuilder:
             archs.update(DEFAULT_CUDA_ARCHS)
         return archs
 
+    def _group_cuda_archs(self, name, archs):
+        if name == "attn_res":
+            return archs & ATTN_RES_CUDA_ARCHS
+        return archs
+
     def _site_paths(self):
         paths = []
         try:
@@ -783,12 +789,7 @@ class CudaKernelBuilder:
     def run(self):
         self._prepare_cuda_toolchain_env()
         max_jobs = int(os.environ.get("MAX_JOBS", min(os.cpu_count() or 1, 16)))
-        total_sources = sum(len(entry[1]) for entry in self.kernel_groups)
-
         archs = self._detect_cuda_archs()
-        gencode_flags = [
-            f"-gencode=arch=compute_{a},code=sm_{a}" for a in sorted(archs)
-        ]
         nvcc_flags = [
             "-std=c++17",
             "-O3",
@@ -800,7 +801,7 @@ class CudaKernelBuilder:
             "-DFLASHINFER_ENABLE_F16",
             "-DENABLE_BF16",
             "-DENABLE_FP8",
-        ] + gencode_flags
+        ]
         include_dirs = self._resolve_include_dirs()
         ldflags = ["-shared"] + self._resolve_cuda_lib_flags()
 
@@ -809,9 +810,15 @@ class CudaKernelBuilder:
 
         stale_groups = []
         skipped_groups = 0
+        total_sources = 0
         for entry in self.kernel_groups:
             name, sources, extra_ldflags = entry[0], entry[1], entry[2]
             extra_cflags = entry[3] if len(entry) > 3 else []
+            group_archs = self._group_cuda_archs(name, archs)
+            if not group_archs:
+                skipped_groups += 1
+                continue
+            total_sources += len(sources)
             out_dir = CUDA_OBJS_DIR / name
             out_dir.mkdir(parents=True, exist_ok=True)
             so_path = out_dir / f"{name}.so"
@@ -820,9 +827,11 @@ class CudaKernelBuilder:
             ):
                 skipped_groups += 1
                 continue
-            stale_groups.append((name, sources, extra_ldflags, extra_cflags, so_path))
+            stale_groups.append(
+                (name, sources, extra_ldflags, extra_cflags, group_archs, so_path)
+            )
 
-        stale_sources = sum(len(srcs) for _, srcs, _, _, _ in stale_groups)
+        stale_sources = sum(len(srcs) for _, srcs, _, _, _, _ in stale_groups)
         print(
             f"Building {len(stale_groups)}/{len(self.kernel_groups)} kernel group(s) "
             f"({stale_sources}/{total_sources} files, {max_jobs} parallel jobs)..."
@@ -836,9 +845,20 @@ class CudaKernelBuilder:
         with ThreadPoolExecutor(max_workers=max_jobs) as executor:
             group_meta = []
             futures = []
-            for name, sources, extra_ldflags, extra_cflags, so_path in stale_groups:
+            for (
+                name,
+                sources,
+                extra_ldflags,
+                extra_cflags,
+                group_archs,
+                so_path,
+            ) in stale_groups:
                 out_dir = so_path.parent
                 objects = []
+                group_nvcc_flags = nvcc_flags + [
+                    f"-gencode=arch=compute_{arch},code=sm_{arch}"
+                    for arch in sorted(group_archs)
+                ]
                 for src in sources:
                     obj = out_dir / (src.stem + ".o")
                     objects.append(obj)
@@ -847,7 +867,7 @@ class CudaKernelBuilder:
                             self._compile_one,
                             str(src),
                             str(obj),
-                            nvcc_flags,
+                            group_nvcc_flags,
                             include_dirs,
                             extra_cflags,
                         )
