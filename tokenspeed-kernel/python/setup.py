@@ -70,7 +70,7 @@ THIRDPARTY_DIR = ROOT / "tokenspeed_kernel" / "thirdparty"
 BASE_VERSION = "0.1.3"
 BACKEND_ENV = "TOKENSPEED_KERNEL_BACKEND"
 VALID_BACKENDS = {"cuda", "rocm"}
-DEFAULT_CUDA_ARCHS = ("100a", "103a", "120f", "121a")
+DEFAULT_CUDA_ARCHS = ("100a", "103a")
 # Architectures whose generic build target uses an architecture-specific suffix.
 # Explicit suffixes supplied by users are preserved for all architectures.
 CUDA_ARCHS_WITH_A_SUFFIX = frozenset({(9, 0), (10, 0), (10, 3)})
