@@ -42,6 +42,14 @@ K3_DSPARK_SKIPPED_WEIGHT_PREFIXES = ("embed_tokens.", "lm_head.", "confidence_he
 
 SUPPORTED_MARKOV_HEAD_TYPES = ("vanilla",)
 
+# Which K3 residual stream the draft's target taps were trained against.
+# ``prefix``   -- the post-mixture running prefix sum, i.e. what the layer
+#                 returns. This is the historical behaviour.
+# ``attn_res`` -- the pre-norm AttnRes mixture over the committed block
+#                 snapshots plus the prefix, i.e. the value the next consumer
+#                 actually reads (vllm-project/vllm#50487).
+SUPPORTED_AUX_HIDDEN_STREAMS = ("prefix", "attn_res")
+
 
 class KimiK3DSparkConfig(PretrainedConfig):
     """Draft-side config for `K3DSparkModel`."""
@@ -73,6 +81,8 @@ class KimiK3DSparkConfig(PretrainedConfig):
         target_hidden_size: int = 7168,
         target_num_hidden_layers: int = 93,
         target_layer_ids: list[int] | None = None,
+        fc_norm: bool = False,
+        aux_hidden_stream: str = "prefix",
         mask_token_id: int | None = None,
         markov_rank: int = 256,
         markov_head_type: str = "vanilla",
@@ -105,6 +115,11 @@ class KimiK3DSparkConfig(PretrainedConfig):
         self.target_hidden_size = int(target_hidden_size)
         self.target_num_hidden_layers = int(target_num_hidden_layers)
         self.target_layer_ids = [int(x) for x in (target_layer_ids or [])]
+        # TorchSpec drafts trained with ``fc_norm: true`` normalize each target
+        # tap on its own before the taps are concatenated and projected. The
+        # weights ride in the checkpoint as ``fc_norm.{0..N-1}.weight``.
+        self.fc_norm = bool(fc_norm)
+        self.aux_hidden_stream = str(aux_hidden_stream).lower()
         self.mask_token_id = (
             mask_token_id if mask_token_id is None else int(mask_token_id)
         )
@@ -235,6 +250,13 @@ def validate_k3_dspark_config(config: KimiK3DSparkConfig, target_config=None) ->
         raise ValueError(
             f"Unsupported K3 DSpark markov_head_type={config.markov_head_type!r}; "
             f"supported: {SUPPORTED_MARKOV_HEAD_TYPES}."
+        )
+    if config.aux_hidden_stream not in SUPPORTED_AUX_HIDDEN_STREAMS:
+        raise ValueError(
+            f"Unsupported K3 DSpark aux_hidden_stream={config.aux_hidden_stream!r}; "
+            f"supported: {SUPPORTED_AUX_HIDDEN_STREAMS}. This names the target "
+            f"residual stream the draft was trained to read; a wrong value is a "
+            f"silent acceptance-rate loss, not an error."
         )
     if config.markov_rank <= 0:
         raise ValueError(

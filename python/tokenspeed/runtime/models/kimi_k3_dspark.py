@@ -306,6 +306,24 @@ class K3DSparkModel(nn.Module):
             prefix=add_prefix("context_proj", prefix),
         )
         self.context_norm = RMSNorm(hidden_size, eps=eps)
+        # TorchSpec drafts trained with ``fc_norm: true`` normalize each target
+        # tap on its own *before* the taps are concatenated and projected
+        # (torchspec/models/draft/dflash.py::extract_context_feature). Without
+        # these modules the checkpoint's five ``fc_norm.N.weight`` tensors have
+        # no destination and ``context_proj`` sees inputs on a scale it was
+        # never trained for. ``load_weights`` rejects both halves of the
+        # mismatch: an undeclared fc_norm makes the weights unexpected, a
+        # declared one with no weights makes the parameters missing.
+        self.fc_norm = (
+            nn.ModuleList(
+                [
+                    RMSNorm(int(config.target_hidden_size), eps=eps)
+                    for _ in range(self.num_context_features)
+                ]
+            )
+            if bool(getattr(config, "fc_norm", False))
+            else None
+        )
 
         self.layers = nn.ModuleList(
             [
@@ -330,6 +348,23 @@ class K3DSparkModel(nn.Module):
 
     def project_target_hidden(self, target_hidden: torch.Tensor) -> torch.Tensor:
         """Concatenated target taps -> draft hidden space."""
+        if self.fc_norm is not None:
+            # ``target_hidden`` is [T, target_hidden_size * num_target_layers]:
+            # the taps concatenated in ascending target-layer order, which is
+            # the order ``fc_norm`` was trained in.
+            target_hidden = torch.cat(
+                [
+                    norm(chunk)
+                    for norm, chunk in zip(
+                        self.fc_norm,
+                        target_hidden.split(
+                            int(self.config.target_hidden_size), dim=-1
+                        ),
+                        strict=True,
+                    )
+                ],
+                dim=-1,
+            )
         return self.context_norm(self.context_proj(target_hidden)[0])
 
     def _finalize_hidden(
