@@ -69,8 +69,38 @@ from tokenspeed.runtime.layers.logits_processor import LogitsProcessorOutput
 from tokenspeed.runtime.layers.paged_attention import (
     validate_paged_cache_group_ids,
 )
+from tokenspeed.runtime.pipeline.contracts import (
+    batch_fingerprint as pp_batch_fingerprint,
+)
+from tokenspeed.runtime.pipeline.contracts import (
+    cache_table_digests as pp_cache_table_digests,
+)
+from tokenspeed.runtime.pipeline.contracts import (
+    cache_table_fingerprint as pp_cache_table_fingerprint,
+)
+from tokenspeed.runtime.pipeline.contracts import (
+    multimodal_context_fingerprint as pp_multimodal_context_fingerprint,
+)
+from tokenspeed.runtime.pipeline.contracts import (
+    sampling_params_fingerprint as pp_sampling_params_fingerprint,
+)
+from tokenspeed.runtime.pipeline.executor import DistributedStageExecutor
+from tokenspeed.runtime.pipeline.model_runner_stage import (
+    ModelRunnerPipelineStage,
+    PipelineForwardBatch,
+)
+from tokenspeed.runtime.pipeline.torch_control import (
+    PipelineStepLease,
+    TorchPipelineControlPlane,
+)
+from tokenspeed.runtime.pipeline.torch_transport import (
+    TorchPipelineResultSynchronizer,
+    TorchPipelineTransport,
+    validate_pipeline_plan_consensus,
+)
 from tokenspeed.runtime.sampling.backends.base import SamplingBackend
 from tokenspeed.runtime.sampling.dp_sampling_config import (
+    DpSamplingRuntimeConfig,
     DpSamplingRuntimeLimits,
     setup_dp_sampling,
 )
@@ -163,10 +193,20 @@ class ModelExecutorConfig:
     enable_nan_detection: bool = False
     disable_autotune: bool = False
 
-    # ====== DP =========
+    # ====== DISTRIBUTED =========
     data_parallel_size: int = 1
+    # Compatibility names consumed by autotune and graph code. These are the
+    # stage-local model replica, not the global pipeline rendezvous world.
     world_size: int = 1
-    world_group: list[int] | None = None
+    world_group: tuple[int, ...] | None = None
+    # Explicit global topology for control-plane synchronization. ModelExecutor
+    # does not use these fields for model collectives.
+    global_world_size: int = 1
+    global_world_group: tuple[int, ...] | None = None
+    pipeline_stage_count: int = 1
+    pipeline_stage_index: int = 0
+    pipeline_group: tuple[int, ...] | None = None
+    pipeline_step_timeout_seconds: int = 300
 
     # ====== SPEC =========
     spec_algo: str | None = None
@@ -269,8 +309,16 @@ class ModelExecutorConfig:
             prefill_graph_capture_sizes=server_args.prefill_graph_capture_sizes,
             model_is_mrope=model_is_mrope,
             data_parallel_size=server_args.mapping.attn.dp_size,
-            world_size=server_args.mapping.world_size,
-            world_group=server_args.mapping.world_group,
+            world_size=server_args.mapping.pipeline.stage_world_size,
+            world_group=server_args.mapping.pipeline.stage_group,
+            global_world_size=server_args.mapping.world_size,
+            global_world_group=server_args.mapping.world_group,
+            pipeline_stage_count=server_args.mapping.pipeline.stage_count,
+            pipeline_stage_index=server_args.mapping.pipeline.stage_index,
+            pipeline_group=server_args.mapping.pipeline.pipeline_group,
+            pipeline_step_timeout_seconds=getattr(
+                server_args, "pipeline_step_timeout_seconds", 300
+            ),
             spec_algo=server_args.speculative_algorithm,
             spec_num_steps=server_args.speculative_num_steps,
             spec_num_tokens=server_args.speculative_num_draft_tokens,
@@ -306,6 +354,50 @@ class ModelExecutor:
         self.sampling_backend = sampling_backend
         self.attn_backend = attn_backend
         self.token_to_kv_pool = token_to_kv_pool
+        self.pipeline_executor = None
+        self.pipeline_result_synchronizer = None
+        self.pipeline_control = None
+        self._active_pipeline_step = None
+        if config.pipeline_stage_count > 1:
+            pipeline_plan = getattr(model_runner.model, "pipeline_plan", None)
+            stage_plan = getattr(model_runner.model, "pipeline_stage_plan", None)
+            if pipeline_plan is None or stage_plan is None:
+                raise RuntimeError(
+                    f"{type(model_runner.model).__name__} has no pipeline plan"
+                )
+            indexed_device = torch.device(config.device, config.gpu_id)
+            self.pipeline_control = TorchPipelineControlPlane(
+                model_runner.mapping,
+                plan_digest=pipeline_plan.digest,
+                step_timeout_seconds=config.pipeline_step_timeout_seconds,
+            )
+            try:
+                if (
+                    len(pipeline_plan.stages) != config.pipeline_stage_count
+                    or stage_plan.stage_id != config.pipeline_stage_index
+                ):
+                    raise RuntimeError(
+                        "model pipeline plan disagrees with the distributed mapping"
+                    )
+                validate_pipeline_plan_consensus(pipeline_plan, model_runner.mapping)
+            except Exception as exc:
+                raise self.pipeline_control.abort_runtime(
+                    "startup-plan-consensus", exc
+                ) from exc
+            transport = TorchPipelineTransport(
+                model_runner.mapping,
+                device=indexed_device,
+                control=self.pipeline_control,
+            )
+            self.pipeline_executor = DistributedStageExecutor(
+                ModelRunnerPipelineStage(stage_plan, model_runner),
+                transport,
+            )
+            self.pipeline_result_synchronizer = TorchPipelineResultSynchronizer(
+                model_runner.mapping,
+                device=indexed_device,
+                control=self.pipeline_control,
+            )
         # Every pool runs on the shared cache arena and publishes a runtime
         # contract; the per-group tables travel as CacheBatchMetadata. Fail
         # fast here rather than at the first forward or, worse, a CUDA-graph
@@ -466,20 +558,29 @@ class ModelExecutor:
                 draft_token_to_kv_pool.paged_cache_group_specs,
             )
 
-        self.dp_sampling_runtime_config = setup_dp_sampling(
-            model=self.model_runner.model,
-            sampling_backend=self.sampling_backend,
-            requested=self.config.dp_sampling,
-            drafter_available=self.drafter is not None,
-            limits=DpSamplingRuntimeLimits(
-                runtime_vocab_size=self.config.vocab_size,
-                max_num_seqs=config.max_num_seqs,
-                data_parallel_size=config.data_parallel_size,
+        if (
+            config.pipeline_stage_count > 1
+            and config.pipeline_stage_index < config.pipeline_stage_count - 1
+        ):
+            self.dp_sampling_runtime_config = DpSamplingRuntimeConfig(
                 num_tokens_per_req=spec_num_tokens,
-                configured_min_bs=self.config.dp_sampling_min_bs,
                 device=self.device,
-            ),
-        )
+            )
+        else:
+            self.dp_sampling_runtime_config = setup_dp_sampling(
+                model=self.model_runner.model,
+                sampling_backend=self.sampling_backend,
+                requested=self.config.dp_sampling,
+                drafter_available=self.drafter is not None,
+                limits=DpSamplingRuntimeLimits(
+                    runtime_vocab_size=self.config.vocab_size,
+                    max_num_seqs=config.max_num_seqs,
+                    data_parallel_size=config.data_parallel_size,
+                    num_tokens_per_req=spec_num_tokens,
+                    configured_min_bs=self.config.dp_sampling_min_bs,
+                    device=self.device,
+                ),
+            )
         self._last_dp_sampling_route_log: (
             tuple[str, int, bool, int, int, bool, int] | None
         ) = None
@@ -504,7 +605,7 @@ class ModelExecutor:
         # Eager warmup can be DP-asymmetric; prewarm RSAG under uniform dummy inputs.
         if config.enforce_eager:
             logger.info("Prewarming Triton RSAG communication states")
-            self.forward_step.prewarm_comm_states(batch_sizes=(1,))
+            self._prewarm_eager_comm_states(batch_sizes=(1,))
             logger.info("Finished prewarming Triton RSAG communication states")
 
         # Breakable prefill (extend) CUDA graphs, the extend-mode analogue of
@@ -552,6 +653,29 @@ class ModelExecutor:
 
         logger.info("ModelExecutor initialized")
 
+    def _prewarm_eager_comm_states(self, batch_sizes: tuple[int, ...]) -> None:
+        """Warm eager communication with a correctly sized NaN flag buffer.
+
+        ``CudaGraphWrapper`` owns construction of each dummy batch. Its
+        callback reaches the pipeline result broadcast, so reset immediately
+        before every callback rather than once around the entire warmup.
+        """
+        forward_func = self.forward_step._forward_func
+        if forward_func is None:
+            self.nan_guard.reset(0)
+            return
+
+        def forward_with_nan_guard_reset(*, bs, ctx, sampling_info):
+            self.nan_guard.reset(bs)
+            return forward_func(bs=bs, ctx=ctx, sampling_info=sampling_info)
+
+        self.forward_step._forward_func = forward_with_nan_guard_reset
+        try:
+            self.forward_step.prewarm_comm_states(batch_sizes=batch_sizes)
+        finally:
+            self.forward_step._forward_func = forward_func
+            self.nan_guard.reset(0)
+
     def _autotune(self) -> None:
         """Profile tunable kernels over one dummy prefill, before graph capture.
 
@@ -560,7 +684,8 @@ class ModelExecutor:
         decode-sized pass is needed. Must precede capture: a captured graph
         records the tactic chosen while it was recorded, so tuning afterwards
         cannot change a replay. On distributed boots, per-tactic timings are
-        averaged over the world so every rank picks the same tactic.
+        averaged within each pipeline stage so ranks executing the same model
+        partition pick the same tactic.
         """
         num_tokens = int(self.config.chunked_prefill_size)
         if num_tokens <= 0 or self.model_runner is None:
@@ -648,7 +773,13 @@ class ModelExecutor:
         )
 
     @nvtx_range("target_forward", color="red")
-    def _run_target_forward(self, bs: int, ctx: ForwardContext, req_pool_indices):
+    def _run_target_forward(
+        self,
+        bs: int,
+        ctx: ForwardContext,
+        req_pool_indices,
+        pipeline_step: PipelineStepLease | None,
+    ):
         positions = self._active_positions_override
         if positions is None:
             if self.config.model_is_mrope:
@@ -660,6 +791,27 @@ class ModelExecutor:
         # Prefill-graph replay when captured for this forward (the decode graph
         # replays one level up: it captures the whole _forward_step).
         mode = ctx.forward_mode
+        if self.pipeline_executor is not None:
+            if pipeline_step is None:
+                raise RuntimeError("pipeline target forward requires an active step")
+            output = self.pipeline_executor.forward(
+                ctx,
+                PipelineForwardBatch(
+                    input_ids=self.input_buffers.input_ids_buf[: ctx.input_num_tokens],
+                    positions=positions,
+                    out_cache_loc=self.input_buffers.out_cache_loc_buf[
+                        : ctx.input_num_tokens
+                    ],
+                    req_pool_indices=req_pool_indices,
+                    seq_lens=self.input_buffers.seq_lens_buf[:bs],
+                    extend_prefix_lens=self.input_buffers.extend_prefix_lens_buf[
+                        : ctx.num_extends
+                    ],
+                    multimodal_context=self._active_multimodal_context,
+                ),
+                pipeline_step,
+            )
+            return output.final_output
         if (
             mode is not None
             and (mode.is_extend() or mode.is_mixed())
@@ -795,6 +947,35 @@ class ModelExecutor:
         ctx: ForwardContext,
         sampling_info: SamplingBatchInfo,
     ):
+        if self.pipeline_control is None:
+            return self._forward_step_impl(bs, ctx, sampling_info, None)
+        active_step = self._active_pipeline_step
+        if active_step is not None:
+            return self._forward_step_impl(bs, ctx, sampling_info, active_step)
+        if ctx.forward_mode is None:
+            raise RuntimeError("pipeline forward requires an explicit forward mode")
+        step = self.pipeline_control.begin_step(
+            forward_mode_name=ctx.forward_mode.name,
+            batch_size=ctx.bs,
+            input_num_tokens=ctx.input_num_tokens,
+            num_extends=ctx.num_extends,
+            batch_fingerprint=ctx.pipeline_batch_fingerprint,
+            stage_cache_fingerprint=0,
+        )
+        try:
+            result = self._forward_step_impl(bs, ctx, sampling_info, step)
+            self.pipeline_control.complete_step(step)
+            return result
+        except Exception as exc:
+            raise self.pipeline_control.abort(step, "forward", exc) from exc
+
+    def _forward_step_impl(
+        self,
+        bs: int,
+        ctx: ForwardContext,
+        sampling_info: SamplingBatchInfo,
+        pipeline_step: PipelineStepLease | None,
+    ):
         req_pool_indices = self.input_buffers.req_pool_indices_buf[:bs]
 
         # Fork grammar onto its side stream so fill + H2D overlap with
@@ -818,7 +999,25 @@ class ModelExecutor:
                 self.input_buffers.out_cache_loc_buf[: ctx.input_num_tokens],
             )
 
-        logits_output = self._run_target_forward(bs, ctx, req_pool_indices)
+        logits_output = self._run_target_forward(
+            bs,
+            ctx,
+            req_pool_indices,
+            pipeline_step,
+        )
+
+        if (
+            self.pipeline_result_synchronizer is not None
+            and self.config.pipeline_stage_index < self.config.pipeline_stage_count - 1
+        ):
+            output_tokens, accept_lengths, nan_flags = (
+                self.pipeline_result_synchronizer.synchronize(
+                    step=pipeline_step,
+                    batch_size=ctx.bs,
+                )
+            )
+            self.nan_guard.load_pipeline_flags(nan_flags)
+            return output_tokens, accept_lengths, None
 
         if self.drafter is not None and getattr(
             self.drafter, "_incremental_proj_enabled", False
@@ -845,6 +1044,18 @@ class ModelExecutor:
         # so the output processor can terminate it. Covers sampler/verify kernel
         # corruption and DP-sharded steps that audit_logits cannot attribute.
         self.nan_guard.merge_oov(output_tokens, ctx, self.runtime_states.vocab_size)
+
+        if self.pipeline_result_synchronizer is not None:
+            output_tokens, accept_lengths, nan_flags = (
+                self.pipeline_result_synchronizer.synchronize(
+                    step=pipeline_step,
+                    batch_size=ctx.bs,
+                    output_tokens=output_tokens,
+                    accept_lengths=accept_lengths,
+                    nan_flags=self.nan_guard.flags_device,
+                )
+            )
+            self.nan_guard.load_pipeline_flags(nan_flags)
 
         # Fork sampler-output D2H onto the grammar side stream so the
         # next step's build hostfunc can advance the matcher.
@@ -1080,6 +1291,12 @@ class ModelExecutor:
         ranks do. The MoE all-to-all is a collective that requires ALL
         ranks to participate.
         """
+        if self.pipeline_executor is not None:
+            raise RuntimeError(
+                "pipeline idle-forward is unreachable while data parallelism "
+                "is disabled; add an explicit zero-token pipeline protocol "
+                "before enabling it"
+            )
         graph_forward_mode = ForwardMode.DECODE
         ctx = ForwardContext(
             attn_backend=self.attn_backend,
@@ -1173,6 +1390,14 @@ class ModelExecutor:
                     out_cache_loc=empty,
                     spec_step_idx=step_idx,
                 )
+
+    def close(self) -> None:
+        try:
+            if self.pipeline_executor is not None:
+                self.pipeline_executor.close()
+        finally:
+            if self.pipeline_control is not None:
+                self.pipeline_control.close()
 
     def zero_cache_pages(self, pages):
         """Clear newly owned pages and return a CUDA completion event when needed."""
@@ -1274,8 +1499,104 @@ class ModelExecutor:
         multimodal_context=None,
         capture_next_input_ids: bool = False,
     ) -> ModelExecutionResult:
+        if self.pipeline_control is None:
+            return self._execute_forward_op_impl(
+                forward_op,
+                sampling_params_list,
+                dp_global_num_tokens=dp_global_num_tokens,
+                dp_global_bs=dp_global_bs,
+                dp_all_decode_or_idle=dp_all_decode_or_idle,
+                dp_all_extend=dp_all_extend,
+                grammar_inputs=grammar_inputs,
+                multimodal_context=multimodal_context,
+                capture_next_input_ids=capture_next_input_ids,
+            )
+
+        try:
+            num_extends = forward_op.num_extends()
+            batch_size = len(forward_op.request_ids)
+            input_num_tokens = sum(forward_op.input_lengths)
+            forward_mode = ForwardMode.from_num_extends(num_extends, batch_size)
+            cache_table_digests = pp_cache_table_digests(
+                forward_op.block_tables_arrays()
+            )
+            fingerprint = pp_batch_fingerprint(
+                forward_op.request_ids,
+                forward_op.input_lengths,
+                (
+                    ()
+                    if forward_op.extend_prefix_lens is None
+                    else tuple(forward_op.extend_prefix_lens)
+                ),
+                request_pool_indices=forward_op.request_pool_indices,
+                prefill_lengths=forward_op.prefill_lengths,
+                input_token_ids=forward_op.input_ids,
+                shifted_input_ids=forward_op.shifted_input_ids,
+                decode_input_ids=(
+                    ()
+                    if forward_op.decode_input_ids is None
+                    else tuple(forward_op.decode_input_ids)
+                ),
+                sampling_fingerprint=pp_sampling_params_fingerprint(
+                    sampling_params_list
+                ),
+                multimodal_fingerprint=pp_multimodal_context_fingerprint(
+                    multimodal_context
+                ),
+            )
+            stage_cache_fingerprint = pp_cache_table_fingerprint(cache_table_digests)
+        except Exception as exc:
+            raise self.pipeline_control.abort_runtime(
+                "prepare-step-descriptor", exc
+            ) from exc
+
+        step = self.pipeline_control.begin_step(
+            forward_mode_name=forward_mode.name,
+            batch_size=batch_size,
+            input_num_tokens=input_num_tokens,
+            num_extends=num_extends,
+            batch_fingerprint=fingerprint,
+            stage_cache_fingerprint=stage_cache_fingerprint,
+        )
+        self._active_pipeline_step = step
+        try:
+            result = self._execute_forward_op_impl(
+                forward_op,
+                sampling_params_list,
+                dp_global_num_tokens=dp_global_num_tokens,
+                dp_global_bs=dp_global_bs,
+                dp_all_decode_or_idle=dp_all_decode_or_idle,
+                dp_all_extend=dp_all_extend,
+                grammar_inputs=grammar_inputs,
+                multimodal_context=multimodal_context,
+                capture_next_input_ids=capture_next_input_ids,
+            )
+            self.pipeline_control.complete_step(step)
+            return result
+        except Exception as exc:
+            raise self.pipeline_control.abort(step, "execute-forward-op", exc) from exc
+        finally:
+            self._active_pipeline_step = None
+
+    def _execute_forward_op_impl(
+        self,
+        forward_op,
+        sampling_params_list: list[SamplingParams],
+        dp_global_num_tokens=None,
+        dp_global_bs=None,
+        dp_all_decode_or_idle: bool = False,
+        dp_all_extend: bool = False,
+        grammar_inputs=None,
+        multimodal_context=None,
+        capture_next_input_ids: bool = False,
+    ) -> ModelExecutionResult:
         num_extends = forward_op.num_extends()
         total_tokens = sum(forward_op.input_lengths)
+        pipeline_batch_id = (
+            self._active_pipeline_step.descriptor.batch_fingerprint
+            if self._active_pipeline_step is not None
+            else 0
+        )
         self._active_multimodal_context = multimodal_context
         self._active_positions_override = None
         timing_enabled = LOG_MM_TIMING
@@ -1411,6 +1732,7 @@ class ModelExecutor:
                     ),
                     gather_ids=gather_ids,
                     decode_input_ids=decode_input_ids,
+                    pipeline_batch_fingerprint=pipeline_batch_id,
                 )
                 if self.config.data_parallel_size > 1:
                     if dp_global_num_tokens is None:

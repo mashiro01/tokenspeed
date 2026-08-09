@@ -117,6 +117,15 @@ class NanGuard:
         """Async D2H of this step's flags (order with the copy event)."""
         return self.flags[: self._bs].to("cpu", non_blocking=True)
 
+    @property
+    def flags_device(self) -> torch.Tensor | None:
+        return self.flags[: self._bs]
+
+    def load_pipeline_flags(self, flags: torch.Tensor) -> None:
+        if flags.numel() != self._bs:
+            raise ValueError("pipeline NaN flags do not match the active batch")
+        self.flags[: self._bs].copy_(flags)
+
     def _or_per_request(self, rows: torch.Tensor, ctx: ForwardContext) -> None:
         """OR a per-row bool vector into per-request flags.
 
@@ -149,6 +158,13 @@ class _DisabledNanGuard(NanGuard):
 
     @property
     def flags_cpu(self) -> None:
+        return None
+
+    @property
+    def flags_device(self) -> None:
+        return None
+
+    def load_pipeline_flags(self, flags) -> None:
         return None
 
 

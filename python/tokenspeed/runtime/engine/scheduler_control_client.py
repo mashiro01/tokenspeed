@@ -73,6 +73,7 @@ from tokenspeed.runtime.engine.io_struct import (
     UpdateWeightsFromTensorReqInput,
     UpdateWeightsFromTensorReqOutput,
 )
+from tokenspeed.runtime.pipeline.capabilities import require_single_stage_control
 from tokenspeed.runtime.utils.dispatch import TypeBasedDispatcher
 from tokenspeed.runtime.utils.env import envs
 from tokenspeed.runtime.utils.server_args import ServerArgs
@@ -285,6 +286,10 @@ class SchedulerControlClient:
         )
 
     async def flush_cache(self: AsyncLLM) -> FlushCacheReqOutput:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="cache flush",
+        )
         return (await self.flush_cache_communicator(FlushCacheReqInput()))[0]
 
     async def pause_scheduler(self: AsyncLLM, *, mode: PauseMode = "abort") -> bool:
@@ -298,6 +303,10 @@ class SchedulerControlClient:
         Cache invalidation after a weight swap is the weight-update op's
         responsibility (``update_weights_*(flush_cache=...)``), not pause's.
         """
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="scheduler pause",
+        )
         # Pause may be the very first call (e.g. weight swap before serving),
         # so ensure the output-dispatch loop is running to receive the reply.
         self.auto_create_handle_loop()
@@ -308,6 +317,10 @@ class SchedulerControlClient:
 
     async def resume_scheduler(self: AsyncLLM) -> bool:
         """Resume generation after :meth:`pause_scheduler`."""
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="scheduler resume",
+        )
         self.auto_create_handle_loop()
         result = (await self.resume_scheduler_communicator(ResumeSchedulerReqInput()))[
             0
@@ -316,6 +329,10 @@ class SchedulerControlClient:
 
     async def is_scheduler_paused(self: AsyncLLM) -> bool:
         """Return whether the scheduler is currently paused."""
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="scheduler pause-state query",
+        )
         self.auto_create_handle_loop()
         result = (
             await self.is_scheduler_paused_communicator(IsSchedulerPausedReqInput())
@@ -355,24 +372,40 @@ class SchedulerControlClient:
         return await self._execute_profile(req)
 
     async def _execute_profile(self: AsyncLLM, req: ProfileReq):
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="runtime profiling",
+        )
         result = (await self.profile_communicator(req))[0]
         if not result.success:
             raise RuntimeError(result.message)
         return result
 
     async def start_expert_distribution_record(self: AsyncLLM):
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="expert-distribution recording",
+        )
         self.auto_create_handle_loop()
         await self.expert_distribution_communicator(
             ExpertDistributionReq(action=ExpertDistributionReqType.START_RECORD)
         )
 
     async def stop_expert_distribution_record(self: AsyncLLM):
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="expert-distribution recording",
+        )
         self.auto_create_handle_loop()
         await self.expert_distribution_communicator(
             ExpertDistributionReq(action=ExpertDistributionReqType.STOP_RECORD)
         )
 
     async def dump_expert_distribution_record(self: AsyncLLM):
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="expert-distribution recording",
+        )
         self.auto_create_handle_loop()
         await self.expert_distribution_communicator(
             ExpertDistributionReq(action=ExpertDistributionReqType.DUMP_RECORD)
@@ -382,6 +415,10 @@ class SchedulerControlClient:
         self: AsyncLLM,
         obj: InitWeightsUpdateGroupReqInput,
     ) -> tuple[bool, str]:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="initializing an online weight-update group",
+        )
         self.auto_create_handle_loop()
         if self.server_args.mapping.attn.has_dp:
             raise RuntimeError("dp_size must be 1 for init parameter update group")
@@ -392,6 +429,10 @@ class SchedulerControlClient:
         self: AsyncLLM,
         obj: DestroyWeightsUpdateGroupReqInput,
     ) -> tuple[bool, str]:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="destroying an online weight-update group",
+        )
         self.auto_create_handle_loop()
         assert (
             not self.server_args.mapping.attn.has_dp
@@ -403,6 +444,10 @@ class SchedulerControlClient:
         self: AsyncLLM,
         obj: UpdateWeightsFromDistributedReqInput,
     ) -> tuple[bool, str]:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="distributed online weight update",
+        )
         self.auto_create_handle_loop()
         if self.server_args.mapping.attn.has_dp:
             raise RuntimeError("dp_size must be 1 for update weights from distributed")
@@ -417,6 +462,10 @@ class SchedulerControlClient:
         self: AsyncLLM,
         obj: UpdateWeightsFromTensorReqInput,
     ) -> tuple[bool, str]:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="tensor online weight update",
+        )
         self.auto_create_handle_loop()
         if self.server_args.mapping.attn.has_dp:
             raise RuntimeError("dp_size must be 1 for update weights from tensor")
@@ -431,6 +480,10 @@ class SchedulerControlClient:
         self: AsyncLLM,
         obj: GetWeightsByNameReqInput,
     ):
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="cross-rank weight reads",
+        )
         self.auto_create_handle_loop()
         results = await self.get_weights_by_name_communicator(obj)
         all_parameters = [r.parameter for r in results]
@@ -443,6 +496,10 @@ class SchedulerControlClient:
         self: AsyncLLM,
         obj: ReleaseMemoryOccupationReqInput,
     ) -> ReleaseMemoryOccupationReqOutput:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="runtime memory release",
+        )
         self.auto_create_handle_loop()
         return (await self.release_memory_occupation_communicator(obj))[0]
 
@@ -450,15 +507,27 @@ class SchedulerControlClient:
         self: AsyncLLM,
         obj: ResumeMemoryOccupationReqInput,
     ) -> ResumeMemoryOccupationReqOutput:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="runtime memory resume",
+        )
         self.auto_create_handle_loop()
         return (await self.resume_memory_occupation_communicator(obj))[0]
 
     async def is_sleeping(self: AsyncLLM) -> bool:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="runtime memory-state query",
+        )
         self.auto_create_handle_loop()
         result = (await self.is_sleeping_communicator(IsSleepingReqInput()))[0]
         return result.is_sleeping
 
     async def get_internal_state(self: AsyncLLM) -> list[dict[Any, Any]]:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="internal-state query",
+        )
         req = GetInternalStateReq()
         responses: list[GetInternalStateReqOutput] = (
             await self.get_internal_state_communicator(req)
@@ -469,6 +538,10 @@ class SchedulerControlClient:
     async def set_internal_state(
         self: AsyncLLM, obj: SetInternalStateReq
     ) -> list[bool]:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="internal-state update",
+        )
         responses: list[SetInternalStateReqOutput] = (
             await self.set_internal_state_communicator(obj)
         )

@@ -18,9 +18,32 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Distributed runtime public exports."""
+"""Distributed runtime public exports.
 
-from tokenspeed.runtime.distributed.comm_manager import CommManager
-from tokenspeed.runtime.distributed.mapping import Mapping
+Keep topology imports independent from optional communication kernels.  This
+module is imported before Python resolves submodules such as ``mapping``; eager
+imports here would otherwise load the CUDA/Triton communication stack merely
+to construct a rank mapping.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tokenspeed.runtime.distributed.comm_manager import CommManager
+    from tokenspeed.runtime.distributed.mapping import Mapping
 
 __all__ = ["CommManager", "Mapping"]
+
+
+def __getattr__(name: str):
+    if name == "CommManager":
+        from tokenspeed.runtime.distributed.comm_manager import CommManager
+
+        return CommManager
+    if name == "Mapping":
+        from tokenspeed.runtime.distributed.mapping import Mapping
+
+        return Mapping
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

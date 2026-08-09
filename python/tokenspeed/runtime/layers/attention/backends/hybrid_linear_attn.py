@@ -415,7 +415,7 @@ class MambaAttnBackend(AttentionBackend):
         state_groups = set(self._state_group_ids)
         return sorted(
             layer_id
-            for layer_id, group_id in self.kv_pool._group_ids_by_layer.items()
+            for layer_id, group_id in self.kv_pool.iter_layer_group_ids()
             if group_id in state_groups
         )
 

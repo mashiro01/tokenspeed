@@ -431,6 +431,7 @@ class LayerMappedKVPool:
         full_attention_layer_ids: list[int],
         *,
         layer_map: dict[int, int] | None = None,
+        strict: bool = False,
     ):
         self.inner = inner_pool
         self.layer_ids = list(full_attention_layer_ids)
@@ -442,11 +443,29 @@ class LayerMappedKVPool:
                 for pool_idx, global_id in enumerate(full_attention_layer_ids)
             }
         )
+        self.strict = strict
         # Expose page_size from inner pool for the scheduler
         self.page_size = getattr(inner_pool, "page_size", 1)
 
     def _map(self, layer_id: int) -> int:
-        return self.layer_map.get(layer_id, layer_id)
+        try:
+            return self.layer_map[layer_id]
+        except KeyError as exc:
+            if self.strict:
+                raise ValueError(
+                    f"logical cache layer {layer_id} is not owned by this stage"
+                ) from exc
+            return layer_id
+
+    def iter_layer_group_ids(self) -> tuple[tuple[int, str], ...]:
+        """Return public logical layer ids and their cache groups."""
+        return tuple(
+            (
+                logical_layer_id,
+                self.inner.group_id_for_layer(physical_layer_id),
+            )
+            for logical_layer_id, physical_layer_id in sorted(self.layer_map.items())
+        )
 
     @contextmanager
     def _mapped(self, layer):
@@ -478,6 +497,15 @@ class LayerMappedKVPool:
 
     def get_value_buffer(self, layer_id: int):
         return self.inner.get_value_buffer(self._map(layer_id))
+
+    def group_id_for_layer(self, layer_id: int) -> str:
+        return self.inner.group_id_for_layer(self._map(layer_id))
+
+    def get_component(self, layer_id: int, component_name: str):
+        return self.inner.get_component(self._map(layer_id), component_name)
+
+    def get_state_buffers(self, layer_id: int):
+        return self.inner.get_state_buffers(self._map(layer_id))
 
     # MLA pools index their per-layer kv_buffer by ``layer.layer_id`` directly.
     # In a hybrid model the inner MLA pool only holds the full-attention layers,

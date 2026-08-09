@@ -90,6 +90,7 @@ from tokenspeed.runtime.pd.utils import (
     TransferBackend,
     get_kv_class,
 )
+from tokenspeed.runtime.pipeline.capabilities import require_single_stage_control
 from tokenspeed.runtime.utils import (
     dataclass_to_string_truncated,
     get_colorful_logger,
@@ -557,6 +558,10 @@ class AsyncLLM(SchedulerControlClient, EngineClient):
         self,
         obj: UpdateWeightFromDiskReqInput,
     ) -> tuple[bool, str, Any]:
+        require_single_stage_control(
+            stage_count=self.server_args.mapping.pipeline.stage_count,
+            operation="disk online weight update",
+        )
         self.auto_create_handle_loop()
 
         # default the load format to the server_args

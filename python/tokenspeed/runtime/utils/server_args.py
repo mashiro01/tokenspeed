@@ -149,6 +149,7 @@ class ServerArgs:
     enable_inline_detokenizer: bool = True
     seed: int | None = None
     distributed_timeout_seconds: int | None = None
+    pipeline_step_timeout_seconds: int = 300
     download_dir: str | None = None
     # Used for customizing extensible models
     ext_yaml: str | None = None
@@ -321,6 +322,7 @@ class ServerArgs:
     # parallel strategy
     nprocs_per_node: int | None = None
     world_size: int | None = None
+    pipeline_parallel_size: int = 1
     attn_tp_size: int | None = None
     dense_tp_size: int | None = None
     moe_tp_size: int | None = None
@@ -454,14 +456,15 @@ class ServerArgs:
 
         # Set GPU memory utilization, which depends on the tensor parallelism size.
         self._gpu_memory_utilization_defaulted = False
+        stage_world_size = self.mapping.pipeline.stage_world_size
         if self.gpu_memory_utilization is None:
-            if self.mapping.world_size >= 16:
+            if stage_world_size >= 16:
                 self.gpu_memory_utilization = 0.79
-            elif self.mapping.world_size >= 8:
+            elif stage_world_size >= 8:
                 self.gpu_memory_utilization = 0.81
-            elif self.mapping.world_size >= 4:
+            elif stage_world_size >= 4:
                 self.gpu_memory_utilization = 0.95
-            elif self.mapping.world_size >= 2:
+            elif stage_world_size >= 2:
                 self.gpu_memory_utilization = 0.87
             else:
                 self.gpu_memory_utilization = 0.88
@@ -475,7 +478,7 @@ class ServerArgs:
         if self.max_cudagraph_capture_size is None:
             # Based on detailed statistics, when serving TP1/TP2 models on lower-end GPUs with HBM<25G, you can either disable CUDA graph or set max_cudagraph_capture_size to a very small value to reduce graph memory overhead, with almost no impact on performance. TP4/TP8 serving still needs CUDA graph for high performance, and 80 is enough for lower-end GPUs.
             if gpu_mem is not None and gpu_mem < 25_000:
-                if self.mapping.world_size < 4:
+                if stage_world_size < 4:
                     self.max_cudagraph_capture_size = 8
                 else:
                     self.max_cudagraph_capture_size = 80
@@ -553,6 +556,20 @@ class ServerArgs:
         nprocs_per_node = self.nprocs_per_node
         nnodes = 1 if self.nnodes is None else self.nnodes
 
+        pipeline_parallel_size = self.pipeline_parallel_size
+        if isinstance(pipeline_parallel_size, bool) or not isinstance(
+            pipeline_parallel_size, int
+        ):
+            raise TypeError(
+                "pipeline_parallel_size must be an int, got "
+                f"{type(pipeline_parallel_size).__name__}"
+            )
+        if pipeline_parallel_size <= 0:
+            raise ValueError(
+                "pipeline_parallel_size must be positive, got "
+                f"{pipeline_parallel_size}"
+            )
+
         attn_tp_size = self.attn_tp_size
         attn_dp_size = self.data_parallel_size
 
@@ -562,48 +579,63 @@ class ServerArgs:
             attn_cp_size, attn_tp_size = attn_tp_size, 1
 
         if world_size is None:
-            world_size = 1
+            stage_world_size = 1
             if attn_tp_size is not None:
-                world_size *= attn_tp_size
+                stage_world_size *= attn_tp_size
             if attn_cp_size is not None:
-                world_size *= attn_cp_size
+                stage_world_size *= attn_cp_size
             if attn_dp_size is not None:
-                world_size *= attn_dp_size
+                stage_world_size *= attn_dp_size
+            world_size = stage_world_size * pipeline_parallel_size
             logger.info(
-                "Inferred world_size (%s) from attn_tp_size (%s) x attn_cp_size (%s) x attn_dp_size (%s)",
+                "Inferred world_size (%s) from stage_world_size (%s) x "
+                "pipeline_parallel_size (%s); stage_world_size is "
+                "attn_tp_size (%s) x attn_cp_size (%s) x attn_dp_size (%s)",
                 world_size,
+                stage_world_size,
+                pipeline_parallel_size,
                 attn_tp_size,
                 attn_cp_size,
                 attn_dp_size,
             )
         else:
             logger.info("Specified world_size (%s)", world_size)
+            if world_size % pipeline_parallel_size != 0:
+                raise ValueError(
+                    f"world_size ({world_size}) must be divisible by "
+                    f"pipeline_parallel_size ({pipeline_parallel_size})"
+                )
+            stage_world_size = world_size // pipeline_parallel_size
 
         attn_tp_size, attn_cp_size, attn_dp_size = _resolve_parallelism_sizes(
-            world_size, attn_tp_size, attn_cp_size, attn_dp_size
+            stage_world_size, attn_tp_size, attn_cp_size, attn_dp_size
         )
 
         # Dense layers default to the attention replica's TP width
-        # (attn_tp_size x attn_cp_size == world_size // attn_dp_size). Without
-        # DP attention this is the full world, unchanged from before; with DP
-        # attention it keeps each dense all-reduce inside one replica (matching
-        # attn) instead of spanning the whole world, which would otherwise cross
-        # nodes and force attn_tp != dense_tp. Pass --dense-tp-size to override.
+        # (attn_tp_size x attn_cp_size == stage_world_size // attn_dp_size).
+        # Without DP attention this is the full stage, unchanged for PP=1; with
+        # DP attention it keeps each dense all-reduce inside one replica
+        # (matching attn). Pass --dense-tp-size to override.
         dense_tp_size = self.dense_tp_size
         if self.dense_tp_size is None:
             dense_tp_size = attn_tp_size * attn_cp_size
         dense_dp_size = None
 
-        # --enable-expert-parallel auto-sets ep_size = world_size
+        # --enable-expert-parallel auto-sets ep_size to the width of one stage.
         if self.enable_expert_parallel and self.ep_size == 1:
-            self.ep_size = world_size
-            logger.info("--enable-expert-parallel: auto-setting ep_size=%s", world_size)
+            self.ep_size = stage_world_size
+            logger.info(
+                "--enable-expert-parallel: auto-setting ep_size=%s",
+                stage_world_size,
+            )
 
-        # MoE parallel sizes default to consuming the full world size unless
+        # MoE parallel sizes default to consuming one full pipeline stage unless
         # the user overrides them explicitly.
         moe_ep_size = 1 if self.ep_size is None else self.ep_size
         moe_tp_size = (
-            world_size // moe_ep_size if self.moe_tp_size is None else self.moe_tp_size
+            stage_world_size // moe_ep_size
+            if self.moe_tp_size is None
+            else self.moe_tp_size
         )
         moe_dp_size = None
 
@@ -635,6 +667,7 @@ class ServerArgs:
             moe_dp_size=moe_dp_size,
             vision_tp_size=vision_tp_size,
             vision_dp_size=vision_dp_size,
+            pipeline_parallel_size=pipeline_parallel_size,
             nprocs_per_node=nprocs_per_node,
             nnodes=nnodes,
             base_gpu_id=self.base_gpu_id,
@@ -734,10 +767,15 @@ class ServerArgs:
     def resolve_communication(self):
         # Auto-enable allreduce fusion on supported single-node TP configurations.
         platform = current_platform()
+        stage_is_single_node = (
+            self.mapping.pipeline.stage_world_size <= self.mapping.nprocs_per_node
+            and self.mapping.nprocs_per_node % self.mapping.pipeline.stage_world_size
+            == 0
+        )
         if (
             not self.enable_allreduce_fusion
-            and (current_platform().is_hopper_plus or platform.is_amd)
-            and self.mapping.nnodes == 1
+            and (platform.is_hopper_plus or platform.is_amd)
+            and stage_is_single_node
             and self.mapping.has_attn_tp
             and not self.mapping.has_attn_dp
         ):
@@ -831,6 +869,50 @@ class ServerArgs:
                 )
 
     def validate(self):
+        if self.mapping.pipeline.stage_count > 1:
+            if self.pipeline_step_timeout_seconds <= 0:
+                raise ValueError("pipeline_step_timeout_seconds must be positive")
+            incompatible = []
+            if self.mapping.has_attn_dp:
+                incompatible.append("data parallelism")
+            if self.mapping.has_attn_cp:
+                incompatible.append("context parallelism")
+            if self.speculative_algorithm is not None:
+                incompatible.append("speculative decoding")
+            if self.disaggregation_mode != "null":
+                incompatible.append("disaggregation")
+            if not self.enforce_eager:
+                incompatible.append("decode CUDA graphs")
+            if not self.disable_prefill_graph:
+                incompatible.append("prefill CUDA graphs")
+            if not self.disable_overlap_schedule:
+                incompatible.append("overlap scheduling")
+            if not self.disable_autotune:
+                incompatible.append("kernel autotuning")
+            if self.enable_prefix_caching:
+                incompatible.append("prefix caching")
+            if self.enable_kvstore:
+                incompatible.append("KVStore")
+            if self.enable_memory_saver:
+                incompatible.append("memory saver")
+            if self.enable_output_logprobs:
+                incompatible.append("output logprobs")
+            if self.enable_custom_logit_processor:
+                incompatible.append("custom logit processors")
+            if self.grammar_backend != "none":
+                incompatible.append("grammar sampling")
+            if self.zmq_msgpack:
+                incompatible.append("ZMQ msgpack scheduling")
+            if self.weight_transfer_config is not None:
+                incompatible.append("online weight transfer")
+            if str(self.load_format).lower() == "sharded_state":
+                incompatible.append("sharded-state checkpoints")
+            if incompatible:
+                raise ValueError(
+                    "pipeline parallelism does not yet support: "
+                    + ", ".join(incompatible)
+                )
+
         if (
             self.max_num_seqs is not None
             and self.max_num_seqs < self.mapping.attn.dp_size
@@ -1905,7 +1987,8 @@ class ServerArgs:
         parser.add_argument(
             "--enable-expert-parallel",
             action="store_true",
-            help="Enable expert parallelism by automatically setting ep_size to world_size.",
+            help="Enable expert parallelism by automatically setting ep_size "
+            "to the pipeline stage width.",
         )
 
         # Specify different parallel strategies, different combinations correspond to different communication groups and weight partitioning, as well as different communication methods
@@ -1920,8 +2003,8 @@ class ServerArgs:
             type=int,
             default=ServerArgs.dense_tp_size,
             help="Specify tp size for dense part. Defaults to the attention "
-            "replica width (attn_tp_size x attn_cp_size): the full world without "
-            "DP attention, one replica with it.",
+            "replica width (attn_tp_size x attn_cp_size): the full pipeline "
+            "stage without DP attention, one replica with it.",
         )
         parser.add_argument(
             "--moe-tp-size",
@@ -1940,6 +2023,18 @@ class ServerArgs:
             type=int,
             default=ServerArgs.world_size,
             help="Total number of processes across all nodes.",
+        )
+        parser.add_argument(
+            "--pipeline-parallel-size",
+            type=int,
+            default=ServerArgs.pipeline_parallel_size,
+            help="Number of pipeline stages in the global process world.",
+        )
+        parser.add_argument(
+            "--pipeline-step-timeout-seconds",
+            type=int,
+            default=ServerArgs.pipeline_step_timeout_seconds,
+            help="Hard deadline for one native pipeline forward step.",
         )
         parser.add_argument(
             "--force-deterministic-rsag",

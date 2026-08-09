@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import torch
+import torch.distributed as dist
 
+from tokenspeed.runtime.distributed.consensus import raise_on_rank_error
+from tokenspeed.runtime.distributed.process_group_manager import (
+    process_group_manager as pg_manager,
+)
 from tokenspeed.runtime.layers.attention.kv_cache.recipes import (
     configured_token_limit,
 )
@@ -19,6 +24,15 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.plan import (
     CacheMemoryPlan,
     continue_layer_fields,
     solve_cache_layout,
+)
+from tokenspeed.runtime.layers.attention.kv_cache.recipes.stage_layout import (
+    CacheStagePlacement,
+    LogicalCacheFieldSpec,
+    pipeline_cache_abi_digest,
+    solve_stage_cache_layout,
+)
+from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
+    build_balanced_kimi_k3_pipeline_plan,
 )
 
 _KIMI_K3_LAYERS = 93
@@ -44,6 +58,45 @@ def _require_non_negative_int(name: str, value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
     return value
+
+
+def kimi_k3_pipeline_workspace_bytes(
+    *,
+    pipeline_plan,
+    stage_id: int,
+    num_layers: int,
+    attn_res_block_size: int,
+    hidden_size: int,
+    max_step_tokens: int,
+    activation_element_size: int,
+) -> int:
+    """Reserve the stage-local AttnRes slab and received Wire tensors."""
+
+    num_layers = _require_positive_int("num_layers", num_layers)
+    attn_res_block_size = _require_positive_int(
+        "attn_res_block_size", attn_res_block_size
+    )
+    hidden_size = _require_positive_int("hidden_size", hidden_size)
+    max_step_tokens = _require_positive_int("max_step_tokens", max_step_tokens)
+    activation_element_size = _require_positive_int(
+        "activation_element_size", activation_element_size
+    )
+    if isinstance(stage_id, bool) or not isinstance(stage_id, int):
+        raise ValueError("stage_id must be an integer")
+    if not 0 <= stage_id < len(pipeline_plan.stages):
+        raise ValueError("stage_id is outside the pipeline plan")
+
+    stage = pipeline_plan.stages[stage_id]
+    incoming_fields = (
+        0 if stage.input_schema is None else len(stage.input_schema.fields)
+    )
+    attn_res_blocks = math.ceil(num_layers / attn_res_block_size)
+    return (
+        (attn_res_blocks + incoming_fields)
+        * max_step_tokens
+        * hidden_size
+        * activation_element_size
+    )
 
 
 def _one_based_layers(value: object, name: str, num_layers: int) -> tuple[int, ...]:
@@ -232,6 +285,34 @@ def build_kimi_k3_cache_fields(
     )
 
 
+def build_kimi_k3_logical_cache_fields(
+    text_config: KimiLinearConfig,
+    *,
+    tp_size: int,
+    mla_cache_dtype: torch.dtype,
+    mla_quant_method: str | None,
+) -> tuple[LogicalCacheFieldSpec, ...]:
+    """Attach explicit global layer ownership to K3 cache fields."""
+
+    fields = build_kimi_k3_cache_fields(
+        text_config,
+        tp_size=tp_size,
+        mla_cache_dtype=mla_cache_dtype,
+        mla_quant_method=mla_quant_method,
+    )
+    group_ids = kimi_k3_layer_group_ids(text_config)
+    logical_fields = []
+    cursor = 0
+    for logical_layer_id, group_id in enumerate(group_ids):
+        field_count = 1 if group_id == FULL_ATTENTION else 2
+        for field in fields[cursor : cursor + field_count]:
+            logical_fields.append(LogicalCacheFieldSpec(logical_layer_id, field))
+        cursor += field_count
+    if cursor != len(fields):
+        raise ValueError("Kimi-K3 cache field ownership is incomplete")
+    return tuple(logical_fields)
+
+
 def solve_kimi_k3_cache_layout(
     text_config: KimiLinearConfig,
     *,
@@ -385,6 +466,322 @@ def kimi_k3_token_capacity_for_cache_pool(
     return low
 
 
+def _global_min_token_capacity(value: int, mapping) -> int:
+    if mapping.world_size == 1:
+        return value
+    if not dist.is_initialized():
+        raise RuntimeError(
+            "pipeline cache capacity consensus requires initialized distributed groups"
+        )
+    tensor = torch.tensor([value], dtype=torch.int64)
+    cpu_group = pg_manager.get_process_group("gloo", mapping.world_group)
+    dist.all_reduce(tensor, op=dist.ReduceOp.MIN, group=cpu_group)
+    result = int(tensor.item())
+    if result < 1:
+        raise ValueError("global Kimi-K3 cache capacity must be positive")
+    return result
+
+
+def _validate_pipeline_cache_digest_consensus(
+    cache_abi_digest: str,
+    stage_manifest_digest: str,
+    mapping,
+) -> None:
+    """Validate global and per-stage cache ABIs in one global collective."""
+
+    local = torch.tensor(
+        list(bytes.fromhex(cache_abi_digest + stage_manifest_digest)),
+        dtype=torch.uint8,
+    )
+    gathered = [torch.empty_like(local) for _ in range(mapping.world_size)]
+    cpu_group = pg_manager.get_process_group("gloo", mapping.world_group)
+    dist.all_gather(gathered, local, group=cpu_group)
+
+    global_reference = gathered[0][:32]
+    global_divergent = [
+        rank
+        for rank, candidate in enumerate(gathered)
+        if not torch.equal(candidate[:32], global_reference)
+    ]
+    stage_divergent: list[int] = []
+    stage_width = mapping.pipeline.stage_world_size
+    for first_rank in range(0, mapping.world_size, stage_width):
+        stage_reference = gathered[first_rank][32:]
+        stage_divergent.extend(
+            rank
+            for rank in range(first_rank, first_rank + stage_width)
+            if not torch.equal(gathered[rank][32:], stage_reference)
+        )
+    if global_divergent or stage_divergent:
+        raise RuntimeError(
+            "Kimi-K3 cache digest consensus failed: "
+            f"global ABI ranks={global_divergent}, "
+            f"stage ABI ranks={stage_divergent}"
+        )
+
+
+def _prepare_kimi_k3_pipeline_cache(
+    *,
+    server_args,
+    model_config,
+    attn_config,
+    draft_model_config,
+    draft_attn_config,
+    cache_budget_bytes: int,
+    decode_input_tokens: int,
+    overlap_schedule_depth: int,
+    mapping,
+):
+    """Prepare a stage-local K3 cache with collective failure semantics."""
+
+    from tokenspeed.runtime.layers.attention.kv_cache.recipes.setup import (
+        CachePoolSpec,
+        CacheSetup,
+    )
+    from tokenspeed.runtime.layers.attention.kv_cache.recipes.spec import (
+        build_paged_cache_group_specs,
+    )
+
+    prepared = None
+    local_error = None
+    try:
+        if draft_model_config is not None or draft_attn_config is not None:
+            raise ValueError(
+                "Kimi-K3 pipeline cache does not support speculative draft layers"
+            )
+        text_config = getattr(
+            model_config.hf_config, "text_config", model_config.hf_config
+        )
+        global_group_ids = kimi_k3_layer_group_ids(text_config)
+        global_layer_types = tuple(
+            FULL_ATTENTION if group_id == FULL_ATTENTION else LINEAR_ATTENTION
+            for group_id in global_group_ids
+        )
+        global_layout = solve_kimi_k3_cache_layout(
+            text_config,
+            tp_size=attn_config.attn_tp_size,
+            mla_cache_dtype=attn_config.kv_cache_dtype,
+            mla_quant_method=attn_config.kv_cache_quant_method or None,
+        )
+        logical_fields = build_kimi_k3_logical_cache_fields(
+            text_config,
+            tp_size=attn_config.attn_tp_size,
+            mla_cache_dtype=attn_config.kv_cache_dtype,
+            mla_quant_method=attn_config.kv_cache_quant_method or None,
+        )
+        pipeline_plan = build_balanced_kimi_k3_pipeline_plan(
+            num_layers=text_config.num_hidden_layers,
+            hidden_size=text_config.hidden_size,
+            attn_res_block_size=text_config.attn_res_block_size,
+            stage_count=mapping.pipeline.stage_count,
+            activation_dtype=str(attn_config.dtype).removeprefix("torch."),
+        )
+        placement = CacheStagePlacement.from_pipeline_plan(
+            rank=mapping.rank,
+            world_size=mapping.world_size,
+            plan=pipeline_plan,
+        )
+        max_step_tokens = max(
+            server_args.chunked_prefill_size,
+            attn_config.max_bs * decode_input_tokens,
+        )
+        fixed_workspace_bytes = kimi_k3_pipeline_workspace_bytes(
+            pipeline_plan=pipeline_plan,
+            stage_id=placement.stage_id,
+            num_layers=text_config.num_hidden_layers,
+            attn_res_block_size=text_config.attn_res_block_size,
+            hidden_size=text_config.hidden_size,
+            max_step_tokens=max_step_tokens,
+            activation_element_size=attn_config.dtype.itemsize,
+        )
+        stage_layout = solve_stage_cache_layout(
+            logical_fields,
+            placement,
+            logical_block_tokens=_KIMI_K3_LOGICAL_BLOCK_TOKENS,
+            cache_blocks_per_lcm_block=dict(global_layout.group_packing),
+            alignment=256,
+            # The global K3 solve retains the 25% guard. After stage
+            # projection, local group ratios intentionally differ, so the
+            # generic per-group padding ratio no longer models wasted bytes.
+            max_padding_fraction=float("inf"),
+            compact_group_planes=True,
+        )
+        logical_layer_ids = tuple(
+            binding.logical_layer_id for binding in stage_layout.bindings
+        )
+        layer_types = tuple(
+            global_layer_types[layer_id] for layer_id in logical_layer_ids
+        )
+        group_ids = tuple(global_group_ids[layer_id] for layer_id in logical_layer_ids)
+        _, _, conv_dtype, recurrent_dtype, _ = text_config.mamba2_cache_params
+        state_dtypes = {
+            f"layer.{logical_layer_id}.conv_state": conv_dtype
+            for logical_layer_id, layer_type in zip(logical_layer_ids, layer_types)
+            if layer_type == LINEAR_ATTENTION
+        } | {
+            f"layer.{logical_layer_id}.recurrent_state": recurrent_dtype
+            for logical_layer_id, layer_type in zip(logical_layer_ids, layer_types)
+            if layer_type == LINEAR_ATTENTION
+        }
+        logical_field_dtypes = {
+            logical_field.field.field_id: state_dtypes.get(
+                logical_field.field.field_id,
+                attn_config.kv_cache_dtype,
+            )
+            for logical_field in logical_fields
+        }
+        reference_plan = stage_layout.layout.with_num_lcm_blocks(1)
+        usable_cache_bytes = cache_budget_bytes - fixed_workspace_bytes
+        max_num_lcm_blocks = (
+            usable_cache_bytes // stage_layout.layout.lcm_block_bytes - 1
+        )
+        if max_num_lcm_blocks < 1:
+            raise ValueError(
+                "Kimi-K3 cache budget must hold a null parent and one usable "
+                "LCM parent"
+            )
+        token_limit = configured_token_limit(server_args)
+        sizing = {
+            "max_scheduled_tokens": server_args.chunked_prefill_size,
+            "max_live_requests": attn_config.max_bs,
+            "decode_input_tokens": decode_input_tokens,
+            "overlap_schedule_depth": overlap_schedule_depth,
+        }
+        num_lcm_blocks = max_num_lcm_blocks
+        if token_limit is not None:
+            num_lcm_blocks = min(
+                num_lcm_blocks,
+                kimi_k3_lcm_blocks_needed(
+                    reference_plan,
+                    token_capacity=token_limit,
+                    **sizing,
+                ),
+            )
+        capacity_upper_bound = token_limit
+        if capacity_upper_bound is None:
+            capacity_upper_bound = (
+                max_num_lcm_blocks
+                * max(
+                    group.cache_blocks_per_lcm_block for group in reference_plan.groups
+                )
+                * reference_plan.logical_block_tokens
+            )
+        local_admitted_tokens = kimi_k3_token_capacity_for_cache_pool(
+            reference_plan,
+            num_lcm_blocks=num_lcm_blocks,
+            upper_bound_tokens=capacity_upper_bound,
+            **sizing,
+        )
+        cache_abi_digest = pipeline_cache_abi_digest(
+            logical_fields,
+            placement,
+            global_layout,
+            field_dtypes=logical_field_dtypes,
+        )
+        prepared = {
+            "layout": stage_layout.layout,
+            "logical_layer_ids": logical_layer_ids,
+            "layer_types": layer_types,
+            "group_ids": group_ids,
+            "state_dtypes": state_dtypes,
+            "reference_plan": reference_plan,
+            "max_num_lcm_blocks": max_num_lcm_blocks,
+            "local_admitted_tokens": local_admitted_tokens,
+            "sizing": sizing,
+            "pipeline_plan_digest": pipeline_plan.digest,
+            "cache_abi_digest": cache_abi_digest,
+            "cache_manifest_digest": stage_layout.manifest.stage_digest,
+            "fixed_workspace_bytes": fixed_workspace_bytes,
+        }
+    except Exception as exc:  # noqa: BLE001 - every rank must join consensus
+        local_error = exc
+
+    raise_on_rank_error(local_error, mapping, "Kimi-K3 pipeline cache preflight")
+    assert prepared is not None
+    _validate_pipeline_cache_digest_consensus(
+        prepared["cache_abi_digest"],
+        prepared["cache_manifest_digest"],
+        mapping,
+    )
+    admitted_tokens = _global_min_token_capacity(
+        prepared["local_admitted_tokens"], mapping
+    )
+
+    result = None
+    global_runtime_digest = None
+    stage_runtime_digest = None
+    local_error = None
+    try:
+        num_lcm_blocks = kimi_k3_lcm_blocks_needed(
+            prepared["reference_plan"],
+            token_capacity=admitted_tokens,
+            **prepared["sizing"],
+        )
+        if num_lcm_blocks > prepared["max_num_lcm_blocks"]:
+            raise ValueError(
+                "global Kimi-K3 token capacity exceeds this stage's cache budget"
+            )
+        merged_plan = prepared["layout"].with_num_lcm_blocks(num_lcm_blocks)
+        result = CacheSetup(
+            spec=CachePoolSpec(
+                family="kimi_k3",
+                memory_plan=merged_plan,
+                layer_types=prepared["layer_types"],
+                layer_group_ids=prepared["group_ids"],
+                paged_cache_group_specs=build_paged_cache_group_specs(
+                    layer_types=prepared["layer_types"],
+                    group_ids=prepared["group_ids"],
+                    sliding_window_tokens=None,
+                    page_size=merged_plan.logical_block_tokens,
+                    pd_disaggregation_enabled=attn_config.pd_disaggregation_enabled,
+                ),
+                state_field_dtypes=prepared["state_dtypes"],
+                token_capacity=admitted_tokens,
+                logical_layer_ids=prepared["logical_layer_ids"],
+                pipeline_plan_digest=prepared["pipeline_plan_digest"],
+                cache_abi_digest=prepared["cache_abi_digest"],
+                cache_manifest_digest=prepared["cache_manifest_digest"],
+                runtime_parameters=(
+                    (
+                        "activation_dtype",
+                        str(attn_config.dtype).removeprefix("torch."),
+                    ),
+                    ("attn_tp_size", attn_config.attn_tp_size),
+                    (
+                        "kv_cache_dtype",
+                        str(attn_config.kv_cache_dtype).removeprefix("torch."),
+                    ),
+                    (
+                        "kv_cache_quant_method",
+                        attn_config.kv_cache_quant_method or "none",
+                    ),
+                    (
+                        "pd_disaggregation_enabled",
+                        attn_config.pd_disaggregation_enabled,
+                    ),
+                    *tuple(sorted(prepared["sizing"].items())),
+                ),
+            ),
+            num_draft_layers=0,
+            cache_budget_bytes=cache_budget_bytes,
+            fixed_workspace_bytes=prepared["fixed_workspace_bytes"],
+        )
+        global_runtime_digest = result.spec.global_runtime_abi_digest
+        stage_runtime_digest = result.spec.runtime_abi_digest
+    except Exception as exc:  # noqa: BLE001 - every rank must join consensus
+        local_error = exc
+    raise_on_rank_error(local_error, mapping, "Kimi-K3 pipeline cache finalization")
+    assert result is not None
+    assert global_runtime_digest is not None
+    assert stage_runtime_digest is not None
+    _validate_pipeline_cache_digest_consensus(
+        global_runtime_digest,
+        stage_runtime_digest,
+        mapping,
+    )
+    return result
+
+
 def prepare_kimi_k3_cache(
     *,
     server_args,
@@ -401,22 +798,31 @@ def prepare_kimi_k3_cache(
         CacheSetup,
     )
 
-    text_config = getattr(model_config.hf_config, "text_config", model_config.hf_config)
-    group_ids = kimi_k3_layer_group_ids(text_config)
-    layer_types = tuple(
-        FULL_ATTENTION if group_id == FULL_ATTENTION else LINEAR_ATTENTION
-        for group_id in group_ids
+    mapping = getattr(server_args, "mapping", None)
+    stage_count = (
+        mapping.pipeline.stage_count
+        if mapping is not None and hasattr(mapping, "pipeline")
+        else 1
     )
-    _, _, conv_dtype, recurrent_dtype, _ = text_config.mamba2_cache_params
-    state_dtypes = {
-        f"layer.{layer_id}.conv_state": conv_dtype
-        for layer_id, layer_type in enumerate(layer_types)
-        if layer_type == LINEAR_ATTENTION
-    } | {
-        f"layer.{layer_id}.recurrent_state": recurrent_dtype
-        for layer_id, layer_type in enumerate(layer_types)
-        if layer_type == LINEAR_ATTENTION
-    }
+    if stage_count > 1:
+        return _prepare_kimi_k3_pipeline_cache(
+            server_args=server_args,
+            model_config=model_config,
+            attn_config=attn_config,
+            draft_model_config=draft_model_config,
+            draft_attn_config=draft_attn_config,
+            cache_budget_bytes=cache_budget_bytes,
+            decode_input_tokens=decode_input_tokens,
+            overlap_schedule_depth=overlap_schedule_depth,
+            mapping=mapping,
+        )
+
+    text_config = getattr(model_config.hf_config, "text_config", model_config.hf_config)
+    global_group_ids = kimi_k3_layer_group_ids(text_config)
+    global_layer_types = tuple(
+        FULL_ATTENTION if group_id == FULL_ATTENTION else LINEAR_ATTENTION
+        for group_id in global_group_ids
+    )
     # One big model, one solve, one spec: draft MLA layers continue the
     # target's layer numbering and join the same solve, sharing the
     # full-attention group's packing and page-id space.
@@ -434,16 +840,32 @@ def prepare_kimi_k3_cache(
             ),
             element_size=draft_attn_config.kv_cache_dtype.itemsize,
         )
-    merged_layout = solve_kimi_k3_cache_layout(
+    global_layout = solve_kimi_k3_cache_layout(
         text_config,
         tp_size=attn_config.attn_tp_size,
         mla_cache_dtype=attn_config.kv_cache_dtype,
         mla_quant_method=attn_config.kv_cache_quant_method or None,
         draft_fields=draft_fields,
     )
+    merged_layout = global_layout
+    layer_types = global_layer_types
+    group_ids = global_group_ids
+
+    _, _, conv_dtype, recurrent_dtype, _ = text_config.mamba2_cache_params
+    logical_ids_for_fields = tuple(range(len(layer_types)))
+    state_dtypes = {
+        f"layer.{logical_layer_id}.conv_state": conv_dtype
+        for logical_layer_id, layer_type in zip(logical_ids_for_fields, layer_types)
+        if layer_type == LINEAR_ATTENTION
+    } | {
+        f"layer.{logical_layer_id}.recurrent_state": recurrent_dtype
+        for logical_layer_id, layer_type in zip(logical_ids_for_fields, layer_types)
+        if layer_type == LINEAR_ATTENTION
+    }
     reference_plan = merged_layout.with_num_lcm_blocks(1)
 
-    num_lcm_blocks = cache_budget_bytes // merged_layout.lcm_block_bytes - 1
+    max_num_lcm_blocks = cache_budget_bytes // merged_layout.lcm_block_bytes - 1
+    num_lcm_blocks = max_num_lcm_blocks
     if num_lcm_blocks < 1:
         raise ValueError(
             "Kimi-K3 cache budget must hold a null parent and one usable LCM parent"
@@ -465,10 +887,11 @@ def prepare_kimi_k3_cache(
                 **sizing,
             ),
         )
+    capacity_upper_bound = token_limit
     admitted_tokens = kimi_k3_token_capacity_for_cache_pool(
         reference_plan,
         num_lcm_blocks=num_lcm_blocks,
-        upper_bound_tokens=token_limit,
+        upper_bound_tokens=capacity_upper_bound,
         **sizing,
     )
     from tokenspeed.runtime.layers.attention.kv_cache.recipes.spec import (

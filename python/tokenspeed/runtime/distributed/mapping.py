@@ -91,6 +91,101 @@ class MappingBase:
         return _make_parallelism_group(self.rank, self.world_size, stride=1)
 
 
+class PipelineMapping(MappingBase):
+    """Pipeline topology with contiguous stages in the global rank space.
+
+    Pipeline parallelism is the outermost rank dimension. Each stage owns one
+    contiguous block of ``stage_world_size`` ranks, while a pipeline group joins
+    ranks at the same stage-local position across all stages.
+
+    Args:
+        rank: Global rank, or ``None`` for deferred rank injection.
+        world_size: Total number of ranks across all pipeline stages.
+        stage_count: Number of equal-sized pipeline stages.
+    """
+
+    def __init__(
+        self,
+        rank: int | None = None,
+        world_size: int = 1,
+        stage_count: int = 1,
+    ):
+        self._validate_positive_int("world_size", world_size)
+        self._validate_positive_int("stage_count", stage_count)
+        if world_size % stage_count != 0:
+            raise ValueError(
+                f"world_size ({world_size}) must be divisible by "
+                f"stage_count ({stage_count})"
+            )
+
+        self.stage_count = stage_count
+        self.stage_world_size = world_size // stage_count
+        if rank is not None:
+            self._validate_rank(rank, world_size)
+        super().__init__(rank=rank, world_size=world_size)
+
+    @staticmethod
+    def _validate_positive_int(name: str, value: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+        if value <= 0:
+            raise ValueError(f"{name} must be positive, got {value}")
+
+    @staticmethod
+    def _validate_rank(rank: int, world_size: int) -> None:
+        if isinstance(rank, bool) or not isinstance(rank, int):
+            raise TypeError(f"rank must be an int, got {type(rank).__name__}")
+        if rank < 0 or rank >= world_size:
+            raise ValueError(f"rank must be in [0, {world_size}), got {rank}")
+
+    @MappingBase.rank.setter
+    def rank(self, rank: int):
+        assert self._rank is None, "rank is already initialized"
+        self._validate_rank(rank, self.world_size)
+        self._rank = rank
+        self._on_rank_initialized(rank)
+
+    @cached_property
+    def stage_index(self) -> int:
+        return self.rank // self.stage_world_size
+
+    @cached_property
+    def stage_local_rank(self) -> int:
+        return self.rank % self.stage_world_size
+
+    @cached_property
+    def stage_group(self) -> Group:
+        start = self.stage_index * self.stage_world_size
+        return tuple(range(start, start + self.stage_world_size))
+
+    @cached_property
+    def pipeline_group(self) -> Group:
+        return tuple(
+            self.stage_local_rank + stage_index * self.stage_world_size
+            for stage_index in range(self.stage_count)
+        )
+
+    @cached_property
+    def prev_rank(self) -> int | None:
+        if self.is_first_stage:
+            return None
+        return self.rank - self.stage_world_size
+
+    @cached_property
+    def next_rank(self) -> int | None:
+        if self.is_last_stage:
+            return None
+        return self.rank + self.stage_world_size
+
+    @cached_property
+    def is_first_stage(self) -> bool:
+        return self.stage_index == 0
+
+    @cached_property
+    def is_last_stage(self) -> bool:
+        return self.stage_index == self.stage_count - 1
+
+
 class DenseLayerMapping(MappingBase):
 
     def __init__(
@@ -329,28 +424,36 @@ class Mapping(MappingBase):
         moe_dp_size: int | None = None,
         vision_tp_size: int | None = None,
         vision_dp_size: int | None = None,
+        pipeline_parallel_size: int = 1,
         nprocs_per_node: int | None = None,
         nnodes: int | None = None,
         base_gpu_id: int = 0,
         gpu_id_step: int = 1,
     ):
-        super().__init__(rank, world_size)
-        self.attn = AttentionLayerMapping(
+        pipeline = PipelineMapping(
             rank=rank,
             world_size=world_size,
+            stage_count=pipeline_parallel_size,
+        )
+        super().__init__(rank, world_size)
+        self.pipeline = pipeline
+        stage_world_size = self.pipeline.stage_world_size
+        self.attn = AttentionLayerMapping(
+            rank=rank,
+            world_size=stage_world_size,
             tp_size=attn_tp_size,
             cp_size=attn_cp_size,
             dp_size=attn_dp_size,
         )
         self.dense = DenseLayerMapping(
             rank=rank,
-            world_size=world_size,
+            world_size=stage_world_size,
             tp_size=dense_tp_size,
             dp_size=dense_dp_size,
         )
         self.moe = MoeLayerMapping(
             rank=rank,
-            world_size=world_size,
+            world_size=stage_world_size,
             tp_size=moe_tp_size,
             ep_size=moe_ep_size,
             dp_size=moe_dp_size,
@@ -372,10 +475,18 @@ class Mapping(MappingBase):
         self.gpu_id_step = gpu_id_step
 
     def _on_rank_initialized(self, rank: int):
+        self.pipeline.rank = rank
         self.attn.rank = rank
         self.dense.rank = rank
         self.moe.rank = rank
         self.vision.rank = rank
+
+    @MappingBase.rank.setter
+    def rank(self, rank: int):
+        assert self._rank is None, "rank is already initialized"
+        self.pipeline._validate_rank(rank, self.world_size)
+        self._rank = rank
+        self._on_rank_initialized(rank)
 
     @cached_property
     def has_attn_tp(self) -> bool:
@@ -411,4 +522,11 @@ class Mapping(MappingBase):
             f"  Dense   : tp={self.dense.tp_size}  dp={self.dense.dp_size}",
             f"  MoE     : tp={self.moe.tp_size}  ep={self.moe.ep_size}  dp={self.moe.dp_size}",
         ]
+        if self.pipeline.stage_count > 1:
+            lines.insert(
+                2,
+                "  Pipeline: "
+                f"stages={self.pipeline.stage_count}  "
+                f"stage_world_size={self.pipeline.stage_world_size}",
+            )
         return "\n".join(lines)

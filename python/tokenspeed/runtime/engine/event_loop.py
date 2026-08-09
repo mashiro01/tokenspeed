@@ -195,6 +195,11 @@ class EventLoop:
         self.port_args = port_args
         self.gpu_id = gpu_id
         self.global_rank = global_rank
+        self.is_control_root = (
+            global_rank == 0
+            if server_args.mapping.pipeline.stage_count > 1
+            else attn_tp_rank == 0
+        )
         self.shutdown_event = shutdown_event or threading.Event()
 
         self.model_config = self._load_model_config(server_args.model)
@@ -361,7 +366,7 @@ class EventLoop:
 
         self._kv_events_enabled = (
             EventPublisherFactory.is_enabled(server_args.kv_events_config)
-            and attn_tp_rank == 0
+            and self.is_control_root
         )
 
         # Adjunct enabled only when pool opts in AND prefix-caching switch is on.
@@ -462,7 +467,7 @@ class EventLoop:
             self.max_req_input_len,
         )
         token_to_kv_pool.bind_paged_cache_scheduler(self.scheduler)
-        if attn_tp_rank == 0:
+        if self.is_control_root:
             self.kv_event_publisher = EventPublisherFactory.create(
                 server_args.kv_events_config,
                 attn_dp_rank=dp_rank,
@@ -506,7 +511,7 @@ class EventLoop:
             },
             enabled=(
                 server_args.enable_metrics
-                and attn_tp_rank == 0
+                and self.is_control_root
                 and "prometheus" in (server_args.metrics_reporters or [])
             ),
         )
@@ -541,6 +546,11 @@ class EventLoop:
                 self.model_config.context_len + self.server_args.spec_context_pad
             ),
             metrics=self.metrics,
+            is_output_owner=(
+                self.is_control_root
+                if mapping.pipeline.stage_count > 1
+                else attn_tp_rank == 0
+            ),
         )
         if server_args.disaggregation_mode != "null":
             kv_args = get_kv_args(
@@ -1037,7 +1047,7 @@ class EventLoop:
 
     def _init_interprocess_comm(self):
         context = zmq.Context(2)
-        if self.attn_tp_rank == 0:
+        if self.is_control_root:
             if self.server_args.zmq_msgpack:
                 # SMG drives the scheduler directly: it binds the sockets and
                 # this engine connects in over the msgpack wire (see zmq_msgpack).
@@ -1562,7 +1572,15 @@ class EventLoop:
     # ------------------------------------------------------------------
 
     def _shutdown_complete(self) -> bool:
-        return self.shutdown_event.is_set()
+        if not self.shutdown_event.is_set():
+            return False
+        if self.server_args.mapping.pipeline.stage_count > 1:
+            control = self.model_executor.pipeline_control
+            raise control.abort_runtime(
+                "shutdown",
+                RuntimeError("pipeline rank received a local SIGTERM"),
+            )
+        return True
 
     def event_loop(self):
         """Non-overlapping scheduler loop."""
@@ -1848,6 +1866,9 @@ class EventLoop:
         send_engine_dead = getattr(self.send_to_tokenizer, "send_engine_dead", None)
         if callable(send_engine_dead):
             send_engine_dead()
+        close_executor = getattr(self.model_executor, "close", None)
+        if callable(close_executor):
+            close_executor()
         close_transfer = getattr(self.kv_transfer, "close", None)
         if callable(close_transfer):
             close_transfer()
@@ -1873,6 +1894,7 @@ def run_event_loop(
     configure_logger(server_args, prefix=prefix)
 
     event_loop = None
+    fatal_pipeline_error = None
     shutdown_event = threading.Event()
     previous_sigterm_handler = None
     try:
@@ -1928,22 +1950,43 @@ def run_event_loop(
         else:
             event_loop.event_loop()
 
-    except Exception:
+    except Exception as exc:
         traceback = get_exception_traceback()
         logger.error("Scheduler hit an exception: %s", traceback)
-        parent_process.send_signal(signal.SIGUSR1)
+        if mapping.pipeline.stage_count > 1:
+            fatal_pipeline_error = exc
+            control = getattr(
+                getattr(event_loop, "model_executor", None),
+                "pipeline_control",
+                None,
+            )
+            if control is not None:
+                try:
+                    control.abort_runtime("event-loop", exc)
+                except Exception:
+                    logger.error(
+                        "Pipeline fault report failed: %s",
+                        get_exception_traceback(),
+                    )
+        else:
+            parent_process.send_signal(signal.SIGUSR1)
     finally:
         if event_loop is not None:
             try:
                 event_loop.close()
-            except Exception:
+            except Exception as exc:
                 logger.error(
                     "Scheduler transport shutdown failed: %s",
                     get_exception_traceback(),
                 )
-                parent_process.send_signal(signal.SIGUSR1)
+                if mapping.pipeline.stage_count > 1:
+                    fatal_pipeline_error = fatal_pipeline_error or exc
+                else:
+                    parent_process.send_signal(signal.SIGUSR1)
         if (
             previous_sigterm_handler is not None
             and threading.current_thread() is threading.main_thread()
         ):
             signal.signal(signal.SIGTERM, previous_sigterm_handler)
+    if fatal_pipeline_error is not None:
+        raise fatal_pipeline_error
