@@ -323,6 +323,7 @@ class OutputProcesser:
         physical_context_len: int | None = None,
         *,
         metrics: EngineMetrics,
+        is_output_owner: bool | None = None,
     ) -> None:
         # BatchTokenIDOut is pushed directly to
         # ``send_to_tokenizer`` (AsyncLLM's input socket). The
@@ -333,6 +334,9 @@ class OutputProcesser:
         # NOT the global rank 0 — otherwise DP replicas > 0 would log nothing and
         # their requests would be missing from the logs entirely.
         self.attn_tp_rank = attn_tp_rank
+        self.is_output_owner = (
+            attn_tp_rank == 0 if is_output_owner is None else is_output_owner
+        )
         self.spec_algorithm = spec_algorithm
         self.spec_num_tokens = spec_num_tokens
         # Tripwire bound: per-request buffers (page tables, draft tables) are
@@ -390,7 +394,7 @@ class OutputProcesser:
     def log_accept_length(self, rid, request_state: RequestState):
         # When --enable-log-request-stats is on, the richer RequestStats line (which
         # already carries acc_len) replaces this one — see _log_request_stats.
-        if self.attn_tp_rank == 0 and not self.enable_log_request_stats:
+        if self.is_output_owner and not self.enable_log_request_stats:
             logger.info(
                 "Req: %s Finish! Accept_num_tokens_avg: %s",
                 rid,
@@ -403,7 +407,7 @@ class OutputProcesser:
         # Single guard for the whole stats path: no tracker (flag off) or non-zero
         # rank => nothing to do. Keeps the forward-loop call sites trivial and the
         # derivation in from_state total (it always sees a tracker).
-        if rs.stats is NOOP_STATS or self.attn_tp_rank != 0:
+        if rs.stats is NOOP_STATS or not self.is_output_owner:
             return
         rs.stats.mark_finish(finish_time)
         stats = RequestStats.from_state(rs, self.spec_algorithm, self.spec_num_tokens)
@@ -708,7 +712,7 @@ class OutputProcesser:
                 if model_output_logprobs is not None:
                     model_output_logprobs = model_output_logprobs[:1]
                 self.metrics.record_nan_abort()
-                if self.attn_tp_rank == 0:
+                if self.is_output_owner:
                     logger.warning(
                         "Req %s terminated: NaN detected in logits (or an"
                         " out-of-vocab sample escaped the sampler);"

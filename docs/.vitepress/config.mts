@@ -56,7 +56,13 @@ export default defineConfig({
       },
       {
         text: "Serving",
-        items: [{ text: "Parallelism", link: "/serving/parallelism" }]
+        items: [
+          { text: "Parallelism", link: "/serving/parallelism" },
+          {
+            text: "Native Pipeline Parallelism",
+            link: "/serving/native-pipeline-parallel"
+          }
+        ]
       }
     ],
     search: {

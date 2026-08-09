@@ -73,6 +73,7 @@ from tokenspeed.runtime.execution.forward_batch_info import ForwardMode
 from tokenspeed.runtime.grammar.grammar_manager import GrammarManager
 from tokenspeed.runtime.multimodal.shm_transport import prepare_shm_features
 from tokenspeed.runtime.pd.base.bootstrap import BootstrapInfo
+from tokenspeed.runtime.pipeline.capabilities import require_single_stage_control
 from tokenspeed.runtime.utils import broadcast_pyobj
 from tokenspeed.runtime.utils.dispatch import TypeBasedDispatcher
 from tokenspeed.runtime.utils.env import envs
@@ -84,9 +85,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _profile_rank_tag(attn_mapping) -> str:
+def _profile_rank_tag(attn_mapping, pipeline_mapping=None) -> str:
     """File-name tag identifying this scheduler process's profile outputs."""
     parts = []
+    if pipeline_mapping is not None and pipeline_mapping.stage_count > 1:
+        parts.append(f"PP{pipeline_mapping.stage_index}")
     if attn_mapping.has_dp:
         parts.append(f"DP{attn_mapping.dp_rank}")
     if attn_mapping.has_cp:
@@ -128,6 +131,7 @@ class RequestHandler:
         self.model_runner = model_runner
 
         mapping = server_args.mapping
+        self.pipeline_stage_count = mapping.pipeline.stage_count
         self.attn_tp_size = mapping.attn.tp_size
         self.attn_tp_rank = mapping.attn.tp_rank
         self.attn_global_rank = mapping.attn.rank
@@ -135,7 +139,19 @@ class RequestHandler:
             "gloo", mapping.attn.tp_group
         )
         self.attn_tp_src_rank = mapping.attn.tp_group[0]
-        self.profile_rank_tag = _profile_rank_tag(mapping.attn)
+        if mapping.pipeline.stage_count > 1:
+            self.request_rank = mapping.rank
+            self.request_world_size = mapping.world_size
+            self.request_cpu_group = pg_manager.get_process_group(
+                "gloo", mapping.world_group
+            )
+            self.request_src_rank = mapping.world_group[0]
+        else:
+            self.request_rank = self.attn_tp_rank
+            self.request_world_size = self.attn_tp_size
+            self.request_cpu_group = self.attn_tp_cpu_group
+            self.request_src_rank = self.attn_tp_src_rank
+        self.profile_rank_tag = _profile_rank_tag(mapping.attn, mapping.pipeline)
 
         self.hf_eos_token_id = hf_eos_token_id
         self.max_req_len = max_req_len
@@ -164,8 +180,8 @@ class RequestHandler:
         self.init_profiler()
 
     def recv_reqs(self) -> list:
-        """Receive results at attn_tp_rank = 0 and broadcast it to all other TP ranks."""
-        if self.attn_tp_rank == 0:
+        """Receive on the control root and mirror requests to every executor."""
+        if self.request_rank == 0:
             recv_reqs = []
 
             while True:
@@ -177,16 +193,16 @@ class RequestHandler:
         else:
             recv_reqs = None
 
-        if self.attn_tp_size != 1:
+        if self.request_world_size != 1:
             recv_reqs = broadcast_pyobj(
                 recv_reqs,
-                self.attn_global_rank,
-                self.attn_tp_cpu_group,
-                src=self.attn_tp_src_rank,
+                self.server_args.mapping.rank,
+                self.request_cpu_group,
+                src=self.request_src_rank,
             )
 
         if recv_reqs:
-            prepare_shm_features(recv_reqs, self.attn_tp_cpu_group)
+            prepare_shm_features(recv_reqs, self.request_cpu_group)
 
         return recv_reqs
 
@@ -203,7 +219,12 @@ class RequestHandler:
                 req_states.append(req_state)
                 bootstrap_infos.append(bootstrap_info)
             elif isinstance(recv_req, ProfileReq):
-                output = self.control_request_dispatcher(recv_req)
+                error = self._pipeline_control_error("runtime profiling")
+                output = (
+                    ProfileReqOutput(success=False, message=error)
+                    if error is not None
+                    else self.control_request_dispatcher(recv_req)
+                )
                 if output is not None:
                     self.send_func.send_pyobj(output)
             elif isinstance(recv_req, AbortReq):
@@ -241,25 +262,50 @@ class RequestHandler:
                     self.send_func.send_pyobj(GetLoadReqOutput())
             elif isinstance(recv_req, InitWeightsUpdateGroupReqInput):
                 # RL weight sync: join the trainer's NCCL group on this worker.
-                ok, msg = self.model_runner.init_weights_update_group(recv_req)
+                msg = self._pipeline_control_error(
+                    "initializing an online weight-update group"
+                )
+                ok = False
+                if msg is None:
+                    ok, msg = self.model_runner.init_weights_update_group(recv_req)
                 self.send_func.send_pyobj(
                     InitWeightsUpdateGroupReqOutput(success=ok, message=msg)
                 )
             elif isinstance(recv_req, UpdateWeightsFromDistributedReqInput):
                 # RL weight sync: receive broadcast weights + load into the model.
-                ok, msg = self.model_runner.update_weights_from_distributed(recv_req)
+                msg = self._pipeline_control_error("distributed online weight update")
+                ok = False
+                if msg is None:
+                    ok, msg = self.model_runner.update_weights_from_distributed(
+                        recv_req
+                    )
                 self.send_func.send_pyobj(
                     UpdateWeightsFromDistributedReqOutput(success=ok, message=msg)
                 )
             elif isinstance(recv_req, DestroyWeightsUpdateGroupReqInput):
                 # RL weight sync: tear down the trainer's NCCL group on this worker.
-                ok, msg = self.model_runner.destroy_weights_update_group(recv_req)
+                msg = self._pipeline_control_error(
+                    "destroying an online weight-update group"
+                )
+                ok = False
+                if msg is None:
+                    ok, msg = self.model_runner.destroy_weights_update_group(recv_req)
                 self.send_func.send_pyobj(
                     DestroyWeightsUpdateGroupReqOutput(success=ok, message=msg)
                 )
             else:
                 raise NotImplementedError(f"Unsupported request type: {type(recv_req)}")
         return new_req_specs, req_states, bootstrap_infos, abort_rids
+
+    def _pipeline_control_error(self, operation: str) -> str | None:
+        try:
+            require_single_stage_control(
+                stage_count=self.pipeline_stage_count,
+                operation=operation,
+            )
+        except RuntimeError as exc:
+            return str(exc)
+        return None
 
     def handle_generate_request(
         self,

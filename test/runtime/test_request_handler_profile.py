@@ -193,6 +193,28 @@ class TestRequestHandlerProtonProfile(unittest.TestCase):
             ),
             "DP1-CP0-TP2",
         )
+        self.assertEqual(
+            request_handler_mod._profile_rank_tag(
+                _attn_mapping(tp_rank=2),
+                SimpleNamespace(stage_count=8, stage_index=3),
+            ),
+            "PP3-TP2",
+        )
+
+    def test_pipeline_process_requests_rejects_profile_before_state_changes(self):
+        handler = RequestHandler.__new__(RequestHandler)
+        handler.pipeline_stage_count = 8
+        handler.control_request_dispatcher = mock.Mock()
+        outputs = []
+        handler.send_func = SimpleNamespace(send_pyobj=outputs.append)
+
+        result = handler.process_requests([_start_req(self.output_dir)])
+
+        self.assertEqual(result, ([], [], [], []))
+        self.assertEqual(len(outputs), 1)
+        self.assertFalse(outputs[0].success)
+        self.assertIn("pipeline parallelism", outputs[0].message)
+        handler.control_request_dispatcher.assert_not_called()
 
     def test_proton_outputs_do_not_collide_across_dp_ranks(self):
         # Two DP peers share attn_tp_rank=0 but must write distinct files.

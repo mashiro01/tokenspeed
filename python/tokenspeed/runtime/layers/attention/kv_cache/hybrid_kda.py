@@ -43,12 +43,18 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
         memory_plan: CacheMemoryPlan,
         layer_group_ids: tuple[str, ...],
         layer_types: tuple[str, ...],
+        logical_layer_ids: tuple[int, ...] | None = None,
         pd_disaggregation_enabled: bool = False,
         state_field_dtypes: Mapping[str, torch.dtype] | None = None,
         **kwargs,
     ):
         self._layer_types = tuple(layer_types)
         group_ids = tuple(layer_group_ids)
+        self._logical_layer_ids = (
+            tuple(logical_layer_ids)
+            if logical_layer_ids is not None
+            else tuple(range(len(group_ids)))
+        )
         self._group_ids_by_layer = dict(enumerate(group_ids))
         self._pd_disaggregation_enabled = pd_disaggregation_enabled
         self._state_field_dtypes = dict(state_field_dtypes or {})
@@ -60,6 +66,13 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
             raise ValueError("cache layer types must cover every model layer")
         if len(group_ids) != layer_num:
             raise ValueError("cache group ids must cover every model layer")
+        if len(self._logical_layer_ids) != layer_num:
+            raise ValueError("logical cache layer ids must cover every model layer")
+        if len(set(self._logical_layer_ids)) != layer_num or any(
+            isinstance(layer_id, bool) or not isinstance(layer_id, int) or layer_id < 0
+            for layer_id in self._logical_layer_ids
+        ):
+            raise ValueError("logical cache layer ids must be unique non-negative ints")
 
         super().__init__(
             memory_plan=memory_plan,
@@ -90,9 +103,10 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
             )
         self.kv_buffer = [None] * self.layer_num
         for layer_id, label in enumerate(self._layer_types):
+            logical_layer_id = self._logical_layer_ids[layer_id]
             if label in STATE_LAYER_TYPES:
-                conv_id = f"layer.{layer_id}.conv_state"
-                recurrent_id = f"layer.{layer_id}.recurrent_state"
+                conv_id = f"layer.{logical_layer_id}.conv_state"
+                recurrent_id = f"layer.{logical_layer_id}.recurrent_state"
                 try:
                     conv_dtype = self._state_field_dtypes[conv_id]
                     recurrent_dtype = self._state_field_dtypes[recurrent_id]
@@ -110,7 +124,7 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
                 )
                 self._state_buffers_by_layer[layer_id] = (conv, recurrent)
                 continue
-            latent = self.field(f"layer.{layer_id}.latent_kv", self.store_dtype)
+            latent = self.field(f"layer.{logical_layer_id}.latent_kv", self.store_dtype)
             page_elements = int(np.prod(latent.shape[1:]))
             if latent.stride(0) != page_elements:
                 raise ValueError(
@@ -146,7 +160,8 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
             buffer = self.kv_buffer[layer_id]
             if buffer is None:
                 raise ValueError(f"layer {layer_id} has no MLA latent cache")
-            return self.field(f"layer.{layer_id}.latent_kv", self.store_dtype)
+            logical_layer_id = self._logical_layer_ids[layer_id]
+            return self.field(f"layer.{logical_layer_id}.latent_kv", self.store_dtype)
         try:
             conv, recurrent = self._state_buffers_by_layer[layer_id]
         except KeyError as exc:

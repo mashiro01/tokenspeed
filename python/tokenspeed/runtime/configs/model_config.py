@@ -483,6 +483,16 @@ class ModelConfig:
             server_args.gpu_memory_utilization = 0.9
         self.mm_attention_backend = getattr(server_args, "mm_attention_backend", None)
         self.dtype = _get_and_verify_dtype(self.hf_text_config, dtype)
+        if self.mapping.pipeline.stage_count > 1:
+            from tokenspeed.runtime.pipeline.capabilities import (
+                validate_pipeline_capability,
+            )
+
+            validate_pipeline_capability(
+                architecture=resolve_architecture(self.hf_config),
+                activation_dtype=str(self.dtype).removeprefix("torch."),
+                stage_count=self.mapping.pipeline.stage_count,
+            )
 
         # Derive context length
         derived_context_len = get_context_length(self.hf_text_config)

@@ -29,6 +29,10 @@ import torch
 from tokenspeed_kernel.platform import current_platform
 
 from tokenspeed.runtime.configs.model_config import AttentionArch, is_deepseek_v4
+from tokenspeed.runtime.distributed.consensus import raise_on_rank_error
+from tokenspeed.runtime.distributed.process_group_manager import (
+    process_group_manager as pg_manager,
+)
 from tokenspeed.runtime.layers.attention.configs.base import BaseAttnConfig
 from tokenspeed.runtime.layers.attention.configs.dsa import DSAConfig
 from tokenspeed.runtime.layers.attention.configs.mha import MHAConfig
@@ -596,7 +600,18 @@ def _create_target_components(
         # forces sanitize=True for the hybrid chunked-prefill path). Target
         # and draft share the ONE pool, so a pool-level flag could not
         # express per-view sanitize semantics.
-        mapped = LayerMappedKVPool(pool, list(range(len(cache_spec.layer_group_ids))))
+        logical_layer_ids = cache_spec.logical_layer_ids or tuple(
+            range(len(cache_spec.layer_group_ids))
+        )
+        mapped = LayerMappedKVPool(
+            pool,
+            list(logical_layer_ids),
+            layer_map={
+                logical_layer_id: physical_layer_id
+                for physical_layer_id, logical_layer_id in enumerate(logical_layer_ids)
+            },
+            strict=cache_spec.logical_layer_ids is not None,
+        )
         backend = _create_hybrid_linear_attn_backend(
             server_args,
             model_config,
@@ -895,14 +910,40 @@ def create_attn_components(
             and draft_attn_config.pd_disaggregation_enabled
         ),
     )
-    cache_memory = profile_available_cache_memory_bytes(
-        attn_config=config,
-        gpu_id=gpu_id,
-        tp_size=server_args.mapping.world_size,
-        gpu_memory_utilization=server_args.gpu_memory_utilization,
-        total_gpu_memory=gpu_memory,
-        world_group=server_args.mapping.world_group,
-    )
+    pipeline = server_args.mapping.pipeline
+    if pipeline.stage_count > 1:
+        cache_memory = None
+        local_error = None
+        try:
+            cache_memory = profile_available_cache_memory_bytes(
+                attn_config=config,
+                gpu_id=gpu_id,
+                tp_size=1,
+                gpu_memory_utilization=server_args.gpu_memory_utilization,
+                total_gpu_memory=gpu_memory,
+                world_group=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - all ranks join the error fence
+            local_error = exc
+        raise_on_rank_error(local_error, server_args.mapping, "KV cache memory profile")
+        assert cache_memory is not None
+        memory_tensor = torch.tensor([cache_memory], dtype=torch.int64)
+        stage_cpu_group = pg_manager.get_process_group("gloo", pipeline.stage_group)
+        torch.distributed.all_reduce(
+            memory_tensor,
+            op=torch.distributed.ReduceOp.MIN,
+            group=stage_cpu_group,
+        )
+        cache_memory = int(memory_tensor.item())
+    else:
+        cache_memory = profile_available_cache_memory_bytes(
+            attn_config=config,
+            gpu_id=gpu_id,
+            tp_size=server_args.mapping.world_size,
+            gpu_memory_utilization=server_args.gpu_memory_utilization,
+            total_gpu_memory=gpu_memory,
+            world_group=server_args.mapping.world_group,
+        )
     cache_setup = prepare_cache_setup(
         family=cache_family,
         server_args=server_args,

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from tokenspeed.runtime.execution.context import ForwardContext
     from tokenspeed.runtime.layers.logits_processor import LogitsProcessorOutput
     from tokenspeed.runtime.multimodal.inputs import MultimodalForwardContext
+    from tokenspeed.runtime.pipeline.contracts import StageActivation, StageOutput
     from tokenspeed.runtime.utils.server_args import ServerArgs
 
 logger = get_colorful_logger(__name__)
@@ -225,6 +226,45 @@ class ModelRunner:
             input_ids,
             positions,
             out_cache_loc,
+            **kwargs,
+        )
+
+    def forward_pipeline_stage(
+        self,
+        ctx: ForwardContext,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        *,
+        incoming: StageActivation | None,
+        req_pool_indices: torch.Tensor | None = None,
+        seq_lens: torch.Tensor | None = None,
+        extend_prefix_lens: torch.Tensor | None = None,
+        input_embeds: torch.Tensor | None = None,
+        multimodal_context: MultimodalForwardContext | None = None,
+    ) -> StageOutput:
+        forward_stage = getattr(self.model, "forward_pipeline_stage", None)
+        if forward_stage is None:
+            raise RuntimeError(
+                f"{type(self.model).__name__} has no pipeline-stage adapter"
+            )
+        kwargs = {}
+        if req_pool_indices is not None:
+            kwargs["req_pool_indices"] = req_pool_indices
+        if seq_lens is not None:
+            kwargs["seq_lens"] = seq_lens
+        if extend_prefix_lens is not None:
+            kwargs["extend_prefix_lens"] = extend_prefix_lens
+        if input_embeds is not None:
+            kwargs["input_embeds"] = input_embeds
+        if multimodal_context is not None:
+            kwargs["multimodal_context"] = multimodal_context
+        return forward_stage(
+            ctx,
+            input_ids,
+            positions,
+            out_cache_loc,
+            incoming=incoming,
             **kwargs,
         )
 

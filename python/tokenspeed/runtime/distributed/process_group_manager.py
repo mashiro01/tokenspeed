@@ -45,8 +45,14 @@ def _make_all_groups(group: Group) -> list[Group]:
 
 class ProcessGroupManager:
     def __init__(self):
-        self._process_groups: dict[str, dict[Group, dist.ProcessGroup]] = {}
+        self._process_groups: dict[str, dict[tuple[Group, str], dist.ProcessGroup]] = {}
         self._pg_timeout: timedelta | None = None
+
+    @staticmethod
+    def _key(group: Group, role: str) -> tuple[Group, str]:
+        if not isinstance(role, str) or not role:
+            raise ValueError("process group role must be a non-empty string")
+        return group, role
 
     def init_distributed(
         self,
@@ -82,22 +88,34 @@ class ProcessGroupManager:
             )
 
     def register_process_group(
-        self, backend: str, group: Group, process_group: dist.ProcessGroup
+        self,
+        backend: str,
+        group: Group,
+        process_group: dist.ProcessGroup,
+        *,
+        role: str = "default",
     ) -> None:
         if backend not in self._process_groups:
             self._process_groups[backend] = {}
-        self._process_groups[backend][group] = process_group
+        self._process_groups[backend][self._key(group, role)] = process_group
 
-    def get_process_group(self, backend: str, group: Group):
-        return self._process_groups[backend][group]
+    def get_process_group(self, backend: str, group: Group, *, role: str = "default"):
+        return self._process_groups[backend][self._key(group, role)]
 
-    def has_process_group(self, backend: str, group: Group) -> bool:
+    def has_process_group(
+        self, backend: str, group: Group, *, role: str = "default"
+    ) -> bool:
+        key = self._key(group, role)
         if backend not in self._process_groups:
             return False
-        return group in self._process_groups[backend]
+        return key in self._process_groups[backend]
 
     def init_process_group(
-        self, group: Group, backend: str | list[str] | None = None
+        self,
+        group: Group,
+        backend: str | list[str] | None = None,
+        *,
+        role: str = "default",
     ) -> None:
         if backend is None:
             backends = ["nccl", "gloo"]
@@ -107,12 +125,12 @@ class ProcessGroupManager:
             backends = backend
 
         for backend in backends:
-            if self.has_process_group(backend, group):
+            if self.has_process_group(backend, group, role=role):
                 continue
             for g in _make_all_groups(group):
                 pg = dist.new_group(g, backend=backend, timeout=self._pg_timeout)
                 if g == group:
-                    self.register_process_group(backend, g, pg)
+                    self.register_process_group(backend, g, pg, role=role)
 
 
 process_group_manager = ProcessGroupManager()

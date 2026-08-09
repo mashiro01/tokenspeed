@@ -181,6 +181,27 @@ def test_attention_configs_do_not_own_cache_setup() -> None:
     assert not hasattr(MLAConfig, "create_pool")
 
 
+def test_cache_pool_runtime_abi_digests_cover_global_and_stage_values() -> None:
+    spec = replace(
+        _hybrid_setup_with_narrow_draft().spec,
+        cache_abi_digest="0" * 64,
+        cache_manifest_digest="1" * 64,
+        runtime_parameters=(("max_scheduled_tokens", 128),),
+    )
+
+    assert spec.runtime_abi_digest == spec.runtime_abi_digest
+    assert spec.global_runtime_abi_digest == spec.global_runtime_abi_digest
+    changed_stage = replace(spec, cache_manifest_digest="2" * 64)
+    assert changed_stage.runtime_abi_digest != spec.runtime_abi_digest
+    assert changed_stage.global_runtime_abi_digest == spec.global_runtime_abi_digest
+    changed_global = replace(
+        spec,
+        runtime_parameters=(("max_scheduled_tokens", 256),),
+    )
+    assert changed_global.runtime_abi_digest != spec.runtime_abi_digest
+    assert changed_global.global_runtime_abi_digest != spec.global_runtime_abi_digest
+
+
 def test_qwen_recipe_preserves_backend_kernel_page_size() -> None:
     text_config = SimpleNamespace(
         mamba2_cache_params=(
@@ -675,6 +696,9 @@ def test_draft_view_maps_local_layer_ids_to_continuation_planes() -> None:
         def get_key_buffer(self, layer_id: int) -> int:
             return layer_id
 
+        def group_id_for_layer(self, layer_id: int) -> str:
+            return f"group-{layer_id}"
+
     num_target_layers = 61
     draft_pool = LayerMappedKVPool(
         _FakePool(),
@@ -689,3 +713,17 @@ def test_draft_view_maps_local_layer_ids_to_continuation_planes() -> None:
     # The hybrid default stays the inverse: global sparse ids -> compact slots.
     hybrid_pool = LayerMappedKVPool(_FakePool(), [3, 7, 11])
     assert hybrid_pool.get_key_buffer(7) == 1
+
+    stage_pool = LayerMappedKVPool(
+        _FakePool(),
+        [12, 13],
+        layer_map={12: 0, 13: 1},
+        strict=True,
+    )
+    assert stage_pool.get_key_buffer(12) == 0
+    assert stage_pool.iter_layer_group_ids() == (
+        (12, "group-0"),
+        (13, "group-1"),
+    )
+    with pytest.raises(ValueError, match="not owned by this stage"):
+        stage_pool.get_key_buffer(5)

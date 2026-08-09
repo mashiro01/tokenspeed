@@ -15,10 +15,12 @@ from ci_system.ci_register import register_cuda_ci  # noqa: E402
 
 register_cuda_ci(est_time=5, suite="runtime-1gpu")
 
+from tokenspeed.runtime.distributed.mapping import Mapping  # noqa: E402
 from tokenspeed.runtime.execution.factory import (  # noqa: E402
     _eagle_aux_layer_ids,
 )
 from tokenspeed.runtime.models import kimi_k3  # noqa: E402
+from tokenspeed.runtime.pipeline.contracts import PipelinePlan  # noqa: E402
 
 
 def _post_layer_attnres_reference(
@@ -50,11 +52,12 @@ def test_capture_tensor_matches_post_layer_attnres_reference():
             FakeLayer(torch.tensor([[5.0], [6.0]], dtype=torch.bfloat16)),
             FakeLayer(torch.tensor([[7.0], [8.0]], dtype=torch.bfloat16)),
         ],
-        output_attn_res_proj=None,
-        output_attn_res_norm=None,
-        norm=None,
+        output_attn_res_proj=object(),
+        output_attn_res_norm=object(),
+        norm=object(),
         layers_to_capture=[],
         eagle3_layers_to_capture=(2, 3),
+        stage_plan=PipelinePlan.single(4).stages[0],
     )
 
     with mock.patch.object(
@@ -81,6 +84,7 @@ def test_capture_tensor_matches_post_layer_attnres_reference():
 def test_k3_eagle3_layer_ids_preserve_draft_config_values():
     target = object.__new__(kimi_k3.KimiLinearForCausalLM)
     torch.nn.Module.__init__(target)
+    target.mapping = Mapping(rank=0)
     target.model = SimpleNamespace(layers=[object() for _ in range(93)])
 
     target.set_eagle3_layers_to_capture([2, 46, 90])
@@ -91,6 +95,7 @@ def test_k3_eagle3_layer_ids_preserve_draft_config_values():
 def test_k3_eagle3_default_and_invalid_layer_ids():
     target = object.__new__(kimi_k3.KimiLinearForCausalLM)
     torch.nn.Module.__init__(target)
+    target.mapping = Mapping(rank=0)
     target.model = SimpleNamespace(layers=[object() for _ in range(93)])
 
     target.set_eagle3_layers_to_capture()

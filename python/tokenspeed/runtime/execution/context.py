@@ -52,6 +52,9 @@ class ForwardContext:
     capture_hidden_mode: CaptureHiddenMode | None = CaptureHiddenMode.NULL
     # Normalized explicit decode input overrides for this forward, if any.
     decode_input_ids: list[int] | None = None
+    # Stable CPU-side identity of request ids and input lengths. Native PP
+    # compares this globally before any activation or result NCCL operation.
+    pipeline_batch_fingerprint: int = 0
 
     # --- dp attention ---
     global_num_tokens: list[int] | None = None

@@ -49,6 +49,7 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.qwen35 import (
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.spec import (
     PagedCacheGroupSpec,
 )
+from tokenspeed.runtime.pipeline.contracts import canonical_digest
 
 CacheModelFamily = Literal[
     "mha",
@@ -78,6 +79,56 @@ class CachePoolSpec:
     token_capacity: int
     layer_kv_head_counts: tuple[int, ...] | None = None
     pool_options: object | None = None
+    # ``None`` means the legacy identity mapping. Pipeline stages carry their
+    # global model layer ids here while the concrete pool remains densely
+    # indexed from zero.
+    logical_layer_ids: tuple[int, ...] | None = None
+    pipeline_plan_digest: str | None = None
+    cache_abi_digest: str | None = None
+    cache_manifest_digest: str | None = None
+    # Model/runtime values that affect allocation or kernel interpretation but
+    # are not already represented by the concrete memory/group plans.
+    runtime_parameters: tuple[tuple[str, object], ...] = ()
+
+    def __post_init__(self) -> None:
+        total_layers = len(self.layer_group_ids)
+        if not total_layers:
+            raise ValueError("cache spec must contain at least one layer")
+        if self.layer_types and len(self.layer_types) != total_layers:
+            raise ValueError("cache layer types must be empty or cover every layer")
+        if self.layer_kv_head_counts is not None and (
+            len(self.layer_kv_head_counts) != total_layers
+        ):
+            raise ValueError("cache KV head counts must cover every layer")
+        if self.logical_layer_ids is not None:
+            if len(self.logical_layer_ids) != total_layers:
+                raise ValueError("logical cache layer ids must cover every layer")
+            if len(set(self.logical_layer_ids)) != total_layers or any(
+                isinstance(layer_id, bool)
+                or not isinstance(layer_id, int)
+                or layer_id < 0
+                for layer_id in self.logical_layer_ids
+            ):
+                raise ValueError(
+                    "logical cache layer ids must be unique non-negative integers"
+                )
+        for name, digest in (
+            ("pipeline_plan_digest", self.pipeline_plan_digest),
+            ("cache_abi_digest", self.cache_abi_digest),
+            ("cache_manifest_digest", self.cache_manifest_digest),
+        ):
+            if digest is not None and (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+        object.__setattr__(self, "runtime_parameters", tuple(self.runtime_parameters))
+        parameter_names = tuple(name for name, _ in self.runtime_parameters)
+        if any(not isinstance(name, str) or not name for name in parameter_names):
+            raise ValueError("cache runtime parameter names must be non-empty strings")
+        if len(parameter_names) != len(set(parameter_names)):
+            raise ValueError("cache runtime parameter names must be unique")
 
     @property
     def pool_size(self) -> int:
@@ -88,6 +139,92 @@ class CachePoolSpec:
             self.memory_plan.num_lcm_blocks
             * max_packing
             * self.memory_plan.logical_block_tokens
+        )
+
+    @property
+    def runtime_abi_digest(self) -> str:
+        """Digest every concrete value needed to bind and consume this pool."""
+
+        if self.pool_options is not None:
+            raise ValueError("cache runtime ABI cannot project opaque pool_options")
+        plan = self.memory_plan
+        return canonical_digest(
+            {
+                "family": self.family,
+                "memory_plan": {
+                    "logical_block_tokens": plan.logical_block_tokens,
+                    "lcm_block_bytes": plan.lcm_block_bytes,
+                    "num_lcm_blocks": plan.num_lcm_blocks,
+                    "groups": tuple(
+                        (
+                            group.group_id,
+                            group.cache_blocks_per_lcm_block,
+                            group.page_count,
+                        )
+                        for group in plan.groups
+                    ),
+                    "planes": tuple(
+                        (
+                            plane.plane_id,
+                            plane.bytes_per_lcm_block,
+                            plane.arena_offset_bytes,
+                        )
+                        for plane in plan.planes
+                    ),
+                    "fields": tuple(
+                        (
+                            field.group_id,
+                            field.field_id,
+                            field.plane_id,
+                            field.shape,
+                            field.element_size,
+                            field.field_offset_bytes,
+                            field.page_stride_bytes,
+                        )
+                        for field in plan.fields
+                    ),
+                },
+                "layer_types": self.layer_types,
+                "layer_group_ids": self.layer_group_ids,
+                "paged_cache_group_specs": tuple(
+                    (
+                        spec.group_id,
+                        spec.retention,
+                        spec.rows_per_page,
+                        spec.entry_stride_tokens,
+                        spec.sliding_window_tokens,
+                        spec.family,
+                        spec.cache_blocks_per_lcm_block,
+                        spec.transfer_policy,
+                    )
+                    for spec in self.paged_cache_group_specs
+                ),
+                "state_field_dtypes": tuple(
+                    (field_id, str(dtype).removeprefix("torch."))
+                    for field_id, dtype in sorted(self.state_field_dtypes.items())
+                ),
+                "token_capacity": self.token_capacity,
+                "layer_kv_head_counts": self.layer_kv_head_counts,
+                "logical_layer_ids": self.logical_layer_ids,
+                "pipeline_plan_digest": self.pipeline_plan_digest,
+                "cache_abi_digest": self.cache_abi_digest,
+                "cache_manifest_digest": self.cache_manifest_digest,
+                "runtime_parameters": tuple(sorted(self.runtime_parameters)),
+            }
+        )
+
+    @property
+    def global_runtime_abi_digest(self) -> str:
+        """Digest runtime values that every pipeline stage must share."""
+
+        if self.cache_abi_digest is None:
+            raise ValueError("global cache runtime ABI requires a static cache ABI")
+        return canonical_digest(
+            {
+                "cache_abi_digest": self.cache_abi_digest,
+                "token_capacity": self.token_capacity,
+                "runtime_parameters": tuple(sorted(self.runtime_parameters)),
+            }
         )
 
     def layer_view(
@@ -119,6 +256,10 @@ class CachePoolSpec:
             len(self.layer_kv_head_counts) != total_layers
         ):
             raise ValueError("cache KV head counts must cover every layer")
+        if self.logical_layer_ids is not None and (
+            len(self.logical_layer_ids) != total_layers
+        ):
+            raise ValueError("logical cache layer ids must cover every layer")
         return replace(
             self,
             family=family or self.family,
@@ -129,6 +270,11 @@ class CachePoolSpec:
             layer_kv_head_counts=(
                 self.layer_kv_head_counts[first_layer:last_layer]
                 if self.layer_kv_head_counts is not None
+                else None
+            ),
+            logical_layer_ids=(
+                self.logical_layer_ids[first_layer:last_layer]
+                if self.logical_layer_ids is not None
                 else None
             ),
             paged_cache_group_specs=(

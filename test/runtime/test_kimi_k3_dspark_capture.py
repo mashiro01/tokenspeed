@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+from tokenspeed.runtime.distributed.mapping import Mapping
+
 
 def _make_model(num_layers: int = 8):
     model = type("Model", (), {})()
@@ -28,6 +30,7 @@ class _CausalLM:
 
     def __init__(self, model) -> None:
         self.model = model
+        self.mapping = Mapping(rank=0)
         self.capture_aux_hidden_states = False
 
 

@@ -466,7 +466,7 @@ def test_log_request_stats_logs_on_each_dp_replica_leader():
     import tokenspeed.runtime.engine.generation_output_processor as gop
     from tokenspeed.runtime.engine.request_types import FINISH_LENGTH
 
-    def emit(attn_tp_rank):
+    def emit(attn_tp_rank, is_output_owner=None):
         rec = _RecordingLogger()
         gop_logger, gop.logger = gop.logger, rec
         try:
@@ -475,6 +475,7 @@ def test_log_request_stats_logs_on_each_dp_replica_leader():
                 attn_tp_rank=attn_tp_rank,
                 enable_log_request_stats=True,
                 metrics=_Metrics(),
+                is_output_owner=is_output_owner,
             )
             rs = _state([1, 2, 3, 4])
             rs.finished_reason = FINISH_LENGTH(length=1)
@@ -488,6 +489,8 @@ def test_log_request_stats_logs_on_each_dp_replica_leader():
     assert any("Req: rid Finish! RequestStats(" in line for line in emit(0))
     # Non-leader TP shards within a replica stay silent (no duplicate line).
     assert emit(1) == []
+    # Native PP explicitly suppresses every non-root stage, including its TP0.
+    assert emit(0, is_output_owner=False) == []
 
 
 class _PrefillForwardOp:

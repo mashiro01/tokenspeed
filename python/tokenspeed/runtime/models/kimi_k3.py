@@ -115,6 +115,7 @@ from tokenspeed.runtime.layers.linear import (
     ReplicatedLinear,
     RowParallelLinear,
 )
+from tokenspeed.runtime.layers.logits_processor import LogitsMetadata
 from tokenspeed.runtime.layers.moe.expert import MoELayer
 from tokenspeed.runtime.layers.moe.latent import (
     Kimi3LatentProjection,
@@ -148,7 +149,16 @@ from tokenspeed.runtime.multimodal.inputs import (
     Modality,
     MultimodalInputs,
 )
-from tokenspeed.runtime.utils import add_prefix, ceil_div, make_layers
+from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
+    build_balanced_kimi_k3_pipeline_plan,
+    kimi_k3_stage_checkpoint_weight_filter,
+)
+from tokenspeed.runtime.pipeline.contracts import (
+    PipelineProtocolError,
+    StageActivation,
+    StageOutput,
+)
+from tokenspeed.runtime.utils import add_prefix, ceil_div
 from tokenspeed.runtime.utils.cuda_stream import StreamFork
 from tokenspeed.runtime.utils.env import global_server_args_dict
 from tokenspeed.runtime.utils.pdl import pdl_enabled
@@ -1755,19 +1765,33 @@ class KimiLinearModel(nn.Module):
         self.config = config
         self.mapping = mapping
         self.quant_config = quant_config
+        self.pipeline_plan = build_balanced_kimi_k3_pipeline_plan(
+            num_layers=config.num_hidden_layers,
+            hidden_size=config.hidden_size,
+            attn_res_block_size=config.attn_res_block_size,
+            stage_count=mapping.pipeline.stage_count,
+            activation_dtype=str(torch.get_default_dtype()).removeprefix("torch."),
+        )
+        self.stage_plan = self.pipeline_plan.stages[mapping.pipeline.stage_index]
 
         alt_stream = torch.cuda.Stream() if torch.cuda.is_available() else None
 
-        self.embed_tokens = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            org_num_embeddings=config.vocab_size,
-            tp_rank=mapping.attn.tp_rank,
-            tp_size=mapping.attn.tp_size,
-            tp_group=mapping.attn.tp_group,
+        self.embed_tokens = (
+            VocabParallelEmbedding(
+                config.vocab_size,
+                config.hidden_size,
+                org_num_embeddings=config.vocab_size,
+                tp_rank=mapping.attn.tp_rank,
+                tp_size=mapping.attn.tp_size,
+                tp_group=mapping.attn.tp_group,
+            )
+            if self.stage_plan.owns_embedding
+            else None
         )
 
         def get_layer(idx: int, prefix: str):
+            if not self.stage_plan.first_layer <= idx < self.stage_plan.end_layer:
+                return nn.Identity()
             return KimiLinearDecoderLayer(
                 config=config,
                 mapping=mapping,
@@ -1777,16 +1801,18 @@ class KimiLinearModel(nn.Module):
                 alt_stream=alt_stream,
             )
 
-        self.layers = make_layers(
-            config.num_hidden_layers,
-            get_layer,
-            prefix=add_prefix("layers", prefix),
+        layers_prefix = add_prefix("layers", prefix)
+        self.layers = nn.ModuleList(
+            get_layer(idx, add_prefix(idx, layers_prefix))
+            for idx in range(config.num_hidden_layers)
         )
         # Cross-layer attn-side mix precompute: a layer's aux stream computes
         # the NEXT layer's block partial alongside its own mlp-side partial
         # (one dual sweep under attention; blocks are final by then).
-        for i in range(len(self.layers) - 1):
+        for i in range(self.stage_plan.first_layer, self.stage_plan.end_layer - 1):
             cur, nxt = self.layers[i], self.layers[i + 1]
+            assert isinstance(cur, KimiLinearDecoderLayer)
+            assert isinstance(nxt, KimiLinearDecoderLayer)
             if nxt.prev_valid_blocks > 0:
                 assert (
                     cur.mlp_res_norm.variance_epsilon
@@ -1795,15 +1821,27 @@ class KimiLinearModel(nn.Module):
                 cur._next_attn_mix = (nxt, nxt.prev_valid_blocks)
                 nxt._attn_split = True
 
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = (
+            RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            if self.stage_plan.owns_head
+            else None
+        )
 
         # Model-level AttnRes output mixing.
-        self.output_attn_res_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.output_attn_res_proj = ReplicatedLinear(
-            config.hidden_size,
-            1,
-            bias=False,
-            prefix=add_prefix("output_attn_res_proj", prefix),
+        self.output_attn_res_norm = (
+            RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            if self.stage_plan.owns_head
+            else None
+        )
+        self.output_attn_res_proj = (
+            ReplicatedLinear(
+                config.hidden_size,
+                1,
+                bias=False,
+                prefix=add_prefix("output_attn_res_proj", prefix),
+            )
+            if self.stage_plan.owns_head
+            else None
         )
         # One-based completed-layer ids; see set_eagle3_layers_to_capture.
         self.eagle3_layers_to_capture: tuple[int, ...] = ()
@@ -1817,6 +1855,10 @@ class KimiLinearModel(nn.Module):
         self._dflash_capture_idx_map: dict[int, int] = {}
 
     def get_input_embeddings(self) -> nn.Module:
+        if self.embed_tokens is None:
+            raise AttributeError(
+                "only the first Kimi-K3 pipeline stage owns embeddings"
+            )
         return self.embed_tokens
 
     def _dspark_capture_stream(
@@ -1837,29 +1879,76 @@ class KimiLinearModel(nn.Module):
         return prefix_sum.clone()
 
     @torch.no_grad()
-    def forward(
+    def forward_pipeline_stage(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         ctx: "ForwardContext",
         out_cache_loc: torch.Tensor,
+        incoming: StageActivation | None,
         input_embeds: torch.Tensor | None = None,
-        **kwargs,
-    ) -> tuple[torch.Tensor, list | None]:
-        if input_embeds is not None:
-            hidden_states = input_embeds
-        else:
-            hidden_states = self.embed_tokens(input_ids)
+    ) -> StageOutput:
+        """Execute this rank's contiguous K3 layer range.
 
-        # Per-forward AttnRes scratch, block-major so block_residual[:m] is a
-        # contiguous kernel slice (fresh alloc = CUDA-graph safe); new_empty is
-        # safe: slot j is written at layer j*block_size before any read.
+        The boundary payload is chain-full: the prefix stream and every
+        completed AttnRes snapshot are transferred as independent tensors.
+        """
+
+        plan = self.stage_plan
         num_blocks = ceil_div(
             self.config.num_hidden_layers, self.config.attn_res_block_size
         )
-        block_residual = hidden_states.new_empty(
-            num_blocks, hidden_states.size(0), hidden_states.size(1)
-        )
+        if plan.owns_embedding:
+            if incoming is not None:
+                raise PipelineProtocolError(
+                    "the first Kimi-K3 stage cannot consume an activation"
+                )
+            if input_embeds is not None:
+                prefix_sum = input_embeds
+            else:
+                assert self.embed_tokens is not None
+                prefix_sum = self.embed_tokens(input_ids)
+            block_residual = prefix_sum.new_empty(
+                num_blocks, prefix_sum.size(0), prefix_sum.size(1)
+            )
+        else:
+            if input_embeds is not None:
+                raise PipelineProtocolError(
+                    "only the first Kimi-K3 stage accepts input embeddings"
+                )
+            if incoming is None or plan.input_schema is None:
+                raise PipelineProtocolError(
+                    f"Kimi-K3 stage {plan.stage_id} is missing its activation"
+                )
+            plan.input_schema.validate(incoming)
+            prefix_sum = incoming.values[0]
+            block_residual = prefix_sum.new_empty(
+                num_blocks, prefix_sum.size(0), prefix_sum.size(1)
+            )
+            completed_blocks = plan.first_layer // self.config.attn_res_block_size
+            for block_id, snapshot in enumerate(
+                incoming.values[1 : completed_blocks + 1]
+            ):
+                block_residual[block_id].copy_(snapshot)
+
+        if plan.stage_count > 1:
+            expected_tokens = int(ctx.input_num_tokens)
+            observed_tokens = {
+                "activation": int(prefix_sum.shape[0]),
+                "input_ids": int(input_ids.shape[0]),
+                "positions": int(positions.shape[-1]),
+                "out_cache_loc": int(out_cache_loc.shape[0]),
+            }
+            mismatched = {
+                name: count
+                for name, count in observed_tokens.items()
+                if count != expected_tokens
+            }
+            if mismatched:
+                raise PipelineProtocolError(
+                    f"Kimi-K3 stage {plan.stage_id} expected {expected_tokens} "
+                    f"tokens, got {mismatched}"
+                )
 
         capture_layers = self.layers_to_capture
         capture_dflash = bool(capture_layers)
@@ -1868,8 +1957,8 @@ class KimiLinearModel(nn.Module):
             [] if capture_dflash or capture_eagle3 else None
         )
 
-        prefix_sum = hidden_states
-        for layer_idx, layer in enumerate(self.layers):
+        for layer_idx in range(plan.first_layer, plan.end_layer):
+            layer = self.layers[layer_idx]
             prefix_sum, block_residual = layer(
                 positions, prefix_sum, ctx, out_cache_loc, block_residual
             )
@@ -1890,6 +1979,20 @@ class KimiLinearModel(nn.Module):
                 assert aux_hidden_states is not None
                 aux_hidden_states.append(prefix_sum.clone())
 
+        if not plan.owns_head:
+            assert plan.output_schema is not None
+            completed_blocks = plan.end_layer // self.config.attn_res_block_size
+            activation = plan.output_schema.bind(
+                (
+                    prefix_sum,
+                    *(block_residual[index] for index in range(completed_blocks)),
+                )
+            )
+            return StageOutput(activation=activation)
+
+        assert self.output_attn_res_proj is not None
+        assert self.output_attn_res_norm is not None
+        assert self.norm is not None
         hidden_states = _apply_attn_res(
             prefix_sum,
             block_residual,
@@ -1898,7 +2001,32 @@ class KimiLinearModel(nn.Module):
             num_blocks,
             out_norm=self.norm,
         )
-        return hidden_states, aux_hidden_states
+        return StageOutput(final_output=(hidden_states, aux_hidden_states))
+
+    @torch.no_grad()
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        ctx: "ForwardContext",
+        out_cache_loc: torch.Tensor,
+        input_embeds: torch.Tensor | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, list | None]:
+        if self.stage_plan.stage_count != 1:
+            raise RuntimeError(
+                "multi-stage Kimi-K3 must run through the pipeline executor"
+            )
+        output = self.forward_pipeline_stage(
+            input_ids,
+            positions,
+            ctx,
+            out_cache_loc,
+            incoming=None,
+            input_embeds=input_embeds,
+        )
+        assert output.final_output is not None
+        return output.final_output
 
 
 class KimiLinearForCausalLM(BaseCausalLM):
@@ -1911,8 +2039,68 @@ class KimiLinearForCausalLM(BaseCausalLM):
 
     model_cls = KimiLinearModel
 
+    def resolve_lm_head(
+        self,
+        config: KimiLinearConfig,
+        quant_config: QuantizationConfig | None,
+        prefix: str,
+    ) -> nn.Module | None:
+        if not self.mapping.pipeline.is_last_stage:
+            return None
+        if self.mapping.pipeline.stage_count > 1 and getattr(
+            config, "tie_word_embeddings", False
+        ):
+            raise ValueError(
+                "multi-stage Kimi-K3 does not support tied input/output embeddings"
+            )
+        return super().resolve_lm_head(config, quant_config, prefix)
+
+    def resolve_logits_processor(self, config: KimiLinearConfig):
+        if not self.mapping.pipeline.is_last_stage:
+            return None
+        return super().resolve_logits_processor(config)
+
+    @torch.no_grad()
+    def forward_pipeline_stage(
+        self,
+        ctx: "ForwardContext",
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        incoming: StageActivation | None,
+        input_embeds: torch.Tensor | None = None,
+    ) -> StageOutput:
+        output = self.model.forward_pipeline_stage(
+            input_ids,
+            positions,
+            ctx,
+            out_cache_loc,
+            incoming=incoming,
+            input_embeds=input_embeds,
+        )
+        if output.activation is not None:
+            return output
+
+        assert output.final_output is not None
+        hidden_states, aux_hidden_states = output.final_output
+        assert self.logits_processor is not None
+        assert self.lm_head is not None
+        return StageOutput(
+            final_output=self.logits_processor(
+                input_ids,
+                hidden_states,
+                self.lm_head,
+                LogitsMetadata.from_forward_context(ctx),
+                aux_hidden_states,
+            )
+        )
+
     def set_eagle3_layers_to_capture(self, layer_ids: list[int] | None = None) -> None:
         """Take the draft config's one-based completed-layer ids unchanged."""
+        if self.mapping.pipeline.stage_count > 1:
+            raise ValueError(
+                "K3 EAGLE3 capture is not supported with pipeline parallelism"
+            )
         num_layers = len(self.model.layers)
         selected = (
             [2, num_layers // 2, num_layers - 3]
@@ -1933,6 +2121,10 @@ class KimiLinearForCausalLM(BaseCausalLM):
         self.model.eagle3_layers_to_capture = tuple(selected)
 
     def get_embed_and_head(self):
+        if self.mapping.pipeline.stage_count > 1:
+            raise AttributeError(
+                "Kimi-K3 pipeline stages do not colocate embeddings and LM head"
+            )
         return self.model.embed_tokens.weight, self.lm_head.weight
 
     def set_dflash_layers_to_capture(
@@ -1947,6 +2139,10 @@ class KimiLinearForCausalLM(BaseCausalLM):
         per-layer return has already accumulated the layer output into K3's
         prefix stream, matching vLLM's target-side capture contract.
         """
+        if self.mapping.pipeline.stage_count > 1:
+            raise ValueError(
+                "DFLASH target capture is not supported with pipeline parallelism"
+            )
         num_layers = len(self.model.layers)
         if len(set(layer_ids)) != len(layer_ids):
             raise ValueError("DFLASH target_layer_ids must be unique.")
@@ -2012,8 +2208,14 @@ class KimiLinearForCausalLM(BaseCausalLM):
             # the draft worker loads those.
             if name.startswith("model.layers."):
                 layer_str = name.split(".")[2]
-                if layer_str.isdigit() and int(layer_str) >= config.num_hidden_layers:
-                    continue
+                if layer_str.isdigit():
+                    layer_id = int(layer_str)
+                    if layer_id >= config.num_hidden_layers or not (
+                        self.model.stage_plan.first_layer
+                        <= layer_id
+                        < self.model.stage_plan.end_layer
+                    ):
+                        continue
             # Compressed-tensors MXFP4 routed experts ship the packed weight as
             # ``...w{1,2,3}.weight_packed``; the mxfp4 MoE param is
             # ``w13_weight`` / ``w2_weight`` (packed uint8), so drop the
@@ -2098,7 +2300,11 @@ class KimiLinearForCausalLM(BaseCausalLM):
         ``kv_b_proj.weight`` is bf16 and no block dequant is needed. KDA layers
         have no ``kv_b_proj`` (not ``KimiLinearMLAAttention``) and are skipped.
         """
-        for layer in self.model.layers:
+        local_layers = self.model.layers[
+            self.model.stage_plan.first_layer : self.model.stage_plan.end_layer
+        ]
+        for layer in local_layers:
+            assert isinstance(layer, KimiLinearDecoderLayer)
             self_attn = layer.self_attn
             if isinstance(self_attn, KimiLinearMLAAttention):
                 self_attn.w_kc, self_attn.w_vc = _prepare_mla_kv_b_proj_weights(
@@ -2108,7 +2314,7 @@ class KimiLinearForCausalLM(BaseCausalLM):
                 self_attn.fuse_conv_weights()
 
         # Fold the AttnRes rms_w * res_w products once; the split kernels take a single wp pointer.
-        for layer in self.model.layers:
+        for layer in local_layers:
             layer._attn_wp = (
                 layer.self_attention_res_norm.weight.float()
                 * layer.self_attention_res_proj.weight.reshape(-1).float()
@@ -2118,7 +2324,7 @@ class KimiLinearForCausalLM(BaseCausalLM):
                 * layer.mlp_res_proj.weight.reshape(-1).float()
             ).to(torch.bfloat16)
 
-        for layer in self.model.layers:
+        for layer in local_layers:
             if getattr(layer, "is_moe_layer", False):
                 layer.block_sparse_moe.pack_input_projection_weights()
 
@@ -2149,7 +2355,9 @@ class KimiK3ForConditionalGeneration(nn.Module):
         self.config = config
         self.mapping = mapping
         self.quant_config = quant_config
-        self.is_multimodal_active = is_multimodal_active
+        self.is_multimodal_active = is_multimodal_active and (
+            mapping.pipeline.stage_count == 1 or mapping.pipeline.is_first_stage
+        )
 
         # EPD encode workers own only the vision tower.
         self.language_model = None
@@ -2162,7 +2370,7 @@ class KimiK3ForConditionalGeneration(nn.Module):
 
         # Multimodal path. ``image_encoder`` may later be replaced by
         # ModelExecutor with the encoder CUDA-graph wrapper.
-        if is_multimodal_active:
+        if self.is_multimodal_active:
             self.vision = KimiK3Vision(
                 config.vision_config,
                 mapping=mapping,
@@ -2188,7 +2396,23 @@ class KimiK3ForConditionalGeneration(nn.Module):
             )
         return self.language_model.model.get_input_embeddings()
 
+    @property
+    def pipeline_stage_plan(self):
+        if self.language_model is None:
+            raise AttributeError("encoder-only Kimi-K3 has no language pipeline stage")
+        return self.language_model.model.stage_plan
+
+    @property
+    def pipeline_plan(self):
+        if self.language_model is None:
+            raise AttributeError("encoder-only Kimi-K3 has no language pipeline plan")
+        return self.language_model.model.pipeline_plan
+
     def get_embed_and_head(self):
+        if self.mapping.pipeline.stage_count > 1:
+            raise AttributeError(
+                "Kimi-K3 pipeline stages do not colocate embeddings and LM head"
+            )
         return self.language_model.get_embed_and_head()
 
     def set_dflash_layers_to_capture(
@@ -2223,7 +2447,12 @@ class KimiK3ForConditionalGeneration(nn.Module):
             raise AttributeError(
                 "Kimi-K3 encoder-only mode does not expose a logits processor."
             )
-        return self.language_model.logits_processor
+        logits_processor = self.language_model.logits_processor
+        if logits_processor is None:
+            raise AttributeError(
+                "only the final Kimi-K3 pipeline stage owns logits processing"
+            )
+        return logits_processor
 
     @property
     def lm_head(self):
@@ -2231,7 +2460,12 @@ class KimiK3ForConditionalGeneration(nn.Module):
             raise AttributeError(
                 "Kimi-K3 encoder-only mode does not expose an LM head."
             )
-        return self.language_model.lm_head
+        lm_head = self.language_model.lm_head
+        if lm_head is None:
+            raise AttributeError(
+                "only the final Kimi-K3 pipeline stage owns the LM head"
+            )
+        return lm_head
 
     @property
     def vision_tower(self):
@@ -2288,6 +2522,36 @@ class KimiK3ForConditionalGeneration(nn.Module):
         return input_embeds
 
     @torch.no_grad()
+    def forward_pipeline_stage(
+        self,
+        ctx: "ForwardContext",
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        out_cache_loc: torch.Tensor,
+        incoming: StageActivation | None,
+        **kwargs,
+    ) -> StageOutput:
+        if self.language_model is None:
+            raise RuntimeError(
+                "Kimi-K3 encoder-only mode cannot execute language-model forward."
+            )
+        input_embeds = kwargs.pop("input_embeds", None)
+        if self.mapping.pipeline.is_first_stage:
+            multimodal_context = kwargs.pop("multimodal_context", None)
+            if input_embeds is None:
+                input_embeds = self.multimodal_input_embeds(
+                    input_ids, ctx, multimodal_context
+                )
+        return self.language_model.forward_pipeline_stage(
+            ctx,
+            input_ids,
+            positions,
+            out_cache_loc,
+            incoming=incoming,
+            input_embeds=input_embeds,
+        )
+
+    @torch.no_grad()
     def forward(
         self,
         ctx: "ForwardContext",
@@ -2299,6 +2563,10 @@ class KimiK3ForConditionalGeneration(nn.Module):
         if self.language_model is None:
             raise RuntimeError(
                 "Kimi-K3 encoder-only mode cannot execute language-model forward."
+            )
+        if self.mapping.pipeline.stage_count > 1:
+            raise RuntimeError(
+                "multi-stage Kimi-K3 must run through the pipeline executor"
             )
         multimodal_context = kwargs.pop("multimodal_context", None)
         input_embeds = self.multimodal_input_embeds(input_ids, ctx, multimodal_context)
@@ -2316,6 +2584,19 @@ class KimiK3ForConditionalGeneration(nn.Module):
         """Prepare text-model derived weights for loaders that skip checkpoints."""
         if self.language_model is not None:
             self.language_model.post_load_weights()
+
+    def checkpoint_weight_name_filter(self, name: str) -> bool:
+        """Select only shards containing parameters owned by this PP stage."""
+
+        if self.language_model is None:
+            return name.startswith(("vision_tower.", "mm_projector.")) and (
+                self.vision is not None
+            )
+        return kimi_k3_stage_checkpoint_weight_filter(
+            name,
+            stage_plan=self.pipeline_stage_plan,
+            include_vision=self.vision is not None,
+        )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
         """Route checkpoint weights by top-level prefix.
@@ -2357,7 +2638,7 @@ class KimiK3ForConditionalGeneration(nn.Module):
             # Exhaust the stream so interleaved vision weights are still routed.
             for _ in language_weights():
                 pass
-        if dropped_vision_weights:
+        if dropped_vision_weights and self.mapping.pipeline.stage_count == 1:
             logger.warning(
                 "Dropping %d vision weights: multimodal path is inactive.",
                 dropped_vision_weights,

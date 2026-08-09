@@ -18,12 +18,18 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import os
 from dataclasses import dataclass
 
 import torch
 
 from tokenspeed.runtime.distributed.process_group_manager import (
     process_group_manager as pg_manager,
+)
+from tokenspeed.runtime.pipeline.groups import (
+    PIPELINE_FAULT_GROUP_ROLE,
+    PIPELINE_RESULT_GROUP_ROLE,
+    PIPELINE_STEP_META_GROUP_ROLE,
 )
 from tokenspeed.runtime.utils import (
     get_available_gpu_memory,
@@ -127,6 +133,15 @@ class DistributedConfig:
 class DistributedInitializer:
     @staticmethod
     def initialize(config: DistributedConfig) -> float:
+        if config.mapping.pipeline.stage_count > 1:
+            for name, value in (
+                ("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1"),
+                ("TORCH_NCCL_ENABLE_MONITORING", "1"),
+                ("TORCH_NCCL_DUMP_ON_TIMEOUT", "1"),
+                ("TORCH_NCCL_TRACE_BUFFER_SIZE", "20000"),
+                ("TORCH_NCCL_DESYNC_DEBUG", "1"),
+            ):
+                os.environ.setdefault(name, value)
         torch.get_device_module(config.device).set_device(config.gpu_id)
         logger.info(
             "Init torch distributed begin. Avail mem=%.4f GB",
@@ -161,6 +176,24 @@ class DistributedInitializer:
             device_id=device_id,
         )
         pg_manager.init_process_group(config.mapping.world_group)
+        if config.mapping.pipeline.stage_count > 1:
+            pg_manager.init_process_group(config.mapping.pipeline.stage_group)
+            pg_manager.init_process_group(config.mapping.pipeline.pipeline_group)
+            pg_manager.init_process_group(
+                config.mapping.pipeline.pipeline_group,
+                backend="nccl",
+                role=PIPELINE_RESULT_GROUP_ROLE,
+            )
+            pg_manager.init_process_group(
+                config.mapping.world_group,
+                backend="gloo",
+                role=PIPELINE_STEP_META_GROUP_ROLE,
+            )
+            pg_manager.init_process_group(
+                config.mapping.world_group,
+                backend="gloo",
+                role=PIPELINE_FAULT_GROUP_ROLE,
+            )
         pg_manager.init_process_group(config.mapping.attn.tp_group)
         pg_manager.init_process_group(config.mapping.dense.tp_group)
         pg_manager.init_process_group(config.mapping.moe.tp_ep_group)
@@ -214,16 +247,20 @@ class DistributedInitializer:
             mapping.attn.dp_rank,
         )
 
-        # Get minimum available GPU memory across all ranks
+        # Model replicas within one pipeline stage must have balanced memory.
+        # Different stages intentionally own different modules and may have
+        # different free-memory profiles, so do not compare them here.
+        stage_group = mapping.pipeline.stage_group
+        stage_world_size = mapping.pipeline.stage_world_size
         min_per_gpu_memory = get_available_gpu_memory(
             config.device,
             config.gpu_id,
-            distributed=config.world_size > 1,
-            cpu_group=pg_manager.get_process_group("gloo", mapping.world_group),
+            distributed=stage_world_size > 1,
+            cpu_group=pg_manager.get_process_group("gloo", stage_group),
         )
 
         # Verify memory balance for tensor parallelism
-        if config.world_size > 1:
+        if stage_world_size > 1:
             local_gpu_memory = get_available_gpu_memory(config.device, config.gpu_id)
             if min_per_gpu_memory < local_gpu_memory * 0.9:
                 raise ValueError(

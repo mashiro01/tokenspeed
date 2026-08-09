@@ -6,6 +6,7 @@ from tokenspeed.runtime.distributed.mapping import (
     Mapping,
     MappingBase,
     MoeLayerMapping,
+    PipelineMapping,
     _make_parallelism_group,
     _make_parallelism_rank,
     _resolve_parallelism_sizes,
@@ -161,6 +162,124 @@ class TestMappingBase:
     def test_zero_world_size_raises(self):
         with pytest.raises(AssertionError):
             MappingBase(world_size=0)
+
+
+# =============================================================================
+# PipelineMapping
+# =============================================================================
+
+
+class TestPipelineMapping:
+
+    def test_pp1(self):
+        m = PipelineMapping(rank=3, world_size=8)
+
+        assert m.world_size == 8
+        assert m.world_group == tuple(range(8))
+        assert m.stage_count == 1
+        assert m.stage_index == 0
+        assert m.stage_world_size == 8
+        assert m.stage_local_rank == 3
+        assert m.stage_group == tuple(range(8))
+        assert m.pipeline_group == (3,)
+        assert m.prev_rank is None
+        assert m.next_rank is None
+        assert m.is_first_stage
+        assert m.is_last_stage
+
+    def test_pp2_stage_contiguous_groups(self):
+        mappings = [
+            PipelineMapping(rank=rank, world_size=8, stage_count=2) for rank in range(8)
+        ]
+
+        assert {m.stage_group for m in mappings} == {
+            (0, 1, 2, 3),
+            (4, 5, 6, 7),
+        }
+        assert {m.pipeline_group for m in mappings} == {
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        }
+
+        first = mappings[2]
+        assert first.stage_index == 0
+        assert first.stage_local_rank == 2
+        assert first.prev_rank is None
+        assert first.next_rank == 6
+        assert first.is_first_stage
+        assert not first.is_last_stage
+
+        last = mappings[6]
+        assert last.stage_index == 1
+        assert last.stage_local_rank == 2
+        assert last.prev_rank == 2
+        assert last.next_rank is None
+        assert not last.is_first_stage
+        assert last.is_last_stage
+
+    def test_pp4_groups_and_neighbors(self):
+        m = PipelineMapping(rank=10, world_size=16, stage_count=4)
+
+        assert m.stage_index == 2
+        assert m.stage_world_size == 4
+        assert m.stage_local_rank == 2
+        assert m.stage_group == (8, 9, 10, 11)
+        assert m.pipeline_group == (2, 6, 10, 14)
+        assert m.prev_rank == 6
+        assert m.next_rank == 14
+        assert not m.is_first_stage
+        assert not m.is_last_stage
+
+    def test_deferred_rank(self):
+        m = PipelineMapping(world_size=8, stage_count=2)
+
+        assert m.stage_count == 2
+        assert m.stage_world_size == 4
+        with pytest.raises(AssertionError, match="rank is not initialized"):
+            _ = m.stage_index
+
+        m.rank = 5
+        assert m.rank == 5
+        assert m.stage_index == 1
+        assert m.stage_local_rank == 1
+        assert m.stage_group == (4, 5, 6, 7)
+        assert m.pipeline_group == (1, 5)
+
+    @pytest.mark.parametrize("value", [True, False, 1.0, "1", None])
+    def test_invalid_stage_count_type(self, value):
+        with pytest.raises(TypeError, match="stage_count must be an int"):
+            PipelineMapping(world_size=8, stage_count=value)
+
+    @pytest.mark.parametrize("value", [True, False, 8.0, "8", None])
+    def test_invalid_world_size_type(self, value):
+        with pytest.raises(TypeError, match="world_size must be an int"):
+            PipelineMapping(world_size=value)
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_non_positive_stage_count(self, value):
+        with pytest.raises(ValueError, match="stage_count must be positive"):
+            PipelineMapping(world_size=8, stage_count=value)
+
+    def test_indivisible_world_size(self):
+        with pytest.raises(ValueError, match="must be divisible"):
+            PipelineMapping(world_size=8, stage_count=3)
+
+    @pytest.mark.parametrize("rank", [True, 1.0, "1"])
+    def test_invalid_rank_type(self, rank):
+        with pytest.raises(TypeError, match="rank must be an int"):
+            PipelineMapping(rank=rank, world_size=8, stage_count=2)
+
+    @pytest.mark.parametrize("rank", [-1, 8])
+    def test_rank_out_of_global_world(self, rank):
+        with pytest.raises(ValueError, match=r"rank must be in \[0, 8\)"):
+            PipelineMapping(rank=rank, world_size=8, stage_count=2)
+
+    def test_deferred_rank_is_strict(self):
+        m = PipelineMapping(world_size=8, stage_count=2)
+        with pytest.raises(TypeError, match="rank must be an int"):
+            m.rank = True
 
 
 # =============================================================================
@@ -523,6 +642,164 @@ class TestMoeLayerMapping:
 
 
 class TestMapping:
+
+    def test_pp1_explicit_is_legacy_parity(self):
+        kwargs = dict(
+            rank=3,
+            world_size=8,
+            attn_tp_size=4,
+            attn_cp_size=1,
+            dense_tp_size=8,
+            moe_tp_size=2,
+            moe_ep_size=4,
+            nprocs_per_node=8,
+            nnodes=1,
+        )
+        implicit = Mapping(**kwargs)
+        explicit = Mapping(**kwargs, pipeline_parallel_size=1)
+
+        assert repr(implicit) == repr(explicit)
+        assert repr(explicit) == (
+            "Mapping(rank=3, world_size=8)\n"
+            "  Cluster : 1 node(s) x 8 proc(s)\n"
+            "  Attention: tp=4  cp=1  dp=2\n"
+            "    Vision: tp=4  item_dp=1\n"
+            "  Dense   : tp=8  dp=1\n"
+            "  MoE     : tp=2  ep=4  dp=1"
+        )
+        assert implicit.attn.tp_group == explicit.attn.tp_group == (0, 1, 2, 3)
+        assert implicit.attn.dp_group == explicit.attn.dp_group == (3, 7)
+        assert implicit.dense.tp_group == explicit.dense.tp_group == tuple(range(8))
+        assert implicit.moe.tp_ep_group == explicit.moe.tp_ep_group == tuple(range(8))
+
+    def test_pp2_layer_sizes_are_stage_local_groups_are_global(self):
+        m = Mapping(
+            rank=10,
+            world_size=16,
+            pipeline_parallel_size=2,
+            attn_tp_size=4,
+            attn_cp_size=1,
+            attn_dp_size=2,
+            dense_tp_size=8,
+            dense_dp_size=1,
+            moe_tp_size=2,
+            moe_ep_size=4,
+            moe_dp_size=1,
+        )
+
+        assert m.world_size == 16
+        assert m.world_group == tuple(range(16))
+        assert m.pipeline.stage_world_size == 8
+        assert m.pipeline.stage_group == tuple(range(8, 16))
+        assert m.pipeline.pipeline_group == (2, 10)
+
+        assert m.attn.world_size == 8
+        assert m.dense.world_size == 8
+        assert m.moe.world_size == 8
+        assert m.vision.world_size == 4
+        assert m.attn.tp_group == (8, 9, 10, 11)
+        assert m.attn.dp_group == (10, 14)
+        assert m.dense.tp_group == tuple(range(8, 16))
+        assert m.moe.tp_ep_group == tuple(range(8, 16))
+        assert m.vision.tp_group == (8, 9, 10, 11)
+
+    def test_pp8_all_rank_groups_stay_inside_stage_and_lanes_cover_world(self):
+        mappings = [
+            Mapping(
+                rank=rank,
+                world_size=64,
+                pipeline_parallel_size=8,
+                attn_tp_size=8,
+                dense_tp_size=8,
+                moe_tp_size=1,
+                moe_ep_size=8,
+            )
+            for rank in range(64)
+        ]
+
+        stage_groups = {mapping.pipeline.stage_group for mapping in mappings}
+        lanes = {mapping.pipeline.pipeline_group for mapping in mappings}
+        assert stage_groups == {
+            tuple(range(stage_id * 8, (stage_id + 1) * 8)) for stage_id in range(8)
+        }
+        assert lanes == {
+            tuple(stage_local_rank + stage_id * 8 for stage_id in range(8))
+            for stage_local_rank in range(8)
+        }
+        assert mappings[3].pipeline.pipeline_group == (
+            3,
+            11,
+            19,
+            27,
+            35,
+            43,
+            51,
+            59,
+        )
+        for mapping in mappings:
+            stage_group = set(mapping.pipeline.stage_group)
+            for group in (
+                mapping.attn.tp_group,
+                mapping.attn.cp_group,
+                mapping.attn.dp_group,
+                mapping.dense.tp_group,
+                mapping.dense.dp_group,
+                mapping.moe.tp_group,
+                mapping.moe.ep_group,
+                mapping.moe.dp_group,
+                mapping.vision.tp_group,
+                mapping.vision.dp_group,
+            ):
+                assert set(group) <= stage_group
+
+    def test_pipeline_deferred_rank_propagates_global_rank(self):
+        m = Mapping(
+            world_size=16,
+            pipeline_parallel_size=4,
+            attn_tp_size=2,
+            dense_tp_size=4,
+            moe_tp_size=2,
+            moe_ep_size=2,
+        )
+
+        assert m.pipeline.stage_count == 4
+        assert m.pipeline.stage_world_size == 4
+        with pytest.raises(AssertionError, match="rank is not initialized"):
+            _ = m.pipeline.pipeline_group
+
+        m.rank = 10
+        assert m.pipeline.rank == 10
+        assert m.pipeline.stage_index == 2
+        assert m.pipeline.stage_group == (8, 9, 10, 11)
+        assert m.pipeline.pipeline_group == (2, 6, 10, 14)
+        assert m.attn.rank == 10
+        assert m.attn.tp_group == (10, 11)
+        assert m.dense.rank == 10
+        assert m.dense.tp_group == (8, 9, 10, 11)
+        assert m.moe.rank == 10
+        assert m.moe.tp_ep_group == (8, 9, 10, 11)
+        assert m.vision.rank == 10
+
+    @pytest.mark.parametrize("value", [True, False, 2.0, "2", None])
+    def test_invalid_pipeline_parallel_size_type(self, value):
+        with pytest.raises(TypeError, match="stage_count must be an int"):
+            Mapping(world_size=8, pipeline_parallel_size=value)
+
+    def test_pipeline_parallel_size_must_divide_world(self):
+        with pytest.raises(ValueError, match="must be divisible"):
+            Mapping(world_size=8, pipeline_parallel_size=3)
+
+    def test_deferred_pipeline_rank_validation_does_not_initialize(self):
+        m = Mapping(world_size=8, pipeline_parallel_size=2)
+
+        with pytest.raises(TypeError, match="rank must be an int"):
+            m.rank = True
+        with pytest.raises(AssertionError, match="rank is not initialized"):
+            _ = m.rank
+
+        m.rank = 5
+        assert m.rank == 5
+        assert m.pipeline.rank == 5
 
     def test_parallel_groups(self):
         m = Mapping(

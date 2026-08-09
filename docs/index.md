@@ -35,6 +35,7 @@ features:
 - [Server Parameters](./configuration/server.md)
 - [Compatible Parameters](./configuration/compatible-parameters.md)
 - [Parallelism](./serving/parallelism.md)
+- [Native Pipeline Parallelism](./serving/native-pipeline-parallel.md)
 
 ## Common Workflow
 
