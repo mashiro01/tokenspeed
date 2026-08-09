@@ -112,7 +112,7 @@ def create_grammar_runtime(
 
     CUDA gets :class:`CapturableGrammarExecutor` (cudaLaunchHostFunc on a side
     stream so the xgrammar fill + H2D overlap with the forward, and is also
-    CUDA-graph-capturable); everything else gets :class:`EagerGrammarBuffers`
+    CUDA graph-capturable); everything else gets :class:`EagerGrammarBuffers`
     (synchronous fallback). ``disable_capturable`` forces the eager path on
     CUDA too, for parity-testing.
 

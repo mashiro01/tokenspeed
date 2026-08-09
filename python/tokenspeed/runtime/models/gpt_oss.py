@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Inference-only GptOss model compatible with HuggingFace weights."""
+"""Inference-only GPT-OSS model compatible with Hugging Face weights."""
 
 # ruff: noqa: E402
 

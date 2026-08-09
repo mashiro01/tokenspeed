@@ -1,4 +1,4 @@
-"""Hybrid cuda-graph kwargs filtering for user-selectable sub-backends.
+"""Hybrid CUDA graph kwargs filtering for user-selectable sub-backends.
 
 The hybrid backend's full-attention sub-backend is user-selectable and may
 have a narrow ``init_cuda_graph_state`` signature (e.g. TRTLLM MHA takes only
@@ -82,7 +82,7 @@ class InitBackendCudaGraphStateHelperTest(unittest.TestCase):
                 init_backend_cuda_graph_state,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.helper = init_backend_cuda_graph_state
 
     def test_narrow_backend_receives_positional_only(self):
@@ -118,7 +118,7 @@ class HybridInitCudaGraphStateForwardingTest(unittest.TestCase):
                 HybridLinearAttnBackend,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.hybrid_cls = HybridLinearAttnBackend
 
     def _hybrid(self, full_backend, linear_backend):

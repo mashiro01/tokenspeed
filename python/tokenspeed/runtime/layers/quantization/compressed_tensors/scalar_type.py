@@ -31,9 +31,9 @@ _SCALAR_TYPES_ID_MAP = {}
 
 
 class NanRepr(Enum):
-    NONE = 0  # nans are not supported
-    IEEE_754 = 1  # nans are: Exp all 1s, mantissa not all 0s
-    EXTD_RANGE_MAX_MIN = 2  # nans are: Exp all 1s, mantissa all 1s
+    NONE = 0  # NaNs are not supported.
+    IEEE_754 = 1  # NaNs: exponent is all ones; mantissa is not all zeros.
+    EXTD_RANGE_MAX_MIN = 2  # NaNs: exponent and mantissa are all ones.
 
 
 # This ScalarType class is a parallel implementation of the C++ ScalarType
@@ -84,7 +84,7 @@ class ScalarType:
 
     nan_repr: NanRepr = NanRepr.IEEE_754
     """
-    How NaNs are represent in this scalar type, returns NanRepr value.
+    How NaNs are represented in this scalar type, as a ``NanRepr`` value.
     (not applicable for integer types)
     """
 
@@ -104,13 +104,11 @@ class ScalarType:
             ), f"Cannot represent max/min as a double for type {self.__str__()}"
             max_exponent = max_exponent + 1
 
-        # adjust the exponent to match that of a double
-        # for now we assume the exponent bias is the standard 2^(e-1) -1, (where
-        # e is the exponent bits), there is some precedent for non-standard
-        # biases, example `float8_e4m3b11fnuz` here:
-        # https://github.com/jax-ml/ml_dtypes but to avoid premature over
-        # complication we are just assuming the standard exponent bias until
-        # there is a need to support non-standard biases
+        # Adjust the exponent to match a double. Assume the standard exponent
+        # bias, 2^(e-1) - 1, where e is the number of exponent bits. Nonstandard
+        # biases exist—for example, ``float8_e4m3b11fnuz`` in
+        # https://github.com/jax-ml/ml_dtypes—but supporting them is unnecessary
+        # until a corresponding scalar type is added here.
         exponent_bias = (1 << (self.exponent - 1)) - 1
         exponent_bias_double = (1 << 10) - 1  # double e = 11
 
@@ -146,7 +144,7 @@ class ScalarType:
         else:
             assert (
                 not self.is_signed() or self.size_bits <= 64
-            ), "Cannot represent min as a int64_t"
+            ), "Cannot represent min as an int64_t"
 
             if self.is_signed():
                 return -(1 << (self.size_bits - 1))
@@ -156,7 +154,7 @@ class ScalarType:
     @functools.cached_property
     def id(self) -> int:
         """
-        Convert the ScalarType to an int which can be passed to pytorch custom
+        Convert the ScalarType to an int which can be passed to PyTorch custom
         ops. This layout of the int must be kept in sync with the C++
         ScalarType's from_id method.
         """
@@ -229,24 +227,21 @@ class ScalarType:
         return self.nan_repr != NanRepr.NONE
 
     def is_ieee_754(self) -> bool:
-        """
-        If the type is a floating point type that follows IEEE 754
-        conventions
-        """
+        """Return whether this is an IEEE 754 floating-point type."""
         return self.nan_repr == NanRepr.IEEE_754 and not self._finite_values_only
 
     def __str__(self) -> str:
         """
-        naming generally follows: https://github.com/jax-ml/ml_dtypes
-        for floating point types (leading f) the scheme is:
+        Naming generally follows https://github.com/jax-ml/ml_dtypes.
+        For floating-point types (leading ``f``), the scheme is:
         `float<size_bits>_e<exponent_bits>m<mantissa_bits>[flags]`
-        flags:
-          - no-flags: means it follows IEEE 754 conventions
-          - f: means finite values only (no infinities)
-          - n: means nans are supported (non-standard encoding)
-        for integer types the scheme is:
+        Flags:
+          - no flags: follows IEEE 754 conventions
+          - f: supports finite values only (no infinities)
+          - n: supports NaNs (nonstandard encoding)
+        For integer types, the scheme is:
           `[u]int<size_bits>[b<bias>]`
-          - if bias is not present it means its zero
+          - If the bias is absent, it is zero.
         """
         if self.is_floating_point():
             ret = (
@@ -274,7 +269,7 @@ class ScalarType:
     def __repr__(self) -> str:
         return "ScalarType." + self.__str__()
 
-    # __len__ needs to be defined (and has to throw TypeError) for pytorch's
+    # __len__ needs to be defined (and has to throw TypeError) for PyTorch's
     # opcheck to work.
     def __len__(self) -> int:
         raise TypeError
@@ -292,7 +287,7 @@ class ScalarType:
 
     @classmethod
     def uint(cls, size_bits: int, bias: int | None) -> "ScalarType":
-        """Create a unsigned integer scalar type."""
+        """Create an unsigned integer scalar type."""
         ret = cls(0, size_bits, False, bias if bias else 0)
         ret.id  # noqa B018: make sure the id is cached
         return ret
@@ -328,20 +323,20 @@ class ScalarType:
     @classmethod
     def from_id(cls, scalar_type_id: int):
         if scalar_type_id not in _SCALAR_TYPES_ID_MAP:
-            raise ValueError(f"scalar_type_id {scalar_type_id} doesn't exists.")
+            raise ValueError(f"scalar_type_id {scalar_type_id} does not exist.")
         return _SCALAR_TYPES_ID_MAP[scalar_type_id]
 
 
-# naming generally follows: https://github.com/jax-ml/ml_dtypes
-# for floating point types (leading f) the scheme is:
+# Naming generally follows https://github.com/jax-ml/ml_dtypes.
+# For floating-point types (leading ``f``), the scheme is:
 #  `float<size_bits>_e<exponent_bits>m<mantissa_bits>[flags]`
-#  flags:
-#  - no-flags: means it follows IEEE 754 conventions
-#  - f: means finite values only (no infinities)
-#  - n: means nans are supported (non-standard encoding)
-# for integer types the scheme is:
+#  Flags:
+#  - no flags: follows IEEE 754 conventions
+#  - f: supports finite values only (no infinities)
+#  - n: supports NaNs (nonstandard encoding)
+# For integer types, the scheme is:
 #  `[u]int<size_bits>[b<bias>]`
-#  - if bias is not present it means its zero
+#  - If the bias is absent, it is zero.
 
 
 class scalar_types:

@@ -680,18 +680,18 @@ def gluon_mla_prefill_gfx1250(
     del max_seqlen_kv, seq_lens_kv
     if logit_cap != 0.0:
         raise NotImplementedError(
-            "gluon MLA prefill gfx1250 does not support logit_cap"
+            "Gluon MLA prefill on gfx1250 does not support logit_cap"
         )
     if q.dim() != 3 or k.dim() != 3 or v.dim() != 3:
         raise ValueError("q, k, v must be 3D [tokens, heads, head_dim]")
     if q.shape[-1] != 192 or k.shape[-1] != 192:
         raise ValueError(
-            "gluon MLA prefill requires qk_head_dim=192, "
+            "Gluon MLA prefill requires qk_head_dim=192, "
             f"got {q.shape[-1]} and {k.shape[-1]}"
         )
     if v.shape[-1] != 128:
         raise ValueError(
-            f"gluon MLA prefill requires v_head_dim=128, got {v.shape[-1]}"
+            f"Gluon MLA prefill requires v_head_dim=128, got {v.shape[-1]}"
         )
     if k.shape[0] != v.shape[0] or k.shape[1] != v.shape[1]:
         raise ValueError("k and v must have matching token and head dimensions")

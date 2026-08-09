@@ -115,7 +115,7 @@ class GrammarManager:
 
                 # Don't cancel the compile future: it's shared across
                 # every concurrent request for the same grammar key
-                # (see ``get_cached_or_future_value``), so cancelling
+                # (see ``get_cached_or_future_value``), so canceling
                 # would raise CancelledError on still-valid waiters.
                 # The compile runs to completion in the background and
                 # its result lands in the cache for future reuse.

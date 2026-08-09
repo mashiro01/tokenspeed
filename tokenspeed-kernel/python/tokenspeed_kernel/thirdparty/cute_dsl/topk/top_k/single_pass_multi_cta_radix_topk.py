@@ -58,7 +58,7 @@ STATE_SIZE = 3 * _HIST_SIZE + 2  # 770
 
 
 # ---------------------------------------------------------------------------
-# GPU-scope synchronisation primitives (inline PTX)
+# GPU-scope synchronization primitives (inline PTX)
 # ---------------------------------------------------------------------------
 @cute.jit
 def fence_acq_rel_gpu(*, loc=None, ip=None):
@@ -617,7 +617,7 @@ class SinglePassMultiCTARadixTopKKernel:
         num_threads,
         tidx,
     ):
-        """Execute one radix select round with inter-CTA synchronisation."""
+        """Execute one radix-select round with inter-CTA synchronization."""
         # FlashInfer-style triple-buffer rotation
         hist_buf_idx = (
             iter * cutlass.Int32(num_rounds) + cutlass.Int32(round_idx)

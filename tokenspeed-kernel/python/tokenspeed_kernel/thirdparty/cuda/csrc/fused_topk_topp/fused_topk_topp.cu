@@ -20,7 +20,7 @@
 
 // Fused TopK + TopP renorm. Picks one of three branches per row, but launches
 // the same kernels every call so the host-side path is deterministic and
-// CUDA-graph capturable. Per-row dispatch happens inside the apply kernel via
+// CUDA graph capturable. Per-row dispatch happens inside the apply kernel via
 // topKs[row].
 
 #include <cuda_runtime.h>
@@ -629,7 +629,7 @@ void invokeFusedTopKTopP(float const* probs, SizeType32 const* topKs, float cons
     int32_t* topKIdx = static_cast<int32_t*>(ptrs[2]);
     void* toppWS = ptrs[3];
 
-    // ── Stage 0a: pull the side stream into any in-flight CUDA-graph capture
+    // ── Stage 0a: pull the side stream into any in-flight CUDA graph capture
     //              BEFORE the first side-stream op. A capture only includes
     //              work issued on streams already joined to the capture; if we
     //              memset outProbs on a still-unjoined side stream, the memset

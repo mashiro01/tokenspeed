@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Helpers for initializing and caching torch distributed process groups."""
+"""Helpers for initializing and caching PyTorch distributed process groups."""
 
 from datetime import timedelta
 

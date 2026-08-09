@@ -76,7 +76,7 @@ DEFAULT_CUDA_ARCHS = ("100a", "103a")
 CUDA_CSRC_DIR = THIRDPARTY_DIR / "cuda" / "csrc"
 CUDA_OBJS_DIR = THIRDPARTY_DIR / "cuda" / "objs"
 
-# JIT kernels source directory (no pre-compilation, just need sources available)
+# JIT kernel source directory; compilation occurs at runtime.
 JIT_CSRC_DIR = THIRDPARTY_DIR / "jit_kernel" / "csrc"
 
 CUDA_HOME = os.environ.get("CUDA_HOME", "/usr/local/cuda")
@@ -661,7 +661,7 @@ class CudaKernelBuilder:
         except ImportError:
             pass
 
-        # flashinfer bundles TRT-LLM internal FP4 helpers
+        # FlashInfer bundles TensorRT-LLM's internal FP4 helpers
         # (tensorrt_llm/kernels/quantization_utils.cuh: cvt_warp_fp16_to_fp4,
         # silu_and_mul, cvt_quant_to_fp4_get_sf_out_offset). Expose them so
         # our own fused silu+mul+nvfp4 kernel can reuse them.
@@ -934,7 +934,7 @@ setup(
     install_requires=_selected_install_requires(),
     packages=find_packages(),
     package_data={
-        # Pre-swept flashinfer MoE tactic tables (see ops/tuning.py).
+        # Pre-swept FlashInfer MoE tactic tables (see ops/tuning.py).
         "tokenspeed_kernel.ops.moe.flashinfer": ["tactics/*.json"],
         "tokenspeed_kernel.thirdparty.cuda": ["objs/**/*.so"],
         # Vendored MiniMax MSA CuTe sources: cute/ has no __init__.py (it is

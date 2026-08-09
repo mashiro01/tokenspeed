@@ -22,7 +22,7 @@
  * Dense silu_and_mul + NVFP4 block-scale quantize (128x4 swizzled scales),
  * with PDL.
  *
- * Fork of flashinfer's ``cvt_fp16_to_fp4_expert`` (which is MoE-shaped with
+ * Fork of FlashInfer's ``cvt_fp16_to_fp4_expert`` (which is MoE-shaped with
  * an n_experts / mask interface) — stripped to the dense single-batch case
  * and wired for Programmatic Dependent Launch so the upstream FC1 GEMM and
  * downstream FC2 GEMM can overlap across this fused quantize.

@@ -1,11 +1,11 @@
-# MiniMax Sparse Attention (MSA) — CuTe-DSL kernel
+# MiniMax Sparse Attention (MSA) — CuTe DSL kernel
 
-This is the **CuTe-DSL** implementation of MSA, shipped inside the
+This is the **CuTe DSL** implementation of MSA, shipped inside the
 `fmha_sm100` Python package. For the package overview, install steps, and
 the dense csrc JIT path, see the
 [top-level README](../../../../README.md).
 
-The rest of this file documents the **sparse (CuTe-DSL)** surface only: CSR
+The rest of this file documents only the **sparse (CuTe DSL)** surface: CSR
 metadata, schedules, sparse page attention, FP8 / NVFP4 / FP4 quantization,
 the paged FP8 decode wrapper, and the FP4 indexer.
 
@@ -34,17 +34,17 @@ The current public support contract is intentionally narrow:
 | Sparse attention forward | `qhead_per_kv` in `{1, 2, 4, 8, 16}` |
 | CSR builder | `topK` in `{4, 8, 16, 32}`, `blk_kv=128` |
 | Sparse page attention | Forward-only, `qhead_per_kv` in `{1, 2, 4, 8, 16}` |
-| FP8 KV prefill | Forward-only, BF16 Q + FP8 e4m3 K/V -> BF16 attention/output, flat and paged KV |
-| Mixed FP8 QKV prefill | Forward-only, FP8 e4m3 Q/K/V storage with FP8 QK and BF16 PV, flat and paged KV |
-| NVFP4 KV prefill | Forward-only, BF16 or FP8 e4m3 Q + packed NVFP4 K/V, flat and paged KV |
-| Paged FP8 decode | Forward-only, FP8 e4m3 Q/K/V → BF16 O, `qhead_per_kv=16`, `page_size=128`, SM100 |
+| FP8 KV prefill | Forward-only, BF16 Q + FP8 E4M3 K/V → BF16 attention/output, flat and paged KV |
+| Mixed FP8 QKV prefill | Forward-only, FP8 E4M3 Q/K/V storage with FP8 QK and BF16 PV, flat and paged KV |
+| NVFP4 KV prefill | Forward-only, BF16 or FP8 E4M3 Q + packed NVFP4 K/V, flat and paged KV |
+| Paged FP8 decode | Forward-only, FP8 E4M3 Q/K/V → BF16 O, `qhead_per_kv=16`, `page_size=128`, SM100 |
 | FP4 indexer | SM100 block-score API, MXFP4/NVFP4, `D=128`, paged K, `blk_kv=128` |
 | Tests and benchmarks | CUDA required |
 
 ## Installation
 
-Install a CUDA-enabled PyTorch build that matches your environment first. Then
-install the repo-side Python requirements:
+First, install a CUDA-enabled PyTorch build that matches your environment. Then
+install the repository's Python requirements:
 
 ```bash
 make setup
@@ -55,10 +55,10 @@ make setup
 The runtime API expects CUDA tensors for Q/K/V, `cu_seqlens_*`, CSR metadata,
 and the sparse attention schedule. The simplest production flow is:
 
-1. Build `q`, `k`, `v`
-2. Build CUDA `q2k_indices` with shape `[Hkv, total_q, topK]`
-3. Build CSR and schedule with [`build_k2q_csr`](./sparse_index_utils.py)
-4. Call `sparse_atten_func(..., schedule=schedule)`
+1. Build `q`, `k`, and `v`.
+2. Build CUDA `q2k_indices` with shape `[Hkv, total_q, topK]`.
+3. Build the CSR metadata and schedule with [`build_k2q_csr`](./sparse_index_utils.py).
+4. Call `sparse_atten_func(..., schedule=schedule)`.
 
 Example:
 
@@ -129,8 +129,8 @@ out, lse, lse_temperature_out = sparse_atten_func(
 )
 ```
 
-For a complete customer-scale example with NVTX ranges around CSR build and
-FWD, see [`example.py`](./example.py).
+For a complete customer-scale example with NVTX ranges around the CSR build and
+forward pass, see [`example.py`](./example.py).
 
 ## Input Metadata
 
@@ -167,7 +167,7 @@ objects raise an error instead of silently falling back.
 - `page_table`: `[B, max_num_pages_per_seq]`
 - `seqused_k`: optional `[B]`, logical valid KV length per batch
 - `cu_seqlens_q`: `[B + 1]`
-- do not pass `cu_seqlens_k` together with `page_table`
+- Do not pass `cu_seqlens_k` together with `page_table`.
 
 Use `seqused_k` whenever logical KV length is smaller than the physical page
 capacity. This is the normal way to represent partially used tail pages.
@@ -177,19 +177,19 @@ capacity. This is the normal way to represent partially used tail pages.
 The SM100 sparse forward kernel exposes quantized and mixed-precision prefill
 paths through the public sparse attention interface:
 
-- `fp8_kv`: call `sparse_atten_func` with BF16 Q and FP8 e4m3 K/V. The kernel
+- `fp8_kv`: call `sparse_atten_func` with BF16 Q and FP8 E4M3 K/V. The kernel
   stages FP8 K/V with TMA and converts to BF16 MMA shared-memory layout before
   BF16 QK/PV attention.
-- `mixed_fp8_qkv_pv_bf16`: call `sparse_atten_func` with FP8 e4m3 Q/K/V and
+- `mixed_fp8_qkv_pv_bf16`: call `sparse_atten_func` with FP8 E4M3 Q/K/V and
   pass `qk_dtype=torch.float8_e4m3fn`, `pv_dtype=torch.bfloat16`. QK runs with
   FP8 operands, while V is cast from FP8 storage to BF16 for PV MMA. This path
   does not apply KV scales or dequantization.
 - `nvfp4_kv`: call [`sparse_atten_nvfp4_kv_func`](./interface.py) with BF16 or
-  FP8 e4m3 Q and packed NVFP4 K/V bytes plus `scale_128x4` tensors. The kernel
+  FP8 E4M3 Q and packed NVFP4 K/V bytes plus `scale_128x4` tensors. The kernel
   stages packed K/V with TMA and converts through the NVFP4 scale path before
   MMA.
 
-Both paths support flat varlen K/V and paged K/V. Paged K/V uses the same
+All three paths support flat variable-length K/V and paged K/V. Paged K/V uses the same
 logical layout contract as sparse page attention. For packed NVFP4 K/V,
 `k.shape[-1] == v.shape[-1] == D // 2` because two E2M1 values are packed per
 byte; `D` is still taken from `q.shape[-1]`.
@@ -231,7 +231,7 @@ out, lse = sparse_atten_func(
 )
 ```
 
-### CSR And Schedule Preprocessing
+### CSR and Schedule Preprocessing
 
 [`sparse_index_utils.py`](./sparse_index_utils.py) exposes the public CSR build
 helper:
@@ -285,7 +285,7 @@ scores = fp4_indexer_block_scores(
 )
 ```
 
-### FP4 Input And Output Contract
+### FP4 Input and Output Contract
 
 - `q_fp4`: `[total_q, Hq, 64]` packed FP4 bytes. Logical head dimension is
   `D=128`, packed as two FP4 values per byte.
@@ -307,7 +307,7 @@ Packed FP4 tensors must be CUDA tensors, contiguous in the expected layout, and
 
 ### FP4 Scale Layouts
 
-Scale dtype is format-specific: MXFP4 uses `torch.float8_e8m0fnu`, while NVFP4
+The scale dtype is format-specific: MXFP4 uses `torch.float8_e8m0fnu`, while NVFP4
 uses `torch.float8_e4m3fn`.
 
 `scale_layout="preordered_mma"` is the default production path. It expects Q
@@ -387,7 +387,7 @@ numbers on the target SM100 system after JIT warmup; they depend on GPU clocks,
 driver, CUDA/PyTorch versions, and whether the measured path includes
 public-scale reorder.
 
-Reference production-path measurements, captured 2026-05-21. The two
+Reference production-path measurements were captured on 2026-05-21. The two
 columns are anonymized on the public README — `GPU1` is a higher-clock
 SM100 part, `GPU2` is a lower-clock SM100 part. The exact product
 mapping is intentionally not recorded in the open-source tree. Command:
@@ -540,7 +540,7 @@ ncu --profile-from-start no --set full -o profiles/ncu/ncu_all \
   python test_sparse_atten.py benchmark --profile
 ```
 
-Nsight Systems e2e profile for `build_k2q_csr -> fwd`:
+Nsight Systems end-to-end profile for `build_k2q_csr → fwd`:
 
 ```bash
 nsys profile --force-overwrite=true --sample=none --cpuctxsw=none \
@@ -551,7 +551,7 @@ nsys profile --force-overwrite=true --sample=none --cpuctxsw=none \
 ```
 
 This captures only the measured profiler range, after warmup/compile. The NVTX
-ranges from `example.py` separate CSR build and FWD.
+ranges from `example.py` separate the CSR build and forward pass.
 
 ## Sparse Page Attention Notes
 
@@ -566,7 +566,7 @@ Important constraints:
 ## Paged FP8 Decode
 
 The paged FP8 decode wrapper provides a low-latency forward path for the
-decode step (small `seqlen_q`, large `seqlen_k`).  It is exposed through
+decode step (small `seqlen_q`, large `seqlen_k`). It is exposed through
 [`SparseDecodePagedAttentionWrapper`](./interface.py) and uses a
 `plan() → run()` API so the schedule (split-KV chunking, per-batch work
 tiles) is built once and reused across many runs with matching shape —
@@ -579,9 +579,9 @@ The decode path is intentionally narrower than the dense sparse path:
 | Field | Required value |
 |---|---|
 | Architecture | SM100 |
-| Q / K / V dtype | `torch.float8_e4m3fn` |
+| Q/K/V dtype | `torch.float8_e4m3fn` |
 | Output dtype | `torch.bfloat16` |
-| Head dim | `D=128` |
+| Head dimension | `D=128` |
 | `qhead_per_kv` | `16` (i.e. `num_qo_heads / num_kv_heads == 16`) |
 | `seqlen_q` (per request) | small (decode), tested at `Sq ∈ {1, 8}` |
 | `page_size` | `128` (must equal `blk_kv`) |
@@ -589,7 +589,7 @@ The decode path is intentionally narrower than the dense sparse path:
 | Batch | `1 ≤ B ≤ 1024` |
 
 `seqused_k` may vary across batch (variable-length decode is the design
-target).  The schedule includes a load-balance heuristic that triggers
+target). The schedule includes a load-balancing heuristic that triggers
 when the kv-length distribution is imbalanced (max/avg ≥ 1.5) — see the
 inline comment in [`build_decode_schedule.cu`](./src/sm100/fwd_decode/build_decode_schedule/build_decode_schedule.cu)
 for the exact formula.
@@ -637,15 +637,16 @@ out = torch.empty_like(q, dtype=torch.bfloat16)
 softmax_scale = 1.0 / math.sqrt(dim)
 
 # Run is shape-stable — replan only when batch size or max page count
-# changes.  Variable seqused_k values within the planned shape are OK.
+# changes. `seqused_k` may vary across runs within the planned shape without
+# replanning.
 for _ in range(num_decode_steps):
     wrapper.run(q, k, v, softmax_scale=softmax_scale, out=out)
 ```
 
 ### Compile-time logging
 
-CUTE DSL kernels JIT-compile on first call; subsequent calls hit the
-compile cache.  To distinguish a slow first compile (a few seconds)
+CuTe DSL kernels JIT-compile on first call; subsequent calls hit the
+compile cache. To distinguish a slow first compile (a few seconds)
 from a kernel hang (>30s, treated as deadlock per `CLAUDE.md`):
 
 ```bash
@@ -653,20 +654,20 @@ MINIMAX_LOG_COMPILE=1 python your_script.py
 ```
 
 This routes `cute.compile` timing to the `minimax` logger at DEBUG
-level.  Equivalent in code:
+level. Equivalent in code:
 
 ```python
 import logging
 logging.getLogger("minimax").setLevel(logging.DEBUG)
 ```
 
-## Repo Layout
+## Repository Layout
 
 High-signal files:
 
 - [`interface.py`](./interface.py): public sparse attention interface
 - [`fp4_indexer_interface.py`](./fp4_indexer_interface.py): public FP4 indexer block-score interface
-- [`example.py`](./example.py): customer-facing e2e CSR schedule + attention example with NVTX
+- [`example.py`](./example.py): customer-facing end-to-end CSR schedule and attention example with NVTX
 - [`sparse_index_utils.py`](./sparse_index_utils.py): public CSR build wrapper and reference helpers
 - [`src/sm100/prepare_k2q_csr.py`](./src/sm100/prepare_k2q_csr.py): SM100 CUDA CSR builder dispatcher
 - [`src/sm100/fp4_indexer.py`](./src/sm100/fp4_indexer.py): SM100 FP4 indexer kernel classes
@@ -678,12 +679,33 @@ High-signal files:
 
 ## Known Limitations
 
-- The first run is often compile-dominated because CuTe DSL kernels are specialized and JIT-compiled.
-- `D=128` is the only documented and tested head dimension in the current contract.
-- The FP4 indexer currently returns block max scores only; topK selection and
+- The first run is often dominated by compilation because CuTe DSL kernels are
+  specialized and JIT-compiled.
+- `D=128` is the only documented and tested head dimension in the current
+  contract.
+- The FP4 indexer currently returns block maximum scores only; top-k selection and
   CSR construction remain caller-owned downstream steps.
-- This repo is not packaged as a pip module yet; it is used directly from the source tree.
-- Paged FP8 decode currently requires `qhead_per_kv=16`, `page_size=128`, and SM100. Other configurations are not supported by the schedule kernel.
-- Paged FP8 decode `batch <= 1024`. The single-CTA schedule kernel stores per-batch state in shared memory; larger batches need a multi-CTA cooperative redesign (planned but not yet implemented).
-- Paged FP8 decode requires `seqused_k[b] >= seqlen_q` for every batch (i.e. context must include the q-tokens being emitted — a batched-decode invariant), AND `seqused_k[b] % page_size ∈ {0, seqlen_q, 2·seqlen_q, ..., page_size − seqlen_q}` (the last partial page must hold a whole packed-GQA q-group, which is `seqlen_q` columns). Violations are caught at `plan()` with a clear `ValueError`. The same constraint exists in FA-style packgqa kernels in principle but never fires there because FA's typical use satisfies `seqlen_k ≥ seqlen_q` (decode emits 1 token; prefill is self-attention). Tracked as a kernel-level TODO (saturate `causal_col_limit ≥ 1` in mask.py).
-- Combine kernel caps `max_splits ≤ 256` (LDGSTS path's sLSE smem + per-thread register pressure). The schedule kernel auto-caps `chunk_pages ≥ ceil(max_pages / 256)` so this is never hit in auto mode, but at very large kv (> 512K) the cap reduces parallelism slightly. Tracked as a follow-up: rewrite combine with multi-pass tree reduction to remove the cap.
+- This repository is not yet packaged as a Python module; it is used directly
+  from the source tree.
+- Paged FP8 decode currently requires `qhead_per_kv=16`, `page_size=128`, and
+  SM100. The schedule kernel does not support other configurations.
+- Paged FP8 decode supports batch sizes up to 1,024. The single-CTA schedule
+  kernel stores per-batch state in shared memory; larger batches require a
+  multi-CTA cooperative redesign, which is planned but not yet implemented.
+- Paged FP8 decode requires `seqused_k[b] >= seqlen_q` for every batch. In other
+  words, the context must include the Q tokens being emitted, which is a
+  batched-decode invariant. It also requires
+  `seqused_k[b] % page_size ∈ {0, seqlen_q, 2·seqlen_q, ..., page_size − seqlen_q}`;
+  the last partial page must hold a complete packed-GQA Q group occupying
+  `seqlen_q` columns. Violations produce a clear `ValueError` from `plan()`.
+  The same constraint applies in principle to FlashAttention-style PackGQA
+  kernels but is not triggered there because typical FlashAttention use
+  satisfies `seqlen_k ≥ seqlen_q` (decode emits one token; prefill uses
+  self-attention). A kernel-level TODO tracks saturating
+  `causal_col_limit ≥ 1` in `mask.py`.
+- The combine kernel caps `max_splits` at 256 because of the LDGSTS path's sLSE
+  shared-memory use and per-thread register pressure. The schedule kernel
+  automatically sets `chunk_pages ≥ ceil(max_pages / 256)`, so automatic mode
+  never exceeds the cap. For KV caches larger than 512K tokens, however, the
+  cap reduces parallelism slightly. A follow-up will replace the combine
+  operation with a multipass tree reduction to remove the cap.

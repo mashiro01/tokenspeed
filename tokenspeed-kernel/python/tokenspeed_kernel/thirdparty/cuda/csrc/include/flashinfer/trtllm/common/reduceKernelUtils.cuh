@@ -273,7 +273,7 @@ __inline__ __device__ void cgBlockReduceSumElements(float* element_list,
 #else
     // TODO Add implementation here
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-      printf("[ERROR] Not support cgBlockReduceSumElements when CUDA < 11 \n");
+      printf("[ERROR] cgBlockReduceSumElements requires CUDA 11 or later\n");
       assert(false);
     }
 #endif

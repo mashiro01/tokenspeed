@@ -2311,7 +2311,7 @@ class TestDeepseekV4Config(unittest.TestCase):
             for spec in specs
         }
 
-        # Scheduler tables retain absolute CacheBlock positions and represent
+        # Scheduler tables retain absolute ``CacheBlock`` positions and represent
         # expired sliding entries as holes. Graph buffers must therefore cover
         # the full request extent at each group's own CacheBlock granularity.
         self.assertEqual(widths[V4_SWA_KV_GROUP_ID], 65)
@@ -2570,7 +2570,7 @@ class TestDeepseekV4Config(unittest.TestCase):
             output_buffers=output_buffers,
         )
 
-    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required")
     def test_deepseek_v4_target_mtp_graph_replay_refreshes_flat_tables(self):
         device = torch.device("cuda")
         target_specs = tuple(
@@ -5612,8 +5612,8 @@ if __name__ == "__main__":
 
 
 def test_v4_merged_solve_draft_is_a_continuation_layer():
-    """One big model on V4: the MTP draft layer is simply the next layer of
-    the merged model (compress_ratios already carries it), so one solve
+    """For a single large V4 model, the MTP draft layer is the next layer of
+    the merged model (``compress_ratios`` already includes it), so one solve
     yields one plan whose draft fields share the target groups' packing."""
     hf_config = SimpleNamespace(
         num_hidden_layers=6,
@@ -5634,8 +5634,8 @@ def test_v4_merged_solve_draft_is_a_continuation_layer():
     )
     merged = solve_deepseek_v4_memory_layout(fields)
     plan = merged.with_num_lcm_blocks(2)
-    # Every layer's swa field (all 6 layers incl. the MTP continuation
-    # layer) shares the one v4.swa_kv group — one packing, one page-id
+    # Every layer's SWA field (all six layers, including the MTP continuation
+    # layer) shares one v4.swa_kv group: one packing and one page ID
     # space for target and draft alike.
     swa_fields = [f for f in plan.fields if f.group_id == "v4.swa_kv"]
     assert len(swa_fields) == len(layout.layer_ratio)

@@ -23,12 +23,12 @@
 These exercise:
   * Parity with ``torch.argmax`` across vocab sizes used by real LLMs and
     dtypes (fp32 / bf16 / fp16). The kernel upcasts at load and reduces in
-    Float32, so low-precision inputs match torch bit-for-bit.
-  * Correct routing through the torch fallback for unsupported shapes
+    Float32, so low-precision inputs match PyTorch bit-for-bit.
+  * Correct routing through the PyTorch fallback for unsupported shapes
     (small N, unaligned N, 1D, CPU).
-  * CUDA-graph capture/replay — the kernel must stay in-place under graph
+  * CUDA graph capture/replay — the kernel must stay in-place under graph
     capture, since the sampling backends run under captured graphs.
-  * Pure-torch fallback path on non-NVIDIA hosts (AMD ROCm / CPU-only /
+  * Pure-PyTorch fallback path on non-NVIDIA hosts (AMD ROCm / CPU-only /
     sm_80 / sm_120+ / missing nvidia-cutlass-dsl).
 """
 
@@ -203,7 +203,7 @@ def test_argmax_falls_back_on_cpu():
 
 
 def test_argmax_falls_back_when_cute_unavailable(monkeypatch):
-    """Simulate AMD ROCm / CPU-only / missing-cutlass platforms.
+    """Simulate AMD ROCm, CPU-only, and missing-CUTLASS platforms.
 
     Forces the kernel availability flag off and verifies that both ``argmax``
     and ``argmax_pair`` still return correct results via ``torch`` ops.
@@ -227,7 +227,7 @@ def test_argmax_falls_back_when_cute_unavailable(monkeypatch):
             cute_argmax(x), torch.argmax(x, dim=-1), atol=0, rtol=0
         )
 
-    # argmax_pair: should still pack (max, idx) via torch fallback when CUDA.
+    # argmax_pair: should still pack (max, idx) via PyTorch fallback when CUDA.
     if torch.cuda.is_available():
         x = torch.randn(8, MODEL_VOCABS["qwen3_5"], device="cuda", dtype=torch.float32)
         pair = cute_argmax_pair(x)
@@ -357,7 +357,7 @@ def test_argmax_in_range_for_nan_and_neg_inf_rows(N):
 
 
 def test_argmax_mtp_pattern():
-    """Matches the test_argmax_mtp_case in TRT-LLM: one hot row at vocab[1].
+    """Matches the test_argmax_mtp_case in TensorRT-LLM: one hot row at vocab[1].
 
     Uses DeepSeek V4 vocab (already JIT-cached by earlier kernel-shape tests
     within the same process) to keep this test fast — the row pattern is what's
@@ -372,7 +372,7 @@ def test_argmax_mtp_pattern():
 
 # ---------------------------------------------------------------------------
 # ``out=`` parameter — the kernel must honor caller-provided int32 / int64
-# buffers (used by greedy / flashinfer / eagle to skip a downstream cast).
+# buffers (used by greedy, FlashInfer, and EAGLE paths to skip a downstream cast).
 # ---------------------------------------------------------------------------
 
 
@@ -455,7 +455,7 @@ def test_argmax_under_cuda_graph(M, N):
 
 @pytest.mark.parametrize("out_dtype", [torch.int32, torch.int64])
 def test_argmax_out_buffer_under_cuda_graph(out_dtype):
-    """``cute_argmax(x, out=buf)`` must be CUDA-graph-safe — this is the
+    """``cute_argmax(x, out=buf)`` must be CUDA graph-safe — this is the
     pattern GreedySamplingBackend uses inside the captured sampling graph.
 
     Caller provides a pre-allocated buffer (no graph-internal allocation of
@@ -539,7 +539,7 @@ def test_greedy_sample_pattern_under_cuda_graph():
 
 
 # ---------------------------------------------------------------------------
-# Pure-torch fallback on hosts without the CuTe DSL kernel — exercises the
+# Pure-PyTorch fallback on hosts without the CuTe DSL kernel — exercises the
 # code path CPU-only / sm_80 / sm_120+ / missing-nvidia-cutlass-dsl
 # would take. Selected at import time via the module-level dispatch in
 # cute_dsl.py; we reach it here by calling the underscore-prefixed
@@ -548,7 +548,7 @@ def test_greedy_sample_pattern_under_cuda_graph():
 
 
 def test_argmax_torch_fallback_on_cpu_tensor():
-    """Pure-torch fallback must handle CPU input — non-CUDA hosts route here."""
+    """Pure-PyTorch fallback must handle CPU input — non-CUDA hosts route here."""
     x = torch.randn(8, 4096, dtype=torch.float32)
     out = cute_dsl._argmax_torch_fallback(x)
     torch.testing.assert_close(out, torch.argmax(x, dim=-1), atol=0, rtol=0)

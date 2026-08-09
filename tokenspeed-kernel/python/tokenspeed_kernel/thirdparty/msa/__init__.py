@@ -75,7 +75,7 @@ try:
         apache-tvm-ffi<=0.1.10 maps fp8 to DLPack type_code=10 (kDLBool)
         instead of 12/13, causing torch.from_dlpack to fail.
         Since fp8 and int8 are both 8-bit, we reinterpret the dtype field
-        as int8 (kDLInt=0, bits=8, lanes=1) so torch can accept it.
+        as INT8 (kDLInt=0, bits=8, lanes=1) so PyTorch can accept it.
         Remove this when apache-tvm-ffi ships correct fp8 DLPack codes.
         """
         get_ptr = ctypes.pythonapi.PyCapsule_GetPointer

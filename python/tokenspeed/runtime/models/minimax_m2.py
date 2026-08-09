@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Inference-only MiniMax-M2 family model compatible with HuggingFace weights."""
+"""Inference-only MiniMax-M2 family model compatible with Hugging Face weights."""
 
 # ruff: noqa: E402
 

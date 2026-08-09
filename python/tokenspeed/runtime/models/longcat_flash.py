@@ -224,7 +224,7 @@ class _RuntimeLongcatMoE(nn.Module):
         if config.hidden_act != "silu":
             raise ValueError(
                 f"Unsupported activation: {config.hidden_act}. "
-                "Only silu is supported for LongCat."
+                "Only the SiLU activation is supported for LongCat."
             )
 
         self.router = _RuntimeLongcatRouter(

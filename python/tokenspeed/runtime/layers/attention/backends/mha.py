@@ -184,7 +184,7 @@ class MHAAttnBackend(CacheGroupsMixin, AttentionBackend):
         page_table: torch.Tensor,
         forward_mode: ForwardMode,
         # Only consumed on the extend/mixed path; decode callers (e.g. the
-        # DFLASH draft and the cuda-graph wrapper's draft decode init) omit
+        # DFLASH draft and the CUDA graph wrapper's draft decode init) omit
         # them, so they must be optional.
         extend_seq_lens: torch.Tensor | None = None,
         extend_seq_lens_cpu: torch.Tensor | None = None,
@@ -193,7 +193,9 @@ class MHAAttnBackend(CacheGroupsMixin, AttentionBackend):
         block_tables: dict[str, torch.Tensor] | None = None,
         **kwargs,
     ):
-        assert not forward_mode.is_mixed(), "mha backend does not support mixed batch"
+        assert (
+            not forward_mode.is_mixed()
+        ), "The MHA backend does not support mixed batches"
 
         seq_lens = seq_lens[:bs]
 
@@ -489,7 +491,7 @@ class MHAAttnBackend(CacheGroupsMixin, AttentionBackend):
 
     def fill_block_decode_seq_lens(self, bs: int, block_seq_lens: torch.Tensor) -> None:
         """DFLASH: broadcast each request's block-end length to its
-        spec_num_tokens cuda-graph decode rows (uniform, non-causal).
+        spec_num_tokens CUDA graph decode rows (uniform, non-causal).
 
         Called by the drafter inside the captured graph so that on every replay
         the expanded seq_lens re-derive from the live draft length (which is
@@ -760,7 +762,8 @@ class MHAAttnBackend(CacheGroupsMixin, AttentionBackend):
         """
         t, d = x.shape[0], self.head_dim
         h = x.numel() // (t * d)
-        # (A PDL triton variant measured 0.07 ms slower e2e at decode Q shapes; flashinfer stays)
+        # A PDL Triton variant measured 0.07 ms slower end to end for decode Q
+        # shapes, so FlashInfer remains enabled.
         data, sf = quantize_mxfp8(x.reshape(t * h, d))
         return (
             data.view(t, h, d),
@@ -869,8 +872,8 @@ class MHAAttnBackend(CacheGroupsMixin, AttentionBackend):
         # max_context_len for a request near the context limit; without the
         # clamp the kernel reads page_table[:, >= max_num_pages] out of bounds
         # (CUDA illegal memory access). Mirrors fill_block_decode_seq_lens on the
-        # cuda-graph path (this eager path is taken by mixed prefill+decode
-        # batches even when cuda graphs are enabled).
+        # CUDA graph path (this eager path is taken by mixed prefill+decode
+        # batches even when CUDA graphs are enabled).
         expanded_seq_lens.view(bs, spec_num_tokens).copy_(
             seq_lens.clamp(spec_num_tokens, self.max_context_len)[:, None]
         )

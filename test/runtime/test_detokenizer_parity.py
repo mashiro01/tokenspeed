@@ -1,7 +1,7 @@
 """Parity tests locking the detokenizer state machine.
 
 These tests exercise the ``incremental_decode_batch`` state machine
-against real HuggingFace tokenizers so that a future inline
+against real Hugging Face tokenizers so that a future inline
 ``IncrementalDetokenizer`` in ``runtime/engine/`` can be cross-checked
 against the same fixtures. Coverage spans the parity gates that are
 testable at the detokenizer level plus every hot-path branch in
@@ -31,8 +31,8 @@ Gates 3, 7, 8, and 9 live above the detokenizer layer (raw-token mode
 routing, ``stream_interval`` scheduling, abort wiring, shared-socket
 dispatch) and are out of scope for this file.
 
-The tests do not need GPU execution — only the full tokenspeed import
-graph (transformers, torch, triton, etc.) — so they run on the
+The tests do not need GPU execution, only the full TokenSpeed import graph
+(Transformers, PyTorch, Triton, and related packages), so they run on the
 ``runtime-1gpu`` suite for scheduling convenience. ``est_time`` is
 set to 90s to account for the dual-tokenizer matrix and the added edge
 case classes.

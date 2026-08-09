@@ -19,10 +19,11 @@
 # SOFTWARE.
 
 """
-Multi-GPU tests for tokenspeed_kernel.ops.communication.
+Multi-GPU tests for ``tokenspeed_kernel.ops.communication``.
 
-Correctness check: approximate match against torch reference (IPC-based reduction differs
-from NCCL reduction order, so bf16 results may differ slightly -- this is expected).
+The correctness check compares approximately with the PyTorch reference. The
+IPC-based reduction uses a different order from NCCL, so BF16 results may
+differ slightly as expected.
 
 Run with:
     pytest tokenspeed-kernel/test/thirdparty/test_trtllm_comm.py -v

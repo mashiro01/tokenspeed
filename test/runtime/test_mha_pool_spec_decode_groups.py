@@ -31,7 +31,7 @@ class MHAPoolGroupPublicationTest(unittest.TestCase):
                 MHATokenToKVPool,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.MHATokenToKVPool = MHATokenToKVPool
 

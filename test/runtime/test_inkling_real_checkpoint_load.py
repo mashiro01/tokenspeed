@@ -13,13 +13,13 @@ the corresponding real layers' tensors straight from the shards, and checks:
 3. Values land exactly where the reference implementation puts them (qkvr
    fusion, full-layer KV replication, w13 de-interleave, fp32 router).
 
-Run inside the weights container, e.g.::
+Run inside the weights container, for example::
 
     INKLING_REAL_CKPT=/path/to/inkling-checkpoint \
         python3 -m pytest test/runtime/test_inkling_real_checkpoint_load.py -q
 
-NOTE: intentionally NOT registered in CI (confidential checkpoint; needs
-~70 GB of GPU memory for the replica).
+This test is intentionally not registered in CI because the checkpoint is
+confidential and its replica requires approximately 70 GB of GPU memory.
 """
 
 import json

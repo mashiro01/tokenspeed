@@ -13,7 +13,7 @@ register_cuda_ci(est_time=10, suite="runtime-1gpu")
 
 
 def _import_bridge():
-    """Import the bridge; skip if torch / tokenspeed_scheduler ext absent."""
+    """Import the bridge, skipping when PyTorch or the scheduler extension is absent."""
     from tokenspeed.runtime.engine.scheduler_utils import (
         block_tables_from_forward_op,
     )
@@ -27,8 +27,8 @@ class BlockTablesBridgeTest(unittest.TestCase):
             self.bridge = _import_bridge()
         except (ImportError, ModuleNotFoundError) as exc:
             self.skipTest(
-                f"cache bridge unavailable (needs torch + tokenspeed_scheduler "
-                f"extension): {exc}"
+                f"cache bridge unavailable (requires PyTorch and the "
+                f"tokenspeed_scheduler extension): {exc}"
             )
         import torch
 
@@ -150,7 +150,7 @@ class CacheGroupGatingTest(unittest.TestCase):
                 AttentionBackend,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + backend base: {exc}")
+            self.skipTest(f"requires PyTorch and the backend base: {exc}")
         self.AttentionBackend = AttentionBackend
 
     def test_default_backend_does_not_use_cache_groups(self):

@@ -4,7 +4,7 @@ spec_num_tokens on the multi-token (MTP target-verify) path.
 Root cause analyzed in dashllm1.log (DP4+EP4 Qwen3.5-397B, MTP, CUDA graph ON):
 
     accept_rate decays to 0 over multiple rounds. Localized end-to-end:
-      * CUDA-graph padded / idle decode rows are filled with seq_len=1
+      * CUDA graph padded / idle decode rows are filled with seq_len=1
         (InputBuffer.seq_lens_buf[batch_size:].fill_(1)).
       * In MTP target-verify q_len_per_req == spec_num_draft_tokens (e.g. 4).
       * A row with seq_len=1 < q_len=4 gives query positions whose causal key
@@ -15,7 +15,7 @@ Root cause analyzed in dashllm1.log (DP4+EP4 Qwen3.5-397B, MTP, CUDA graph ON):
 
 The MHA backend already guards this (``seq_lens[:bs].clamp_min(
 self.spec_num_tokens)``). This test pins the equivalent guard for the trtllm
-backend: ``_init_multi_token_metadata`` (and the CUDA-graph capture builder)
+backend: ``_init_multi_token_metadata`` (and the CUDA graph capture builder)
 must expose ``cache_seqlens_int32 >= spec_num_tokens`` so padded rows keep a
 non-empty causal span. Plain single-token decode (q_len=1) is unaffected.
 
@@ -69,7 +69,7 @@ def _page_table(req_pool_size: int, max_pages: int) -> torch.Tensor:
 
 
 def test_multi_token_metadata_clamps_padded_seqlen_runtime():
-    """Runtime (non-CUDA-graph) verify path clamps seq_len < spec_num_tokens."""
+    """Runtime (non-CUDA graph) verify path clamps seq_len < spec_num_tokens."""
     be = _make_backend()
     bs = 4
     # Two real rows (long context) + two "padded" rows with seq_len=1, exactly
@@ -132,7 +132,7 @@ def test_plain_decode_seqlen_not_clamped():
 
 
 def test_cuda_graph_capture_builder_clamps():
-    """CUDA-graph capture builder points cache_seqlens at the clamped buffer."""
+    """CUDA graph capture builder points cache_seqlens at the clamped buffer."""
     be = _make_backend()
     max_bs = 8
     be.init_cuda_graph_state(max_bs)

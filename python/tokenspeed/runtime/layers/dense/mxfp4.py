@@ -7,6 +7,9 @@
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
 #
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -32,7 +35,7 @@ class Mxfp4LinearMethod(QuantizeMethodBase):
     """Packed MXFP4 dense weights.
 
     Kimi-K2.5 MXFP4 stores dense layer-0 MLP and MoE shared-expert MLP tensors
-    in the same packed FP4/e8m0 format as routed experts. Runtime activations
+    in the same packed FP4/E8M0 format as routed experts. Runtime activations
     are quantized to packed MXFP4 before the dense GEMM so checkpoint weights
     can stay packed in VRAM.
     """

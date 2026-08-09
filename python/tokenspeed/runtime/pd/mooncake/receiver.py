@@ -578,7 +578,7 @@ class MooncakeKVReceiver:
                 target_dp_group,
             )
             if bootstrap_info is not None:
-                #  only support MLA for now: select one prefill rank as real rank
+                # Only MLA is supported for now: select one prefill rank as the real rank.
                 bootstrap_info["is_dummy"] = not bool(
                     _target_tp_rank == route_plan.target_tp_rank
                     or route_plan.target_tp_rank is None
@@ -762,8 +762,9 @@ class MooncakeKVReceiver:
                     elapsed = now - self.init_time
                     if elapsed >= self.kv_mgr.waiting_timeout:
                         logger.warning_once(
-                            "Some requests fail to receive KV Cache transfer done signal after bootstrapping. "
-                            "If a greater mean TTFT is acceptable, you can 'export TOKENSPEED_DISAGGREGATION_WAITING_TIMEOUT=600' (10 minutes) to relax the timeout condition. "
+                            "Some requests did not receive a KV-cache transfer-completion signal after bootstrapping. "
+                            "If a higher mean TTFT is acceptable, set TOKENSPEED_DISAGGREGATION_WAITING_TIMEOUT=600 "
+                            "to extend the timeout to 10 minutes."
                         )
                         self.kv_mgr.record_failure(
                             self.bootstrap_room,

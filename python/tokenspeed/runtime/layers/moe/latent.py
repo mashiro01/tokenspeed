@@ -88,14 +88,14 @@ def kimi3_join_reduce_moe(
     Three regimes, all element-wise identical:
 
     * Lane hit (decode batch=1): the partials were produced straight into the
-      persistent fused lane, one one-shot reduce with an eligible norm
-      epilogue and zero copies.
-    * Small partials: cat into one contiguous operand and take a single
-      one-shot reduce; the copy is a couple of microseconds there.
+      persistent fused lane, followed by a one-shot reduction with an eligible
+      normalization epilogue and no copies.
+    * Small partials: concatenate them into one contiguous operand and perform
+      a single one-shot reduction; the copy takes only a few microseconds.
     * Partials past the one-shot window (prefill-sized chunks): the cat would
       copy a few hundred MB per layer just to feed one NCCL call, while a
       grouped NCCL launch reduces both tensors in place with the same
-      single-launch latency -- so skip the join entirely.
+      single-launch latency, so skip the join entirely.
     """
 
     if lane is not None and routed_partial.data_ptr() == lane.data_ptr():
@@ -167,10 +167,10 @@ class Kimi3MoEExecutionPlan:
         """Select orchestration without exposing platform policy to the model."""
 
         use_native = native_latent_moe_available()
-        # Hopper (SM90) has no native FP4 tensor cores and no flashinfer SiTU
+        # Hopper (SM90) has no native FP4 Tensor Cores and no FlashInfer SiTU
         # cubin, so K3's MXFP4 SiTU MoE runs weight-only through the Marlin
         # W4A16 GEMM with a fused Triton SiTU epilogue. AUTO picks it whenever
-        # neither the AMD-native nor the (Blackwell) TRT-LLM path is available;
+        # neither the AMD-native nor the (Blackwell) TensorRT-LLM path is available;
         # it can also be forced with ``--moe-backend marlin``.
         use_marlin = not use_native and (
             moe_backend.is_marlin()

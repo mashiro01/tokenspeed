@@ -304,7 +304,7 @@ def _make_local_ep_module(
 
 
 def test_gluon_grouped_device_align_localizes_global_ep_routes_gfx950() -> None:
-    """The larger-M fallback consumes global IDs without torch localization."""
+    """The larger-M fallback consumes global IDs without PyTorch localization."""
     generator = torch.Generator(device="cuda").manual_seed(20260723)
     num_tokens = 33
     num_experts = 8

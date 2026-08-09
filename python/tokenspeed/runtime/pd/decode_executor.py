@@ -249,15 +249,16 @@ class DisaggDecodeExecutor:
             else:
                 pass
         for req_id in to_remove:
-            # Best-effort cleanup mirroring prefill side; request_id is stable
-            # so without explicit pop these dicts would grow unbounded across
-            # failed requests. NOTE: _remote_spec_candidate_ids must NOT be
-            # popped here — its consumer pop_remote_spec_candidate_ids runs
+            # Best-effort cleanup mirrors the prefill side. Because request_id
+            # is stable, these dictionaries would grow without bound across
+            # failed requests unless entries were removed explicitly. Do not
+            # remove _remote_spec_candidate_ids here: its consumer,
+            # pop_remote_spec_candidate_ids, runs
             # later inside event_loop._process_kv_transfer_events, after we return.
-            # That dict is small (one tuple per Success request, between
+            # That dictionary is small (one tuple per successful request, between
             # generate_events emitting RemotePrefillDoneEvent and event_loop
             # consuming it) and is naturally drained by the pop path; an
-            # eager pop here drops the spec candidates on the floor and the
+            # eager removal here discards the speculative candidates, and the
             # next decode forward reads uninitialized future_input_map tail,
             # causing CUDA illegal memory access on embedding lookup.
             self.receivers.pop(req_id, None)

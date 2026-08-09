@@ -150,7 +150,7 @@ def test_abort_uses_the_same_output_marker_for_every_layout(
     EventLoop._request_abort_or_mark(
         loop,
         "request-0",
-        "cancelled",
+        "canceled",
         notify_client=True,
     )
 

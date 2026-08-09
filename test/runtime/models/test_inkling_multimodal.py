@@ -4,7 +4,7 @@ The SMG gateway normally does all media preprocessing; the engine only embeds
 already-extracted features at pre-expanded placeholder offsets. These tests
 exercise exactly that engine surface:
 
-* Unit: InklingAudioTower / InklingHMLPPatchEncoder parity against hand-rolled torch
+* Unit: InklingAudioTower / InklingHMLPPatchEncoder parity with a hand-written PyTorch
   references on shared weights, plan_out_scales schedules, MM config flags,
   and the M-RoPE no-op gate.
 * E2E: an in-process Engine on the released config (layer-truncated,
@@ -67,7 +67,7 @@ def _has_blackwell() -> bool:
 
 
 def _naive_hmlp_forward(encoder, x: torch.Tensor) -> torch.Tensor:
-    """Independent torch reimplementation of the hMLP forward on the same
+    """Independent PyTorch reimplementation of the hMLP forward pass on the same
     weights (explicit reshape/permute fold, F.rms_norm, F.gelu)."""
 
     def fold(x, t_fold, hw_fold):

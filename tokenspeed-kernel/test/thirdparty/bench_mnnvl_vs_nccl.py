@@ -20,13 +20,13 @@
 
 """Where should the fused MNNVL all-reduce hand over to NCCL?
 
-Sweeps token count and times, per shape:
-  * ``nccl``          -- ``dist.all_reduce`` + a separate torch RMSNorm, i.e.
-                         what the unfused path actually costs end to end;
-  * ``mnnvl_oneshot`` -- fused kernel, one-shot (valid to 128 tokens);
-  * ``mnnvl_twoshot`` -- fused kernel, two-shot (valid past 128);
-  * ``ipc_lamport``   -- the single-node IPC workspace, for reference when run
-                         on one node (skipped automatically if unavailable).
+Sweeps the token count and times each shape:
+  * ``nccl``: ``dist.all_reduce`` plus a separate PyTorch RMSNorm, measuring
+    the true end-to-end cost of the unfused path.
+  * ``mnnvl_oneshot``: fused one-shot kernel, valid for up to 128 tokens.
+  * ``mnnvl_twoshot``: fused two-shot kernel, valid beyond 128 tokens.
+  * ``ipc_lamport``: single-node IPC workspace, included as a reference on one
+    node and skipped automatically when unavailable.
 
 Rank 0 prints a table plus the crossover token count, so the dispatch
 thresholds can be set from measurement instead of assumption.

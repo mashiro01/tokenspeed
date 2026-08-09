@@ -97,7 +97,7 @@ def test_deepseek_v4_swa_slot_mapping_prefers_draft_prefill_metadata():
 
 def test_deepseek_v4_swa_slot_mapping_masks_invalid_and_overflow_slots():
     # The mapping must arrive at per-layer SWA inserts already sanitized:
-    # invalid CUDA-graph tokens and out-of-capacity slots masked to -1.
+    # invalid CUDA graph tokens and out-of-capacity slots masked to -1.
     metadata = SimpleNamespace(
         token_to_req_indices=torch.tensor([0, 1], dtype=torch.int32),
         cache=SimpleNamespace(

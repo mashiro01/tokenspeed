@@ -20,7 +20,7 @@
 
 """Device-side MoE routing + block alignment (pure Gluon).
 
-Drop-in replacement for the pure-torch ``moe_align_block_size`` that produces
+Drop-in replacement for the pure-PyTorch ``moe_align_block_size`` that produces
 the identical contract (``sorted_token_ids`` / ``sorted_expert_ids`` /
 ``sorted_weights`` / ``num_valid_ids``) but runs entirely on the GPU. Used by
 the prefill path (large M), where the fused single-CTA align does not scale
@@ -222,7 +222,7 @@ def moe_align_block_size_device(
     expert_start: int = 0,
 ):
     """Fully-device MoE block alignment (pure Gluon). Same return contract as
-    the torch ``moe_align_block_size``.
+    the PyTorch ``moe_align_block_size`` implementation.
 
     ``topk_ids`` may use global expert IDs. ``expert_start`` identifies the
     first expert owned by this rank; routes outside the contiguous local range

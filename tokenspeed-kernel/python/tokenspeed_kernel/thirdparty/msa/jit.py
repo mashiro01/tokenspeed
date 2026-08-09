@@ -64,7 +64,7 @@ _FMHA_VARLEN_DIR = _PACKAGE_DIR / "csrc"
 
 # TokenSpeed patch: the upstream cutlass/ submodule is not vendored; resolve
 # CUTLASS headers from the env override, a package-local checkout, or the
-# flashinfer wheel's bundled tree (see thirdparty/msa/README.md).
+# FlashInfer wheel's bundled tree (see thirdparty/msa/README.md).
 def _find_cutlass_dir():
     explicit = os.environ.get("TOKENSPEED_MSA_CUTLASS_DIR")
     if explicit:

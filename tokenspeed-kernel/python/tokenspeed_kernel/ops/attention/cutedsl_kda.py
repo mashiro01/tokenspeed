@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""CuteDSL KDA drop-in for the chunked KDA prefill scan.
+"""CuTe DSL KDA drop-in for the chunked KDA prefill scan.
 
 Mirrors ``triton.linear.kda.kda_chunk_prefill``'s signature and state
 convention (FLA-native ``[N, HV, K, V]`` states) so the runtime can swap the
@@ -59,7 +59,7 @@ def cutedsl_kda_chunk_prefill(
     lower_bound: float | None = None,
     beta_is_logit: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Chunked prefill KDA scan through the CuteDSL KDA kernel (varlen native).
+    """Chunked prefill KDA scan through the CuTe DSL KDA kernel (varlen native).
 
     Args:
         q: Query ``[B, T, H, K]`` (bfloat16; raw or pre-normalized — the

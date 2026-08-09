@@ -21,7 +21,7 @@
 """Tests for the per-request timeout guards in :mod:`tokenspeed.bench`.
 
 These tests don't talk to a real server; they exercise the timeout helper
-directly. The point is to lock in the behaviour that one stuck
+directly. The point is to lock in the behavior that one stuck
 stream-response future cannot deadlock the outer ``asyncio.gather``: instead
 it surfaces as a normal ``RequestFuncOutput`` marked failed.
 """

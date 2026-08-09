@@ -54,7 +54,7 @@ class HostPageSizingTest(unittest.TestCase):
                 bytes_per_host_page,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch: {exc}")
+            self.skipTest(f"requires PyTorch: {exc}")
         self.torch = torch
         self.HostMirror = HostMirror
         self.bytes_per_host_page = bytes_per_host_page
@@ -181,7 +181,9 @@ class MemoryExecutorTest(unittest.TestCase):
                 qwen_gdn_cache_fields,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel + scheduler ext: {exc}")
+            self.skipTest(
+                f"requires PyTorch, tokenspeed_kernel, and the scheduler extension: {exc}"
+            )
         if not hasattr(Cache, "LoadBackDoneEvent"):
             self.skipTest("scheduler ext predates the LoadBackDoneEvent binding")
         if not torch.cuda.is_available():

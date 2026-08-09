@@ -2,7 +2,7 @@
 
 The scheduler scenarios themselves are covered by the C++ suites
 (``tests/cpp/test_kvcache_lifecycle.cpp`` and
-``test_kvcache_scenarios.cpp``); this module keeps the marshalling
+``test_kvcache_scenarios.cpp``); this module keeps the marshaling
 surface honest: per-group block tables (including the sliding-window null
 hole), the four-group Kimi-K3 namespace with finish/abort page restoration,
 atomic OOM deferral, and the readmit op's ``prefill_lengths`` /
@@ -276,7 +276,7 @@ def _drive_k3_to_retract(scheduler) -> dict[str, dict[int, int]]:
 
 
 def test_k3_readmit_rebuilds_all_four_tables_and_restores_pages() -> None:
-    """Binding-marshalling smoke for readmit: the only python test that reads
+    """Binding-marshaling smoke test for readmit: the only Python test that reads
     ``op.prefill_lengths`` through the real nanobind property (the C++ suite
     covers the retract/readmit scheduler scenarios themselves)."""
     scheduler = ts.Scheduler(_make_k3_config())

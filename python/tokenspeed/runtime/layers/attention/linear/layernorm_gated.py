@@ -23,9 +23,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# For the backward pass, we keep weight_grad and bias_grad in registers and accumulate.
-# This backward pass is faster for dimensions up to 8k, but after that it's much slower due to register spilling.
-# The models we train have hidden dim up to 8k anyway (e.g. Llama 70B), so this is fine.
+# The backward pass accumulates weight_grad and bias_grad in registers. It is
+# faster for dimensions up to 8K, but register spilling makes larger dimensions
+# much slower. The supported training models have hidden dimensions up to 8K
+# (for example, Llama 70B), so this trade-off is acceptable.
 
 
 import torch
@@ -69,7 +70,7 @@ def _layer_norm_fwd_1pass_kernel(
     W += group * N
     if HAS_BIAS:
         B += group * N
-    # Compute mean and variance
+    # Compute the mean and variance.
     cols = tl.arange(0, BLOCK_N)
     x = tl.load(X + cols, mask=cols < N, other=0.0).to(tl.float32)
     if HAS_Z and not NORM_BEFORE_GATE:
@@ -85,7 +86,7 @@ def _layer_norm_fwd_1pass_kernel(
         var = tl.sum(xbar * xbar, axis=0) / N
     rstd = 1 / tl.sqrt(var + eps)
     tl.store(Rstd + row, rstd)
-    # Normalize and apply linear transformation
+    # Normalize and apply the linear transformation.
     mask = cols < N
     w = tl.load(W + cols, mask=mask).to(tl.float32)
     if HAS_BIAS:
@@ -95,7 +96,7 @@ def _layer_norm_fwd_1pass_kernel(
     if HAS_Z and NORM_BEFORE_GATE:
         z = tl.load(Z + cols, mask=mask).to(tl.float32)
         y *= z * tl.sigmoid(z)
-    # Write output
+    # Write the output.
     tl.store(Y + cols, y, mask=mask)
 
 
@@ -124,7 +125,7 @@ def _layer_norm_fwd(
     if bias is not None:
         assert bias.stride(-1) == 1
         assert bias.shape == (N,)
-    # allocate output
+    # Allocate the output.
     if out is not None:
         assert out.shape == x.shape
     else:
@@ -136,12 +137,12 @@ def _layer_norm_fwd(
         else None
     )
     rstd = torch.empty((ngroups * M,), dtype=torch.float32, device=x.device)
-    # Less than 64KB per feature: enqueue fused kernel
+    # Enqueue the fused kernel when each feature uses less than 64 KB.
     MAX_FUSED_SIZE = 65536 // x.element_size()
     BLOCK_N = min(MAX_FUSED_SIZE, triton.next_power_of_2(group_size))
     if group_size > BLOCK_N:
-        raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
-    # heuristics for number of warps
+        raise RuntimeError("This layer norm requires feature dimensions below 64 KB")
+    # Select the number of warps heuristically.
     num_warps = min(max(BLOCK_N // 256, 1), 8)
     grid = (M, ngroups)
     with torch.cuda.device(x.device.index):
@@ -181,10 +182,10 @@ class LayerNormFn(torch.autograd.Function):
         norm_before_gate=True,
         is_rms_norm=False,
     ):
-        """If z is not None, we do norm(x) * silu(z) if norm_before_gate, else norm(x * silu(z))"""
+        """Apply ``norm(x) * silu(z)`` before gating, or ``norm(x * silu(z))`` after gating."""
 
         x_shape_og = x.shape
-        # reshape input data into 2D tensor
+        # Reshape the input data into a 2-D tensor.
         x = x.reshape(-1, x.shape[-1])
         if x.stride(-1) != 1:
             x = x.contiguous()
@@ -228,8 +229,10 @@ class RMSNorm(torch.nn.Module):
         device=None,
         dtype=None,
     ):
-        """If group_size is not None, we do GroupNorm with each group having group_size elements.
-        group_size=None is equivalent to group_size=hidden_size (i.e. there's only 1 group).
+        """Apply GroupNorm with ``group_size`` elements per group.
+
+        ``group_size=None`` is equivalent to ``group_size=hidden_size``, which
+        creates one group.
         """
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -244,7 +247,7 @@ class RMSNorm(torch.nn.Module):
         torch.nn.init.ones_(self.weight)
 
     def forward(self, x, z=None):
-        """If z is not None, we do norm(x) * silu(z) if norm_before_gate, else norm(x * silu(z))"""
+        """Apply ``norm(x) * silu(z)`` before gating, or ``norm(x * silu(z))`` after gating."""
         return rmsnorm_fn(
             x,
             self.weight,

@@ -305,10 +305,10 @@ class KimiLinearConfig(PretrainedConfig):
         Returns ``(conv_state_shape, temporal_state_shape, conv_dtype,
         ssm_dtype, mamba_layer_ids)``. KDA runs three short causal convolutions
         (q/k/v), each ``num_heads * head_dim`` wide, and keeps a per-head
-        ``head_dim x head_dim`` recurrent (delta-rule) state in fp32.
+        ``head_dim × head_dim`` recurrent (delta-rule) state in FP32.
 
-        NOTE: this is the interface for the KV-cache team; the concrete state
-        layout is validated on the cache side.
+        The KV cache consumes this interface and validates the concrete state
+        layout.
         """
         # Imported lazily to avoid config/env import cycles at module load.
         from tokenspeed.runtime.utils.env import global_server_args_dict

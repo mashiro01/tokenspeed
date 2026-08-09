@@ -1,6 +1,6 @@
-# Acknowledgements
+# Acknowledgments
 
-TokenSpeed builds on a broad open source ecosystem. We are grateful to the
+TokenSpeed builds on a broad open-source ecosystem. We are grateful to the
 projects and contributors whose work is acknowledged in our package-level
 third-party notices.
 

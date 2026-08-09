@@ -45,7 +45,8 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# This file is copied and modified from cutlass https://github.com/NVIDIA/cutlass/blob/main/python/CuTeDSL/cutlass/cute/core.py
+# This file is adapted from CUTLASS:
+# https://github.com/NVIDIA/cutlass/blob/main/python/CuTeDSL/cutlass/cute/core.py
 
 import ctypes
 import os
@@ -62,10 +63,10 @@ from cutlass.cutlass_dsl import T, dsl_user_op
 TRTLLM_ENABLE_PDL = os.environ.get("TRTLLM_ENABLE_PDL", "1") == "1"
 
 
-# WAR for CuTeDSL make_ptr implementation
+# Workaround for the CuTe DSL make_ptr implementation.
 class _Pointer(Pointer):
     """Represents a runtime pointer that can interoperate with various data structures,
-    including numpy arrays and device memory.
+    including NumPy arrays and device memory.
 
     Args:
         pointer (int or pointer-like object): The pointer to the data.
@@ -177,7 +178,7 @@ def make_ptr(
         from cutlass import Float32
         from cutlass.cute.runtime import make_ptr
 
-        # Create a numpy array
+        # Create a NumPy array.
         a = np.random.randn(16, 32).astype(np.float32)
         # Get pointer address as ctypes pointer
         ptr_address = a.ctypes.data_as(ctypes.POINTER(ctypes.c_float))

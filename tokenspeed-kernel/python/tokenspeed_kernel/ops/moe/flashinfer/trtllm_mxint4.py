@@ -155,7 +155,7 @@ if platform.is_nvidia:
     def flashinfer_trtllm_mxint4_moe_weights(plan: dict, w: torch.nn.Module):
         num_experts = w.w13_weight_packed.shape[0]
 
-        # Swap [W1(Gate), W3(Up)] -> [W3(Up), W1(Gate)]. The flashinfer fused
+        # Swap [W1(Gate), W3(Up)] -> [W3(Up), W1(Gate)]. The FlashInfer fused
         # gated-act epilogue expects the up-proj rows first; the shared loader
         # fills the natural [gate|up] order, so swap the two w13 halves (weight +
         # group scale) here, mirroring the nvfp4 path (trtllm_nvfp4.py:73-88).

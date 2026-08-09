@@ -63,7 +63,7 @@ def test_process_weights_swizzles_and_pins_flashinfer() -> None:
 
 
 def test_small_layers_keep_triton_fallback() -> None:
-    # N < 128 is below the flashinfer problem-size floor; the layer must
+    # N < 128 is below the FlashInfer problem-size floor; the layer must
     # keep row-major scales so the Triton kernel stays selectable.
     layer = _make_layer(64, 512)
     _method().process_weights_after_loading(layer)

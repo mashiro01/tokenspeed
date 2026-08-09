@@ -463,16 +463,16 @@ def shl_u32(
     Left-shift val by shift bits using PTX shl.b32 (sign-agnostic).
 
     Named ``shl_u32`` (not ``shl_b32``) because python type annotations
-    distinguish signed/unsigned.
+    distinguish signed and unsigned values.
 
     PTX semantics (9.7.8.8): "Shift amounts greater than the register width N
     are clamped to N."  So ``shl.b32 d, a, 32`` is well-defined and yields 0.
 
     This differs from C/C++ and LLVM IR, where shifting by >= the type width is
-    undefined behavior.  CuTeDSL compiles through MLIR -> LLVM IR, so a plain
+    undefined behavior. CuTe DSL compiles through MLIR to LLVM IR, so a plain
     Python-level ``Uint32(x) << Uint32(n)`` inherits LLVM's UB: the optimizer
-    may treat the result as poison and eliminate dependent code.  Inline PTX
-    bypasses the LLVM IR shift entirely -- the instruction is emitted verbatim
+    may treat the result as poison and eliminate dependent code. Inline PTX
+    bypasses the LLVM IR shift entirely: the instruction is emitted verbatim
     into PTX where clamping makes it safe for all shift amounts.
     """
     return cutlass.Uint32(
@@ -499,7 +499,7 @@ def shr_u32(
     Unsigned right-shift val by shift bits using PTX shr.u32 (zero-fills).
 
     See ``shl_u32`` docstring for why inline PTX is used instead of plain
-    CuTeDSL shift operators (LLVM shift-by-type-width UB).
+    CuTe DSL shift operators (LLVM shift-by-type-width undefined behavior).
     """
     return cutlass.Uint32(
         llvm.inline_asm(

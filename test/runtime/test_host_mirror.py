@@ -39,7 +39,7 @@ class HostMirrorTest(unittest.TestCase):
                 MHATokenToKVPool,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         if not torch.cuda.is_available():
             self.skipTest("needs a CUDA device")
         self.torch = torch
@@ -204,7 +204,7 @@ class HostMirrorStateSlabTest(unittest.TestCase):
                 qwen_gdn_cache_fields,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         if not torch.cuda.is_available():
             self.skipTest("needs a CUDA device")
         self.torch = torch
@@ -401,7 +401,7 @@ class HostMirrorNoneKVTest(unittest.TestCase):
                 bytes_per_host_page,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch: {exc}")
+            self.skipTest(f"requires PyTorch: {exc}")
         self.torch = torch
         self.HostMirror = HostMirror
         self.bytes_per_host_page = bytes_per_host_page

@@ -937,7 +937,7 @@ class InklingSparseMoeBlock(nn.Module):
                 intermediate_size=config.intermediate_size,
                 quant_config=quant_config,
                 layer_index=layer_id,
-                # Deepseek-convention MLP prefix: MoELayer probes quant exclusion via "<prefix>.experts".
+                # DeepSeek-convention MLP prefix: MoELayer probes quant exclusion via "<prefix>.experts".
                 prefix=prefix,
                 tp_rank=mapping.moe.tp_rank,
                 tp_size=mapping.moe.tp_size,
@@ -1269,7 +1269,7 @@ def _fold_timespace_to_depth(
 
 
 class InklingHMLPPatchEncoder(nn.Module):
-    """Hierarchical-MLP patch encoder (torch-native port of the reference).
+    """Hierarchical-MLP patch encoder (PyTorch-native port of the reference).
 
     Consumes pre-extracted patches ``(num_patches, T, H, W, C)`` (the SMG
     gateway does the pixel->patch preprocessing) and emits one
@@ -1835,7 +1835,7 @@ class InklingForConditionalGeneration(nn.Module):
             # Block scales share the w13 row layout (per-16-group scales follow weight rows 1:1).
             if is_w13 and interleaved:
                 expert_weight = _deinterleave_w13(expert_weight)
-            if loader is None:  # torch-native fallback experts: plain params
+            if loader is None:  # PyTorch-native fallback experts: plain params
                 param.data[local_id].copy_(expert_weight)
                 continue
             if is_w13:

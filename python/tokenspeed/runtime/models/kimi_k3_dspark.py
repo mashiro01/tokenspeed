@@ -151,7 +151,7 @@ class K3DSparkAttention(DeepseekV3AttentionMLA):
         The rope tail is contiguous within each row, so the slice reshapes to a
         *view* of ``latent`` and the rope kernel rotates it in place. Copy it
         out first: writing the result back onto its own storage is a
-        self-assignment torch refuses.
+        self-assignment that PyTorch rejects.
         """
         if self.rotary_emb is None or latent.size(0) == 0:
             return latent

@@ -206,7 +206,7 @@ class Tensor:
         # validate shape_max: all elements must be `int`
         assert all(map(is_int, self.shape_max))
 
-    # torch compatibility layer
+    # PyTorch compatibility layer.
     @property
     def ndim(self):
         return len(self.shape)
@@ -863,8 +863,7 @@ def topk_forward(
     n_rows_out_max = (
         n_rows_max * symm_mem_pool.mesh.world_size if all_gather else n_rows_max
     )
-    # scratchpad tensors
-    # NOTE: these are not returned
+    # Scratchpad tensors; these are not returned.
     y_vals_bufs, y_vals, offset = make_empty(
         0,
         (n_rows_out_max, k),
@@ -1003,17 +1002,15 @@ class RaggedTensorMetadata:
     # slice_offs = [0] + cumsum(slice_sizes)
     # i.e., slice_offs[i] is the offset of the first element in slice `i`
     slice_offs: torch.Tensor
-    # block_offs_data[k] = [0] + cumsum(ceil_div(slice_sizes, 16 * k))
-    # i.e., `block_offs_data[k][i]` is the offset of the first block of
-    # `16*k`` token for batch `i` in a `bath_sizes`-shaped ragged tensor
+    # block_offs_data[k] = [0] + cumsum(ceil_div(slice_sizes, 16 * k)).
+    # ``block_offs_data[k][i]`` is the offset of batch ``i``'s first block of
+    # ``16 * k`` tokens in a ``batch_sizes``-shaped ragged tensor.
     block_offs_data: torch.Tensor
-    # let `num_blocks[k] = block_offs_data[k, 1:] - block_offs_data[k, :-1]
-    # block_schedule_data[k] = cat(*[[(batch, blk) for blk in range(blks)] for batch, blks in enumerate(num_blocks)])
-    # i.e., if the schedule of batch `i` is [(i, 0), (i, 1), ..., (i, num_blocks[k][i] - 1)]
-    # then `block_schedule_data[k]` is the concatenation of the schedules for all batches
-    # NOTE 1: `block_schedule_data[k][j]` is a packed 32-bit integer
-    # NOTE 2: because the size of `block_schedule_data[k]` is data-dependent, we pad it with -1s
-    # up to an user-provided upper bound
+    # Let ``num_blocks[k] = block_offs_data[k, 1:] - block_offs_data[k, :-1]``.
+    # ``block_schedule_data[k]`` concatenates every batch's schedule. Batch
+    # ``i`` has schedule ``[(i, 0), ..., (i, num_blocks[k][i] - 1)]``.
+    # Each ``block_schedule_data[k][j]`` is a packed 32-bit integer. Because
+    # the data-dependent size varies, pad it with -1 to a user-provided bound.
     block_schedule_data: torch.Tensor
     # expected slice size (for heuristics)
     expected_slice_size: int | None = None

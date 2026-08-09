@@ -88,7 +88,9 @@ if platform.is_nvidia:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if granularity in {"tensor", "token"}:
             if scale_encoding != "float32":
-                raise ValueError(f"TRT-LLM {granularity} FP8 requires float32 scales")
+                raise ValueError(
+                    f"TensorRT-LLM {granularity} FP8 requires float32 scales"
+                )
 
             q = torch.empty_like(x, dtype=_FP8_DTYPE)
             if granularity == "tensor":
@@ -107,7 +109,7 @@ if platform.is_nvidia:
                 use_ue8m0=scale_encoding == "ue8m0",
             )
 
-        raise ValueError(f"unsupported TRT-LLM FP8 granularity: {granularity!r}")
+        raise ValueError(f"Unsupported TensorRT-LLM FP8 granularity: {granularity!r}")
 
 
 __all__ = [

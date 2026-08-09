@@ -599,7 +599,7 @@ class Qwen3VLMoeVisionModel(nn.Module):
         loop expects.
 
         Kept eager (outside the capture-safe region) -- the interpolation does
-        host/numpy work.
+        host/NumPy work.
         """
         x = x.to(device=self.device, dtype=self.dtype)
         x = self.patch_embed(x)
@@ -613,8 +613,9 @@ class Qwen3VLMoeVisionModel(nn.Module):
 
         Everything here involves a host sync or a data-dependent shape, so it
         lives outside the capture-safe block loop. ``max_seqlen`` is
-        materialized as a plain int (CPU/numpy, no GPU sync) so the captured
-        block loop never hits the attention backend's ``.item()`` fallback.
+        materialized as a plain integer on the CPU through NumPy, without GPU
+        synchronization, so the captured block loop never reaches the attention
+        backend's ``.item()`` fallback.
         """
         if isinstance(grid_thw, list):
             grid_thw_list = grid_thw

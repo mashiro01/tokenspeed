@@ -261,7 +261,7 @@ def test_cache_contract_epd_abort_notifies_decode() -> None:
     executor.abort("request-0", bootstrap)
 
     assert calls == [
-        (9, "EPD: prefill aborted request request-0 (embedding receive timed out)")
+        (9, "EPD: prefill aborted request 'request-0' (embedding receive timed out)")
     ]
 
 

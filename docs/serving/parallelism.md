@@ -32,7 +32,7 @@ tokenspeed serve <model> \
 | `--world-size` | Total worker processes across all nodes. |
 | `--nprocs-per-node` | Worker processes launched on each node. |
 | `--attn-tp-size` | Attention tensor parallel size. |
-| `--dense-tp-size` | Dense layer tensor parallel size. Defaults to the attention replica width (attn TP x CP): the full world without DP attention, one replica with it. |
+| `--dense-tp-size` | Dense layer tensor parallel size. Defaults to the attention replica width (attention TP × CP): the full world without DP attention, one replica with it. |
 | `--moe-tp-size` | MoE layer tensor parallel size. |
 | `--data-parallel-size` | Replicated data-parallel groups. |
 | `--mm-encoder-tp-mode` | `weights` (default), or TP1 whole-item DP within each attention TP group (`data`). |
@@ -168,7 +168,7 @@ Rules:
 - An explicit `--dist-init-addr` is always used as given.
 - Derivation only engages inside an `srun` step of more than one node. Outside
   a step — including the batch script of a multi-node `sbatch` — or in a
-  single-node step, behaviour is unchanged: launch the ranks yourself and pass
+  single-node step, behavior is unchanged: launch the ranks yourself and pass
   `--nnodes`/`--node-rank`/`--dist-init-addr`.
 - If a multi-node step is detected but the topology cannot be resolved,
   startup fails with the reason rather than falling back to a single node.

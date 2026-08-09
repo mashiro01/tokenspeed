@@ -139,7 +139,7 @@ class LinearBase(torch.nn.Module):
         quant_config: Quantization configure.
         override_kernel_name: Optional kernel name passed down to the
             quant method's underlying ``tokenspeed_kernel.mm`` dispatch
-            (e.g. ``"cublaslt_mm_nvfp4"``). Lets the model force a
+            (e.g. ``"cublaslt_mm_nvfp4"``). This lets the model force a
             specific kernel for a particular layer.
         interleave_linear_and_gate: If true, quantized post-load processing
             prepares a 64-row linear/gate interleaved weight view for
@@ -291,8 +291,8 @@ class ReplicatedLinear(LinearBase):
         bias = self.bias if not self.skip_bias_add else None
         assert self.quant_method is not None
         if block_scale is not None:
-            # Note: block_scale is not None means flashinfer reduce-scatter fusion is used for fp8 block quant
-            # in this case, the input_ is already quantized to a fp8 tensor
+            # A block scale indicates that FlashInfer reduce-scatter fusion is
+            # active and ``x`` is already quantized to an FP8 tensor.
             output = self.quant_method.apply(self, x, bias, block_scale, output_dtype)
         else:
             output = self.quant_method.apply(self, x, bias)
@@ -415,7 +415,7 @@ class ColumnParallelLinear(LinearBase):
 
         param_data = param.data
         # bitsandbytes loads the weights of the specific portion
-        # no need to narrow here
+        # Narrowing is unnecessary here.
         if output_dim is not None and not use_bitsandbytes_4bit:
             shard_size = param_data.shape[output_dim]
             start_idx = self.tp_rank * shard_size
@@ -456,8 +456,8 @@ class ColumnParallelLinear(LinearBase):
         # Matrix multiply.
         assert self.quant_method is not None
         if block_scale is not None:
-            # Note: block_scale is not None means flashinfer all-reduce fusion is used for fp8 block quant
-            # in this case, the input_ is already quantized to a fp8 tensor
+            # A block scale indicates that FlashInfer all-reduce fusion is
+            # active and ``input_`` is already quantized to an FP8 tensor.
             output_parallel = self.quant_method.apply(
                 self, input_, bias, block_scale, output_dtype
             )
@@ -570,7 +570,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             packed_dim = getattr(param, "packed_dim", None)
             for shard_id, shard_offset, shard_size in shard_offsets:
                 # Special case for Quantization.
-                # If quantized, we need to adjust the offset and size to account
+                # For quantized weights, adjust the offset and size to account
                 # for the packing.
                 if packed_dim == output_dim:
                     shard_size = shard_size // param.pack_factor
@@ -591,7 +591,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             shard_offset = sum(self.output_sizes[:loaded_shard_id]) // self.tp_size
             shard_size = self.output_sizes[loaded_shard_id] // self.tp_size
             # Special case for quantization.
-            # If quantized, we need to adjust the offset and size to account
+            # For quantized weights, adjust the offset and size to account
             # for the packing.
             packed_dim = getattr(param, "packed_dim", None)
             if packed_dim == output_dim:
@@ -610,7 +610,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             param_data = param_data.narrow(output_dim, shard_offset, shard_size)
             start_idx = self.tp_rank * shard_size
             # bitsandbytes loads the weights of the specific portion
-            # no need to narrow here
+            # Narrowing is unnecessary here.
             if not use_bitsandbytes_4bit and not self.use_presharded_weights:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
         # Special case for AQLM codebooks.
@@ -644,8 +644,8 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         """
         Handle special case for models where MLP layers are already
         fused on disk. In this case, we have no shard id. This function
-        determmines the shard id by splitting these layers and then calls
-        the weight loader using the shard id.
+        determines the shard ID by splitting these layers and then calls
+        the weight loader using the shard ID.
 
         An example of a model with these fused layers:
         https://huggingface.co/microsoft/Phi-3-mini-4k-instruct
@@ -659,7 +659,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
 
         for shard_id, shard_offset, shard_size in shard_offsets:
             # Special case for Quantization.
-            # If quantized, we need to adjust the offset and size to account
+            # For quantized weights, adjust the offset and size to account
             # for the packing.
             if (
                 isinstance(param, (PackedColumnParameter, PackedWeightParameter))
@@ -670,7 +670,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                 )
             # Special case for block-wise quantization scales.
             # The scale tensor is smaller than the weight tensor by a factor
-            # of block_n, so we need to adjust offset and size accordingly.
+            # of block_n, so adjust the offset and size accordingly.
             elif isinstance(param, BlockQuantScaleParameter):
                 weight_block_size = self.quant_method.quant_config.weight_block_size
                 block_n = weight_block_size[0]
@@ -834,8 +834,8 @@ class QKVParallelLinear(ColumnParallelLinear):
         """
         Handle special case for models where QKV layers are already
         fused on disk. In this case, we have no shard id. This function
-        determmines the shard id by splitting these layers and then calls
-        the weight loader using the shard id.
+        determines the shard ID by splitting these layers and then calls
+        the weight loader using the shard ID.
 
         An example of a model with these fused layers:
         https://huggingface.co/microsoft/Phi-3-mini-4k-instruct
@@ -857,7 +857,7 @@ class QKVParallelLinear(ColumnParallelLinear):
 
         for shard_id, shard_offset, shard_size in shard_offsets:
             # Special case for Quantization.
-            # If quantized, we need to adjust the offset and size to account
+            # For quantized weights, adjust the offset and size to account
             # for the packing.
             if (
                 isinstance(param, (PackedColumnParameter, PackedWeightParameter))
@@ -954,7 +954,7 @@ class QKVParallelLinear(ColumnParallelLinear):
             packed_dim = getattr(param, "packed_dim", None)
             for shard_id, shard_offset, shard_size in shard_offsets:
                 # Special case for Quantized Weights.
-                # If quantized, we need to adjust the offset and size to account
+                # For quantized weights, adjust the offset and size to account
                 # for the packing.
                 if packed_dim == output_dim:
                     shard_size = shard_size // param.pack_factor
@@ -1009,7 +1009,7 @@ class QKVParallelLinear(ColumnParallelLinear):
                 shard_offset = (self.num_heads + self.num_kv_heads) * self.head_size
                 shard_size = self.num_kv_heads * self.head_size
             # Special case for Quantized Weights.
-            # If quantized, we need to adjust the offset and size to account
+            # For quantized weights, adjust the offset and size to account
             # for the packing.
             packed_dim = getattr(param, "packed_dim", None)
             if packed_dim == output_dim:
@@ -1050,11 +1050,11 @@ class QKVParallelLinear(ColumnParallelLinear):
             start_idx = shard_id * shard_size
 
             # bitsandbytes loads the weights of the specific portion
-            # no need to narrow here
+            # Narrowing is unnecessary here.
             if not use_bitsandbytes_4bit and not self.use_presharded_weights:
                 loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
 
-        # Special case for for AQLM codebooks.
+        # Special case for AQLM codebooks.
         elif is_metadata:
             # metadata indicates fixed size concatenated along dim 0
             shard_size = loaded_weight.shape[0]
@@ -1183,7 +1183,7 @@ class RowParallelLinear(LinearBase):
 
         param_data = param.data
         # bitsandbytes loads the weights of the specific portion
-        # no need to narrow here
+        # Narrowing is unnecessary here.
         if (
             input_dim is not None
             and not use_bitsandbytes_4bit

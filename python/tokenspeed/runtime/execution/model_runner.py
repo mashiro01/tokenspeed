@@ -242,14 +242,14 @@ class ModelRunner:
     def init_weights_update_group(self, obj) -> tuple[bool, str]:
         """Join the trainer's ``torch.distributed`` NCCL weight-update group.
 
-        The trainer (slime/sglang dialect) creates the peer group with
+        The trainer (Slime/SGLang dialect) creates the peer group with
         ``init_process_group(init_method="tcp://addr:port", rank=0, world_size)``
         and pushes weights via ``dist.broadcast(..., src=0)``. We must rendezvous
-        through the *same* torch TCP-store + NCCL-unique-id handshake — a
-        ``StatelessProcessGroup``/``PyNcclCommunicator`` keys its store
-        differently and never forms a joint communicator with a torch group, so
+        through the same PyTorch TCP store and NCCL unique-ID handshake. A
+        ``StatelessProcessGroup`` or ``PyNcclCommunicator`` keys its store
+        differently and never forms a joint communicator with a PyTorch group, so
         the broadcast would deadlock. Build a standalone, non-default group (via
-        the same private helper torch's own ``init_process_group`` uses) so it
+        the same private helper that PyTorch's ``init_process_group`` uses) so it
         never collides with the engine's own world.
         """
         from packaging.version import parse as _parse_version
@@ -344,11 +344,11 @@ class ModelRunner:
         """Tear down the trainer weight-update NCCL group joined in ``init``.
 
         When a training run ends the trainer drops its end of the group, so the
-        worker must release its side too -- free the NCCL communicator and the
-        torch ``_world`` bookkeeping ``init_weights_update_group`` registered --
-        instead of leaking it until engine shutdown. A fresh run then re-inits a
-        clean group. Idempotent: tearing down when no group is live is a success
-        so a trainer that always calls destroy (e.g. slime) never errors.
+        worker must release its side too: free the NCCL communicator and the
+        PyTorch ``_world`` bookkeeping that ``init_weights_update_group`` registered,
+        rather than leak it until engine shutdown. A fresh run then initializes
+        a clean group. Teardown is idempotent: it succeeds when no group is live,
+        so a trainer that always calls destroy, such as Slime, never errors.
         """
         pg = getattr(self, "_weight_update_pg", None)
         if pg is None:

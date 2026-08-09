@@ -78,7 +78,7 @@ def top_p_normalize_probs_torch(
     probs: torch.Tensor,
     top_ps: torch.Tensor,
 ) -> torch.Tensor:
-    """Pure-torch nucleus renorm — used by the prefill-logprob path."""
+    """Pure-PyTorch nucleus renormalization used by the prefill log-probability path."""
     probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
     probs_sum = torch.cumsum(probs_sort, dim=-1)
     probs_sort[(probs_sum - probs_sort) > top_ps.view(-1, 1)] = 0.0

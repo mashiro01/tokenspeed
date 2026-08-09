@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Utilities for Huggingface Transformers."""
+"""Utilities for Hugging Face Transformers."""
 
 import contextlib
 import copy
@@ -161,7 +161,7 @@ def get_hf_text_config(config: PretrainedConfig):
 def _materialize_architectures(config: PretrainedConfig, raw_config: dict) -> None:
     """Ensure ``config.architectures`` resolves to a real ``list[str]``.
 
-    HuggingFace's ``from_pretrained`` sometimes returns a config whose
+    Hugging Face's ``from_pretrained`` sometimes returns a config whose
     ``.architectures`` attribute resolves to ``None`` via ``__getattr__``
     forwarding to a nested text_config (observed on ``Qwen3_5MoeConfig``;
     likely to repeat on any wrapper class with the same pattern). The
@@ -361,7 +361,7 @@ CONTEXT_LENGTH_KEYS = [
 
 
 def get_context_length(config):
-    """Get the context length of a model from a huggingface model configs."""
+    """Get a model's context length from its Hugging Face configuration."""
     text_config = config
     rope_scaling = getattr(text_config, "rope_scaling", None)
     if rope_scaling:
@@ -380,7 +380,7 @@ def get_context_length(config):
     return 2048
 
 
-# A fast LLaMA tokenizer with the pre-processed `tokenizer.json` file.
+# A fast Llama tokenizer with the preprocessed `tokenizer.json` file.
 _FAST_LLAMA_TOKENIZER = "hf-internal-testing/llama-tokenizer"
 
 
@@ -471,7 +471,7 @@ def _wrap_deepseek_v4_tokenizer(
     tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast,
     encode_messages: Callable[..., str],
 ) -> PreTrainedTokenizer | PreTrainedTokenizerFast:
-    """Attach DeepSeek V4's model-provided chat encoder to a HF tokenizer.
+    """Attach DeepSeek V4's model-provided chat encoder to an HF tokenizer.
 
     This loads the official encoder from the checkpoint instead of vendoring it
     in TokenSpeed.
@@ -552,7 +552,7 @@ def get_tokenizer(
     architectures: list[str] | None = None,
     **kwargs,
 ) -> PreTrainedTokenizer | PreTrainedTokenizerFast:
-    """Gets a tokenizer for the given model name via Huggingface.
+    """Get a tokenizer for the given model name from Hugging Face.
 
     ``architectures`` is the model's ``config.architectures`` list (caller
     should pass it when available). It gates whether we bypass AutoTokenizer
@@ -604,9 +604,9 @@ def get_tokenizer(
             **kwargs,
         )
     except TypeError as e:
-        # The LLaMA tokenizer causes a protobuf error in some environments.
+        # The Llama tokenizer causes a protobuf error in some environments.
         err_msg = (
-            "Failed to load the tokenizer. If you are using a LLaMA V1 model "
+            "Failed to load the tokenizer. If you are using a Llama 1 model "
             f"consider using '{_FAST_LLAMA_TOKENIZER}' instead of the "
             "original tokenizer."
         )
@@ -620,7 +620,7 @@ def get_tokenizer(
         ):
             err_msg = (
                 "Failed to load the tokenizer. If the tokenizer is a custom "
-                "tokenizer not yet available in the HuggingFace transformers "
+                "tokenizer not yet available in the Hugging Face Transformers "
                 "library, consider setting `trust_remote_code=True` in LLM "
                 "or using the `--trust-remote-code` flag in the CLI."
             )

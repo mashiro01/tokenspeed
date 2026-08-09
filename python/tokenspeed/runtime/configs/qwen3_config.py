@@ -33,7 +33,7 @@ ALLOWED_LAYER_TYPES = (
 
 
 def layer_type_validation(layer_types: list[str]):
-    """Check that each entry in `layer_types` are allowed."""
+    """Check that every entry in `layer_types` is allowed."""
     if not all(layer_type in ALLOWED_LAYER_TYPES for layer_type in layer_types):
         raise ValueError(f"The `layer_types` entries must be in {ALLOWED_LAYER_TYPES}")
 
@@ -43,96 +43,102 @@ logger = logging.getLogger(__name__)
 
 class Qwen3Config(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`Qwen3Model`]. It is used to instantiate a
-    Qwen3 model according to the specified arguments, defining the model architecture. Instantiating a configuration
-    with the defaults will yield a similar configuration to that of
-    Qwen3-8B [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B).
+    Configuration class for [`Qwen3Model`]. The supplied arguments define the model
+    architecture. The defaults produce a configuration similar to
+    [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B).
 
-    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
-    documentation from [`PretrainedConfig`] for more information.
-
+    Configuration objects inherit from [`PretrainedConfig`] and control model
+    outputs. See the [`PretrainedConfig`] documentation for more information.
 
     Args:
         vocab_size (`int`, *optional*, defaults to 151936):
-            Vocabulary size of the Qwen3 model. Defines the number of different tokens that can be represented by the
-            `inputs_ids` passed when calling [`Qwen3Model`]
+            Vocabulary size of the Qwen3 model. Defines the number of tokens that
+            can be represented by the `input_ids` passed to [`Qwen3Model`].
         hidden_size (`int`, *optional*, defaults to 4096):
             Dimension of the hidden representations.
         intermediate_size (`int`, *optional*, defaults to 22016):
             Dimension of the MLP representations.
         num_hidden_layers (`int`, *optional*, defaults to 32):
-            Number of hidden layers in the Transformer encoder.
+            Number of hidden layers in the Transformer decoder.
         num_attention_heads (`int`, *optional*, defaults to 32):
-            Number of attention heads for each attention layer in the Transformer encoder.
+            Number of attention heads in each Transformer decoder layer.
         num_key_value_heads (`int`, *optional*, defaults to 32):
-            This is the number of key_value heads that should be used to implement Grouped Query Attention. If
-            `num_key_value_heads=num_attention_heads`, the model will use Multi Head Attention (MHA), if
-            `num_key_value_heads=1` the model will use Multi Query Attention (MQA) otherwise GQA is used. When
-            converting a multi-head checkpoint to a GQA checkpoint, each group key and value head should be constructed
-            by meanpooling all the original heads within that group. For more details checkout [this
-            paper](https://arxiv.org/pdf/2305.13245.pdf). If it is not specified, will default to `32`.
+            Number of key/value heads used for grouped-query attention (GQA). A
+            value equal to `num_attention_heads` selects multi-head attention
+            (MHA), while `1` selects multi-query attention (MQA). When converting
+            an MHA checkpoint to GQA, construct each key/value head by mean-pooling
+            the original heads in that group. See the [GQA
+            paper](https://arxiv.org/pdf/2305.13245.pdf) for details.
         head_dim (`int`, *optional*, defaults to 128):
             The attention head dimension.
         hidden_act (`str` or `function`, *optional*, defaults to `"silu"`):
-            The non-linear activation function (function or string) in the decoder.
+            Nonlinear activation function (function or string) used in the decoder.
         max_position_embeddings (`int`, *optional*, defaults to 32768):
-            The maximum sequence length that this model might ever be used with.
+            Maximum sequence length supported by the model.
         initializer_range (`float`, *optional*, defaults to 0.02):
-            The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
+            Standard deviation of the truncated normal initializer used for all
+            weight matrices.
         rms_norm_eps (`float`, *optional*, defaults to 1e-06):
             The epsilon used by the rms normalization layers.
         use_cache (`bool`, *optional*, defaults to `True`):
-            Whether or not the model should return the last key/values attentions (not used by all models). Only
-            relevant if `config.is_decoder=True`.
+            Whether the model returns cached key and value states. This option is
+            relevant only when `config.is_decoder=True`.
         tie_word_embeddings (`bool`, *optional*, defaults to `False`):
             Whether the model's input and output word embeddings should be tied.
         rope_theta (`float`, *optional*, defaults to 10000.0):
             The base period of the RoPE embeddings.
         rope_scaling (`Dict`, *optional*):
-            Dictionary containing the scaling configuration for the RoPE embeddings.  if you apply new rope type
-            and you expect the model to work on longer `max_position_embeddings`, we recommend you to update this value
-            accordingly.
+            Scaling configuration for the RoPE embeddings. Update this value when
+            applying a new RoPE type for sequences longer than
+            `max_position_embeddings`.
             Expected contents:
                 `rope_type` (`str`):
-                    The sub-variant of RoPE to use. Can be one of ['default', 'linear', 'dynamic', 'yarn', 'longrope',
-                    'llama3'], with 'default' being the original RoPE implementation.
+                    RoPE variant to use. Supported values are `default`, `linear`,
+                    `dynamic`, `yarn`, `longrope`, and `llama3`; `default` selects
+                    the original RoPE implementation.
                 `factor` (`float`, *optional*):
-                    Used with all rope types except 'default'. The scaling factor to apply to the RoPE embeddings. In
-                    most scaling types, a `factor` of x will enable the model to handle sequences of length x *
-                    original maximum pre-trained length.
+                    Used with all RoPE types except `default`. For most scaling
+                    types, a factor of `x` supports sequences up to `x` times the
+                    original maximum pretraining length.
                 `original_max_position_embeddings` (`int`, *optional*):
-                    Used with 'dynamic', 'longrope' and 'llama3'. The original max position embeddings used during
-                    pretraining.
+                    Used with `dynamic`, `longrope`, and `llama3`. Original
+                    maximum position embeddings used during pretraining.
                 `attention_factor` (`float`, *optional*):
-                    Used with 'yarn' and 'longrope'. The scaling factor to be applied on the attention
-                    computation. If unspecified, it defaults to value recommended by the implementation, using the
-                    `factor` field to infer the suggested value.
+                    Used with `yarn` and `longrope`. Scaling factor applied to the
+                    attention computation. If unset, the implementation derives a
+                    recommended value from `factor`.
                 `beta_fast` (`float`, *optional*):
-                    Only used with 'yarn'. Parameter to set the boundary for extrapolation (only) in the linear
-                    ramp function. If unspecified, it defaults to 32.
+                    Used only with `yarn`. Extrapolation boundary in the linear
+                    ramp function. Defaults to 32.
                 `beta_slow` (`float`, *optional*):
-                    Only used with 'yarn'. Parameter to set the boundary for interpolation (only) in the linear
-                    ramp function. If unspecified, it defaults to 1.
+                    Used only with `yarn`. Interpolation boundary in the linear
+                    ramp function. Defaults to 1.
                 `short_factor` (`List[float]`, *optional*):
-                    Only used with 'longrope'. The scaling factor to be applied to short contexts (<
-                    `original_max_position_embeddings`). Must be a list of numbers with the same length as the hidden
-                    size divided by the number of attention heads divided by 2
+                    Used only with `longrope`. Scaling factors applied to contexts
+                    shorter than `original_max_position_embeddings`. The list
+                    length must equal the hidden size divided by twice the number
+                    of attention heads.
                 `long_factor` (`List[float]`, *optional*):
-                    Only used with 'longrope'. The scaling factor to be applied to long contexts (<
-                    `original_max_position_embeddings`). Must be a list of numbers with the same length as the hidden
-                    size divided by the number of attention heads divided by 2
+                    Used only with `longrope`. Scaling factors applied to contexts
+                    longer than `original_max_position_embeddings`. The list
+                    length must equal the hidden size divided by twice the number
+                    of attention heads.
                 `low_freq_factor` (`float`, *optional*):
-                    Only used with 'llama3'. Scaling factor applied to low frequency components of the RoPE
+                    Used only with `llama3`. Scaling factor applied to low-frequency
+                    components of RoPE.
                 `high_freq_factor` (`float`, *optional*):
-                    Only used with 'llama3'. Scaling factor applied to high frequency components of the RoPE
-        attention_bias (`bool`, defaults to `False`, *optional*, defaults to `False`):
-            Whether to use a bias in the query, key, value and output projection layers during self-attention.
+                    Used only with `llama3`. Scaling factor applied to high-frequency
+                    components of RoPE.
+        attention_bias (`bool`, *optional*, defaults to `False`):
+            Whether to use a bias in the query, key, value, and output projection
+            layers during self-attention.
         use_sliding_window (`bool`, *optional*, defaults to `False`):
             Whether to use sliding window attention.
         sliding_window (`int`, *optional*, defaults to 4096):
-            Sliding window attention (SWA) window size. If not specified, will default to `4096`.
+            Sliding-window attention (SWA) window size.
         max_window_layers (`int`, *optional*, defaults to 28):
-            The number of layers that use SWA (Sliding Window Attention). The bottom layers use SWA while the top use full attention.
+            Number of lower layers that use SWA; the remaining upper layers use
+            full attention.
         layer_types (`list`, *optional*):
             Attention pattern for each layer.
         attention_dropout (`float`, *optional*, defaults to 0.0):
@@ -141,13 +147,13 @@ class Qwen3Config(PretrainedConfig):
     ```python
     >>> from transformers import Qwen3Model, Qwen3Config
 
-    >>> # Initializing a Qwen3 style configuration
+    >>> # Initialize a Qwen3-style configuration
     >>> configuration = Qwen3Config()
 
-    >>> # Initializing a model from the Qwen3-8B style configuration
+    >>> # Initialize a model from the Qwen3-8B-style configuration
     >>> model = Qwen3Model(configuration)
 
-    >>> # Accessing the model configuration
+    >>> # Access the model configuration
     >>> configuration = model.config
     ```"""
 
@@ -220,7 +226,7 @@ class Qwen3Config(PretrainedConfig):
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
         # Validate the correctness of rotary position embeddings parameters
-        # BC: if there is a 'type' field, move it to 'rope_type'.
+        # Backward compatibility: rename the legacy ``type`` field to ``rope_type``.
         if self.rope_scaling is not None and "type" in self.rope_scaling:
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
         rope_config_validation(self)

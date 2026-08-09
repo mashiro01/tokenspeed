@@ -152,7 +152,7 @@ class MLATokenToKVPool(CachePool):
                 for sub_tuple in self.kv_buffer
             ]
         else:
-            # MLA has only one kv_buffer, so only the information of this buffer needs to be returned.
+            # MLA has only one kv_buffer, so only that buffer's information is returned.
             kv_data_ptrs = [self.kv_buffer[i].data_ptr() for i in range(self.layer_num)]
             kv_data_lens = [self.kv_buffer[i].nbytes for i in range(self.layer_num)]
             kv_item_lens = [

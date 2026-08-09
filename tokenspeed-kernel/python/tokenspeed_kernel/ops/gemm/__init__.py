@@ -205,7 +205,7 @@ def _online_quantize_mxfp8(
         from flashinfer import mxfp8_quantize
 
         # True = F8_128x4 swizzled scales (the bool form predates the
-        # SfLayout enum overload and works on flashinfer 0.6.15).
+        # SfLayout enum overload and works with FlashInfer 0.6.15).
         return mxfp8_quantize(A, is_sf_swizzled_layout=True, enable_pdl=enable_pdl)
 
     if kernel_name == "triton_mm_fp8_blockscale" and block_k == 32:
@@ -240,7 +240,7 @@ def _online_quantize_mxfp8(
         *,
         group_major_scales: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # On NVIDIA, the TRT-LLM helper used by per_token_group_quant_fp8
+        # On NVIDIA, the TensorRT-LLM helper used by per_token_group_quant_fp8
         # returns [num_groups, num_tokens] scales. FlashInfer and Triton GEMMs
         # consume [num_tokens, num_groups].
         expected_groups = (qA.shape[-1] + block_k - 1) // block_k

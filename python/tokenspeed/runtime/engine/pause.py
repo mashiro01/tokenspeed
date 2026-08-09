@@ -160,7 +160,7 @@ class PauseController:
         the scheduler or ``rid_to_state``, so the abort sweep and the drain
         check both miss them. Left compiling, they would be promoted and either
         run after a weight swap (abort) or be buffered past a wait drain. They
-        have produced no output, so cancelling them is safe.
+        have produced no output, so canceling them is safe.
         """
         if self._cancel_grammar_pending:
             self._cancel_grammar_pending = False

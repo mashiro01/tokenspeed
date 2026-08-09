@@ -1,4 +1,4 @@
-"""Paged KV-cache and prefill CUDA-graph seams.
+"""Paged KV-cache and prefill CUDA graph seams.
 
 Prefill-graph replay pads q/k/v rows to the bucket while flat per-group
 write locs cover only the real (leading) tokens; the mha KV write must trim
@@ -31,7 +31,7 @@ class SliceMhaExtendInputsTest(unittest.TestCase):
 
             from tokenspeed.runtime.layers.attention.backends import mha
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.slice_inputs = mha._slice_extend_inputs
 
@@ -65,7 +65,7 @@ class TrimKvToLocsTest(unittest.TestCase):
                 CacheGroupsMixin,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.trim = CacheGroupsMixin._trim_kv_to_locs
 
@@ -98,7 +98,7 @@ class DummyGroupTablesTest(unittest.TestCase):
 
             from tokenspeed.runtime.execution.prefill_graph import PrefillGraph
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + runtime deps: {exc}")
+            self.skipTest(f"requires PyTorch runtime dependencies: {exc}")
         self.PrefillGraph = PrefillGraph
 
     def _bare(self, backend, pool):
@@ -137,7 +137,7 @@ class DummyGroupTablesTest(unittest.TestCase):
         )
 
     def test_full_width_for_stride_deriving_backends(self):
-        # trtllm-style: row stride comes from max_kv_len, so dummy tables
+        # ``trtllm``-style: the row stride comes from max_kv_len, so dummy tables
         # must span the full table width, not just the bucket.
         backend = SimpleNamespace(
             uses_cache_groups=True,
@@ -250,7 +250,7 @@ class TrtllmPrefillGraphSeamsTest(unittest.TestCase):
 
             from tokenspeed.runtime.layers.attention.backends import trtllm
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.mod = trtllm
 

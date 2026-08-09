@@ -31,8 +31,8 @@ Implemented (full text path):
   conv + gated-delta scan + conv/recurrent state cache through the hybrid
   ``MambaAttnBackend`` KDA branch.
 * ``KimiLinearMLP`` — dense / shared-expert MLP with the SiTU activation.
-* ``KimiLinearMoE`` — sigmoid/noaux_tc router + Latent MoE + flashinfer's
-  TRT-LLM fused SiTU + shared experts.
+* ``KimiLinearMoE`` — sigmoid/noaux_tc router + Latent MoE + FlashInfer's
+  TensorRT-LLM fused SiTU + shared experts.
 * ``KimiLinearDecoderLayer`` + ``KimiLinearModel`` — the AttnRes block-residual data
   flow.
 * ``KimiLinearForCausalLM.load_weights`` — stacked / fused-qkv-a / expert
@@ -174,7 +174,7 @@ class KimiK3Vision(MoonViTVisionPath):
     and patch merging stay eager while only the shape-stable transformer block
     loop is captured. Keeping this object separate from the text wrapper also
     lets the top-level ``image_encoder`` callable be replaced by ModelExecutor's
-    CUDA-graph wrapper without changing checkpoint parameter names.
+    CUDA graph wrapper without changing checkpoint parameter names.
     """
 
     def load_weight(
@@ -495,8 +495,8 @@ def _apply_attn_res(
     proj.weight))`` (mirrors the checkpoint's ``modeling_kimi.py``), replacing
     the plain residual add on the Kimi-K3 AttnRes path. The fused ``attn_res``
     kernel does the whole mix in fp32 (it sits on the global residual backbone,
-    where bf16 rounding would drift the stream), with a torch fallback for
-    unsupported shapes. Both paths are CUDA-graph capture-compatible.
+    where bf16 rounding would drift the stream), with a PyTorch fallback for
+    unsupported shapes. Both paths are CUDA graph capture-compatible.
 
     ``block_residual`` is block-major ``[num_blocks, T, hidden]``. When
     ``out_norm`` is given (same eps as ``norm``), the following RMSNorm is
@@ -913,7 +913,7 @@ class KimiLinearMoE(nn.Module):
       ``routed_expert_up_proj``/``routed_expert_norm`` project back (7168).
     * **Routed experts** (MXFP4): AMD uses the native ``MoELayer`` plan wrapped
       by ``LatentMoELayer`` so Triton/Gluon owns EP8 dispatch and SiTU. Non-AMD
-      platforms use flashinfer's TRTLLM-Gen SiTU MoE.
+      platforms use FlashInfer's TRTLLM-GEN SiTU MoE.
     * **Shared experts**: a plain ``KimiLinearMLP`` (SiTU).
     """
 
@@ -952,7 +952,7 @@ class KimiLinearMoE(nn.Module):
             alt_stream,
             enforce_eager=bool(global_server_args_dict["enforce_eager"]),
         )
-        # AUTO intentionally requests the flashinfer-backed SiTU plan when it was
+        # AUTO intentionally requests the FlashInfer-backed SiTU plan when it was
         # registered at import time; AUTO cannot override MoELayer per model.
         self.use_trtllm_situ_moe = self.execution_plan.use_trtllm
         self.use_marlin_situ_moe = self.execution_plan.use_marlin
@@ -960,7 +960,7 @@ class KimiLinearMoE(nn.Module):
             if not self.use_trtllm_situ_moe:
                 raise RuntimeError(
                     "Kimi-K3 MXFP4 SiTU MoE requires the native, FlashInfer "
-                    "TRT-LLM, or Marlin (Hopper W4A16) backend; no portable SiTU "
+                    "TensorRT-LLM, or Marlin (Hopper W4A16) backend; no portable SiTU "
                     f"Triton fallback exists (selected MoE backend: "
                     f"{moe_backend.value!r})."
                 )
@@ -969,20 +969,20 @@ class KimiLinearMoE(nn.Module):
             reason = situ_moe_unavailable_reason()
             if reason is not None:
                 raise RuntimeError(
-                    "Kimi-K3's fused SiTU MoE requires flashinfer > 0.6.15 "
+                    "Kimi-K3's fused SiTU MoE requires FlashInfer > 0.6.15 "
                     f"with native SiTU, unavailable: {reason}. Upgrade "
-                    "flashinfer; no portable SiTU Triton fallback exists."
+                    "FlashInfer; no portable SiTU Triton fallback exists."
                 )
-            # Out-of-box tactics: seed the autotuner from the in-tree
-            # swept table for this GPU/flashinfer combo, if one ships
-            # (flashinfer's own heuristic mispicks MoE tactics at prefill
+            # Out-of-the-box tactics: seed the autotuner from the in-tree
+            # swept table for this GPU and FlashInfer combination, if available
+            # (FlashInfer's own heuristic selects suboptimal MoE tactics at prefill
             # batch sizes). A lookup miss leaves the startup autotune
             # window to tune these shapes.
             load_packaged_flashinfer_tuning_cache(
                 "kimi-k3", mapping.moe.ep_size, mapping.moe.tp_size
             )
         if not self.execution_plan.use_native:
-            # Both the TRT-LLM and Marlin SiTU paths currently require a
+            # Both the TensorRT-LLM and Marlin SiTU paths currently require a
             # replicated-token all-reduce topology (attn TP == MoE TP*EP);
             # Attn-DP/MoE-EP RSAG is not wired for either.
             if mapping.moe.has_tp_ep and mapping.attn.tp_size != mapping.moe.tp_ep_size:
@@ -1009,7 +1009,7 @@ class KimiLinearMoE(nn.Module):
             ),
         )
 
-        # AMD native and flashinfer's TRT-LLM SiTU MoE both consume K3's
+        # AMD native and FlashInfer's TensorRT-LLM SiTU MoE both consume K3's
         # precomputed sigmoid/noaux_tc TopK.
         self.experts = MoELayer(
             top_k=self.top_k,
@@ -1201,11 +1201,11 @@ class KimiLinearMoE(nn.Module):
         max_num_tokens_per_gpu: int,
         skip_reduce: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the precomputed-TopK SiTU MoE (TRT-LLM cubin or Hopper Marlin)."""
+        """Run the precomputed-TopK SiTU MoE (TensorRT-LLM cubin or Hopper Marlin)."""
         if not self.use_trtllm_situ_moe and not self.use_marlin_situ_moe:
             raise RuntimeError(
                 "Kimi-K3 has no portable SiTU Triton fallback; use the native, "
-                "FlashInfer TRT-LLM, or Marlin SiTU MoE path."
+                "FlashInfer TensorRT-LLM, or Marlin SiTU MoE path."
             )
         out = self.experts(
             hidden_states=routed_in,
@@ -1852,7 +1852,7 @@ class KimiLinearModel(nn.Module):
             hidden_states = self.embed_tokens(input_ids)
 
         # Per-forward AttnRes scratch, block-major so block_residual[:m] is a
-        # contiguous kernel slice (fresh alloc = CUDA-graph safe); new_empty is
+        # contiguous kernel slice (fresh alloc = CUDA graph safe); new_empty is
         # safe: slot j is written at layer j*block_size before any read.
         num_blocks = ceil_div(
             self.config.num_hidden_layers, self.config.attn_res_block_size
@@ -2161,7 +2161,7 @@ class KimiK3ForConditionalGeneration(nn.Module):
             )
 
         # Multimodal path. ``image_encoder`` may later be replaced by
-        # ModelExecutor with the encoder CUDA-graph wrapper.
+        # ModelExecutor with the encoder CUDA graph wrapper.
         if is_multimodal_active:
             self.vision = KimiK3Vision(
                 config.vision_config,

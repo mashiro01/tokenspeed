@@ -549,7 +549,7 @@ class MLAAttnBackend(MlaCacheGroupMixin, AttentionBackend):
     ):
         if forward_mode.is_extend_or_mixed():
             raise NotImplementedError(
-                f"mla CUDA graph capture not supported for {forward_mode}"
+                f"MLA CUDA graph capture is not supported for {forward_mode}"
             )
 
         uses_cache_groups = bool(cache_group_ids) or self._cache_contract_bound
@@ -669,7 +669,7 @@ class MLAAttnBackend(MlaCacheGroupMixin, AttentionBackend):
     ):
         if forward_mode is not None and forward_mode.is_extend_or_mixed():
             raise NotImplementedError(
-                f"mla CUDA graph replay not supported for {forward_mode}"
+                f"MLA CUDA graph replay is not supported for {forward_mode}"
             )
 
         metadata = self.decode_cuda_graph_metadata[bs]

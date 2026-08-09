@@ -1592,7 +1592,7 @@ def _gluon_mla_decode_gfx950(
         raise ValueError(f"q head dim must be {qk_dim}, got {q.shape[-1]}")
     if kv_lora_rank != 512 or qk_rope_head_dim != 64:
         raise NotImplementedError(
-            "gluon MLA decode requires kv_lora_rank=512, qk_rope_head_dim=64, "
+            "Gluon MLA decode requires kv_lora_rank=512, qk_rope_head_dim=64, "
             f"got {kv_lora_rank}/{qk_rope_head_dim}"
         )
     is_fp8_q = q.dtype == torch.float8_e4m3fn
@@ -1604,7 +1604,7 @@ def _gluon_mla_decode_gfx950(
     valid_fp8_q = is_fp8_q and kv_cache.dtype == torch.float8_e4m3fn
     if not (valid_bf16_q or valid_fp8_q):
         raise NotImplementedError(
-            "gluon MLA decode requires bf16 q with bf16/fp8 kv_cache or "
+            "Gluon MLA decode requires BF16 Q with a BF16/FP8 kv_cache or "
             "float8_e4m3fn q with float8_e4m3fn kv_cache, got "
             f"{q.dtype}/{kv_cache.dtype}"
         )
@@ -1615,11 +1615,11 @@ def _gluon_mla_decode_gfx950(
     if regime == "bh16bn128":
         if not is_fp8_kv:
             raise NotImplementedError(
-                "gluon MLA decode (bh16bn128) requires an FP8 kv_cache"
+                "Gluon MLA decode (bh16bn128) requires an FP8 kv_cache"
             )
         if not 1 <= nhead <= 16:
             raise NotImplementedError(
-                "gluon MLA decode (bh16bn128) requires num_q_heads in [1, 16], "
+                "Gluon MLA decode (bh16bn128) requires num_q_heads in [1, 16], "
                 f"got {nhead}"
             )
         block_h = 16
@@ -1628,11 +1628,11 @@ def _gluon_mla_decode_gfx950(
     elif regime == "bh16bn64":
         if q.dtype != torch.bfloat16 or kv_cache.dtype != torch.bfloat16:
             raise NotImplementedError(
-                "gluon MLA decode (bh16bn64) requires bf16 q and kv_cache"
+                "Gluon MLA decode (bh16bn64) requires BF16 Q and kv_cache"
             )
         if not 1 <= nhead <= 16:
             raise NotImplementedError(
-                "gluon MLA decode (bh16bn64) requires num_q_heads in [1, 16], "
+                "Gluon MLA decode (bh16bn64) requires num_q_heads in [1, 16], "
                 f"got {nhead}"
             )
         block_h = 16
@@ -1640,10 +1640,10 @@ def _gluon_mla_decode_gfx950(
         num_xcds = 1
     elif regime == "bh64":
         if q.dtype != torch.bfloat16 or kv_cache.dtype != torch.bfloat16:
-            raise NotImplementedError("gluon MLA bh64 requires bf16 q and kv_cache")
+            raise NotImplementedError("Gluon MLA bh64 requires BF16 Q and kv_cache")
         if nhead not in (64, 128):
             raise NotImplementedError(
-                "gluon MLA decode (bh64) requires num_q_heads in {64, 128}, "
+                "Gluon MLA decode (bh64) requires num_q_heads in {64, 128}, "
                 f"got {nhead}"
             )
         block_h = 64
@@ -1651,17 +1651,17 @@ def _gluon_mla_decode_gfx950(
         num_xcds = _NUM_XCDS
         if batch_size % 64 != 0:
             raise NotImplementedError(
-                "gluon MLA decode (bh64) is large-batch only and requires "
+                "Gluon MLA decode (bh64) supports only large batches and requires "
                 f"batch_size divisible by 64, got {batch_size}"
             )
     else:
         if q.dtype != torch.bfloat16 or kv_cache.dtype != torch.bfloat16:
             raise NotImplementedError(
-                f"gluon MLA decode ({regime}) requires bf16 q and kv_cache"
+                f"Gluon MLA decode ({regime}) requires BF16 Q and kv_cache"
             )
         if nhead != 64 or batch_size not in _DEFAULT_SMALL_BATCH_TARGET_WORKGROUPS:
             raise NotImplementedError(
-                f"gluon MLA decode ({regime}) requires num_q_heads=64 and "
+                f"Gluon MLA decode ({regime}) requires num_q_heads=64 and "
                 f"batch_size in {sorted(_DEFAULT_SMALL_BATCH_TARGET_WORKGROUPS)}, "
                 f"got H={nhead}, B={batch_size}"
             )
@@ -1695,7 +1695,7 @@ def _gluon_mla_decode_gfx950(
             device=q.device,
         )
     elif out.dtype != torch.bfloat16:
-        raise ValueError(f"gluon MLA decode requires bf16 out, got {out.dtype}")
+        raise ValueError(f"Gluon MLA decode requires BF16 output, got {out.dtype}")
     o = out.view(batch_size, nhead, kv_lora_rank)
 
     if return_lse:
@@ -1969,7 +1969,7 @@ def gluon_mla_decode_bf16xbf16_gfx950(
         impl = gluon_mla_decode_bf16xbf16_gfx950_bh64
     else:
         raise NotImplementedError(
-            "gluon MLA decode supports H in [1, 16], H=64 with B in {1, 2, 4}, "
+            "Gluon MLA decode supports H in [1, 16], H=64 with B in {1, 2, 4}, "
             "or H in {64, 128} with B divisible by 64; "
             f"got H={nhead}, B={batch_size}"
         )

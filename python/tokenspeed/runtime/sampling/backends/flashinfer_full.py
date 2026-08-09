@@ -341,7 +341,7 @@ class FlashInferFullSamplingBackend(FlashInferSamplingBackend):
 
         # TP-rank sync BEFORE _accumulate_counts so per-rank counts stay aligned.
         # For fused top-k + top-p, the results are bit-identical across ranks.
-        # So we don't need to broadcast the results.
+        # The results therefore require no broadcast.
         if not _FUSED_TOPK_TOPP_AVAILABLE:
             self.maybe_broadcast(sampled)
 
@@ -464,7 +464,7 @@ class FlashInferFullSamplingBackend(FlashInferSamplingBackend):
 
         # TP-rank sync BEFORE _accumulate_counts so per-rank counts stay aligned.
         # For fused top-k + top-p, the results are bit-identical across ranks.
-        # So we don't need to broadcast the results.
+        # The results therefore require no broadcast.
         if not _FUSED_TOPK_TOPP_AVAILABLE:
             self.maybe_broadcast(predict, accept_index, accept_length)
 

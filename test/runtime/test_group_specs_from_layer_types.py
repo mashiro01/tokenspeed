@@ -372,7 +372,7 @@ class MultiWindowGroupSpecsTest(unittest.TestCase):
 
 class PoolToPagedCacheGroupsIntegrationTest(unittest.TestCase):
     """pool_to_paged_cache_groups converts published specs to a multi-group
-    scheduler config. Needs torch + the tokenspeed_scheduler ext; skips
+    scheduler config. Requires PyTorch + the tokenspeed_scheduler ext; skips
     where those are absent."""
 
     def _import_converter(self):
@@ -382,8 +382,8 @@ class PoolToPagedCacheGroupsIntegrationTest(unittest.TestCase):
             )
         except (ImportError, ModuleNotFoundError) as exc:
             self.skipTest(
-                f"pool_to_paged_cache_groups unavailable (needs torch + "
-                f"tokenspeed_scheduler ext): {exc}"
+                f"pool_to_paged_cache_groups unavailable (requires PyTorch and "
+                f"the tokenspeed_scheduler extension): {exc}"
             )
         return pool_to_paged_cache_groups
 

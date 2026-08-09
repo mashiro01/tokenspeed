@@ -51,7 +51,7 @@ def _ensure_triton_constexpr() -> None:
     try:
         import triton
         from triton.runtime.jit import ConstexprFunction
-    except Exception:  # pragma: no cover - triton always present with fla
+    except Exception:  # pragma: no cover - Triton is always present with FLA
         return
     for name in _CONSTEXPR_BUILTINS:
         fn = getattr(triton, name, None)

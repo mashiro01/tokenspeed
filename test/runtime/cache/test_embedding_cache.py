@@ -20,7 +20,7 @@
 
 """Unit tests for the EPD vision-embedding cache.
 
-These exercise pure Python logic (no GPU, no model, no torch import): the
+These exercise pure Python logic (no GPU, no model, no PyTorch import): the
 bytes-bounded LRU and the two-tier (L1 VRAM + L2 host DRAM) cache that let
 duplicate images skip the vision tower.
 """

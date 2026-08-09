@@ -55,7 +55,7 @@ _TRITON_DST = "tokenspeed_triton"
 
 
 class _ReuseModuleLoader(importlib.abc.Loader):
-    """Loader that re-uses an already-loaded module under an alias name.
+    """Loader that reuses an already-loaded module under an alias name.
 
     Used by :class:`_TritonRedirectFinder` so Python's import machinery
     reuses the existing ``tokenspeed_triton.*`` module object instead of

@@ -18,23 +18,24 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Sliding-window rel-bias decode through the tokenspeed-mha fwd kernel.
+"""Sliding-window relative-bias decode through the TokenSpeed MHA forward kernel.
 
-One query token per request (max_seqlen_q == 1). The sheared-bias prepass is
-a small triton gather: for the query of request b at absolute position
+Each request has one query token (``max_seqlen_q == 1``). The sheared-bias
+prepass is a small Triton gather. For request ``b`` at absolute position
 ``seqused[b] - 1`` (phase ``p = pos % 128``), physical bias column ``c`` of the
 ``extent + 256``-wide row maps to relative distance
 
     rel = (n_tiles - 1 - c // 128) * 128 + p - c % 128
 
 taking ``rel_table[h, rel]`` when ``0 <= rel < extent``, ``-inf`` for negative
-distances, ``0`` beyond the extent (the fwd kernel applies the causal/window
-mask itself). This matches flash_attn's ShearingBias layout, so
-the fwd kernel consumes it unchanged.
+distances, and ``0`` beyond the extent. The forward kernel applies the causal
+and window masks itself. This mapping matches FlashAttention's ``ShearingBias``
+layout, so the forward kernel consumes it unchanged.
 
-The fwd kernel is compiled once per static config with TVM FFI enabled, so
-runtime calls take torch tensors, dynamic batch/page-count, and are
-CUDA-graph safe (seqlens are read from device memory).
+TVM FFI compiles the forward kernel once per static configuration. Runtime
+calls accept PyTorch tensors and dynamic batch sizes and page counts. They are
+safe for CUDA graph capture because sequence lengths are read from device
+memory.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ from tokenspeed_kernel._triton import tl, triton
 def _shear_decode_kernel(
     rel_ptr,  # (B * P, H, EXTENT) compact per-head rel table per query row
     out_ptr,  # (B, R>=P, H, EXTENT_PADDED) sheared tile rows; strided dims ok
-    seqused_ptr,  # (B,) int32 visible KV lengths (incl. all P tokens)
+    seqused_ptr,  # (B,) INT32 visible KV lengths, including all P tokens
     out_batch_stride,
     out_row_stride,
     P,  # query tokens per request
@@ -66,10 +67,11 @@ def _shear_decode_kernel(
     b = i // P
     t = i - b * P
     cols = cb * BLOCK + tl.arange(0, BLOCK)
-    # rel/seqused predate the KV-store producer, so this gather is safe PDL prologue overlap.
+    # rel and seqused predate the KV-store producer, so this gather can safely
+    # overlap the PDL prologue.
     seq = tl.load(seqused_ptr + b)
-    # Query row t sits at absolute position seq - P + t. The fwd kernel
-    # anchors the bias tile columns at the LAST query row's 128-tile, so
+    # Query row t is at absolute position seq - P + t. The forward kernel
+    # anchors the bias-tile columns at the last query row's 128-wide tile, so
     # every row's phase is expressed relative to that anchor — negative
     # when the P rows straddle a tile boundary (rel < 0 stays -inf, which
     # the causal mask covers anyway).
@@ -84,7 +86,8 @@ def _shear_decode_kernel(
         mask=in_extent,
         other=0.0,
     )
-    # ShearingBias match: rel<0 -> -inf; >=extent stays 0 or masked-tile row maxima are poisoned.
+    # Match ShearingBias: rel < 0 becomes -inf. Values beyond the extent stay
+    # zero; otherwise, masked-tile row maxima would become invalid.
     out = tl.where(rel < 0, float("-inf"), vals.to(tl.float32))
     if ENABLE_PDL:
         # Conservative alias guard: complete the producer before we store.
@@ -106,18 +109,18 @@ def shear_decode_bias(
     enable_pdl: bool = False,
     prediction: int = 1,
 ) -> None:
-    """Fill the fwd kernel's bias tile with sheared rows for batched decode.
+    """Fill the forward kernel's bias tile with sheared rows for batched decode.
 
     Each request's ``prediction`` query rows land in tile rows
-    ``0..prediction-1``, phase-anchored to the LAST row's 128-tile (rows
+    ``0..prediction-1``, with phases anchored to the last row's 128-wide tile (rows
     that straddle a tile boundary get negative phases, whose ``rel < 0``
     region is -inf — inside the causal mask either way). ``prediction=1``
     is plain decode: one row at phase ``(seqused - 1) % 128``.
 
     Args:
-        rel: Compact rel-bias rows, (B * prediction, H, extent), bf16/fp16.
-        seqused: Visible KV length per request incl. all prediction tokens,
-            (B,) int32.
+        rel: Compact relative-bias rows, (B * prediction, H, extent), BF16/FP16.
+        seqused: Visible KV length for each request, including all prediction
+            tokens, (B,) INT32.
         out: Preallocated bias tile slice, same dtype as rel:
             (B, H, extent + 256) for prediction == 1 (the tile's row 0), or
             (B, R >= prediction, H, extent + 256) for prediction > 1.
@@ -134,7 +137,7 @@ def shear_decode_bias(
     else:
         assert P == 1, "prediction > 1 needs the 4-D bias tile slice"
         out_batch_stride, out_row_stride = out.stride(0), 0
-    # HIP triton has no launch_pdl; PDL is NVIDIA-only.
+    # HIP Triton has no launch_pdl; PDL is NVIDIA-only.
     use_pdl = enable_pdl and torch.version.hip is None
     kwargs = {}
     if use_pdl:
@@ -156,7 +159,7 @@ def shear_decode_bias(
 
 
 class _FwdCache:
-    """Compile cache for the varlen paged bf16 rel-bias fwd kernel."""
+    """Compilation cache for the variable-length paged BF16 relative-bias kernel."""
 
     def __init__(self):
         self._cache = {}
@@ -409,7 +412,7 @@ def rel_mha_decode_tsmha(
 
     Batch mode: q is viewed (B, prediction, H, D) and the sheared bias
     carries one 128-row tile per request (rows 0..prediction-1 hold the
-    query rows, phase-corrected per row by the triton shear); the compiled
+    query rows, phase-corrected per row by the Triton shear); the compiled
     fwd applies bottom-right causal/window masking itself, so row t of
     request b sees keys up to position ``seq_b - prediction + t``.
     ``prediction=1`` is plain decode. Varlen is deliberately avoided — the
@@ -574,7 +577,7 @@ def warmup(
     blocks_per_page=1,
     blockscaled=False,
 ):
-    """Pre-compile shear + fwd kernels outside CUDA-graph capture.
+    """Pre-compile shear + fwd kernels outside CUDA graph capture.
 
     Call from attention-backend init (device already selected, capture not
     yet started): importing the kernel modules remounts flash_attn.cute and

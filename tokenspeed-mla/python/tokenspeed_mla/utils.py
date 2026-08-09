@@ -48,7 +48,7 @@ def get_cutlass_dtype(dtype: str) -> cutlass.dtype:
 
 
 def torch_to_cutlass_dtype(dtype: torch.dtype) -> cutlass.dtype:
-    """Return the corresponding cutlass dtype for the given torch.dtype."""
+    """Return the corresponding CUTLASS data type for the given ``torch.dtype``."""
     dtype_map = {
         torch.float16: cutlass.Float16,
         torch.bfloat16: cutlass.BFloat16,
@@ -57,14 +57,12 @@ def torch_to_cutlass_dtype(dtype: torch.dtype) -> cutlass.dtype:
         torch.float8_e4m3fn: cutlass.Float8E4M3FN,
     }
     if dtype not in dtype_map:
-        raise TypeError(f"{dtype} is not supported by cutlass")
+        raise TypeError(f"{dtype} is not supported by CUTLASS")
     return dtype_map[dtype]
 
 
 def cutlass_to_torch_dtype(cutlass_dtype):
-    """
-    Return the corresponding torch.dtype per the given DSL type
-    """
+    """Return the ``torch.dtype`` corresponding to the given DSL type."""
     torch_dtype = getattr(torch, cutlass_dtype.__name__.lower(), None)
 
     torch_type_map = {
@@ -81,13 +79,13 @@ def cutlass_to_torch_dtype(cutlass_dtype):
         torch_dtype = torch_type_map.get(cutlass_dtype)
 
     if torch_dtype is None:
-        raise TypeError(f"{cutlass_dtype} is not supported by torch")
+        raise TypeError(f"{cutlass_dtype} is not supported by PyTorch")
     return torch_dtype
 
 
 @functools.cache
 def get_num_sm(device: torch.device) -> int:
-    # get the compute capability of the device, which would be cached
+    # Cache the device's compute capability.
     return torch.cuda.get_device_properties(device).multi_processor_count
 
 
@@ -120,10 +118,10 @@ def get_max_active_clusters(cluster_size: int) -> int:
     return get_hardware_info().get_max_active_clusters(cluster_size)
 
 
-# WAR for CuTeDSL make_ptr implementation for flashinfer
+# Workaround for FlashInfer's CuTe DSL make_ptr implementation.
 class _Pointer(Pointer):
-    """Runtime representation of a pointer that can inter-operate with
-    various data structures, including numpy arrays and device memory.
+    """Runtime representation of a pointer that can interoperate with
+    various data structures, including NumPy arrays and device memory.
 
     :param pointer: The pointer to the data
     :type pointer: int or pointer-like object
@@ -240,7 +238,7 @@ def make_ptr(
         from cutlass import Float32
         from cutlass.cute.runtime import make_ptr
 
-        # Create a numpy array
+        # Create a NumPy array.
         a = np.random.randn(16, 32).astype(np.float32)
 
         # Get pointer address as integer
@@ -274,7 +272,7 @@ def convert_sf_to_mma_layout(
     """Convert scale factors from swizzled 2D layout to 6D MMA-compatible layout.
 
     This function converts scale factors produced by `fp4_quantize(..., is_sf_swizzled_layout=True)`
-    to the 6D layout expected by CuteDSL grouped GEMM kernels.
+    to the 6D layout expected by CuTe DSL grouped GEMM kernels.
 
     The swizzled scale factors from `fp4_quantize` have shape `(M, K/sf_vec_size)` but are
     stored in a swizzled pattern internally. This function reshapes them to the explicit
@@ -314,7 +312,7 @@ def convert_sf_to_mma_layout(
         - For grouped tensors (e.g., expert weights), reshape to `(num_groups * M, K)`
           before quantization, then use this function with the appropriate `num_groups`.
         - The returned tensor is a strided view, NOT contiguous. This is intentional as
-          the CuteDSL kernel expects the specific physical memory layout.
+          the CuTe DSL kernel expects the specific physical memory layout.
     """
     sf_k = ceil_div(k, sf_vec_size)
     m_tiles = ceil_div(m, 128)

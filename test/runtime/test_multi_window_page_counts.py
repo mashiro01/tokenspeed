@@ -45,7 +45,7 @@ _KV_CACHE_DIR = _RUNTIME_DIR / "layers" / "attention" / "kv_cache"
 _RECIPES_DIR = _KV_CACHE_DIR / "recipes"
 
 # compute_paged_cache_group_page_counts lazily imports ceil_div from
-# tokenspeed.runtime.utils.common, whose package pulls torch/psutil. Prefer the
+# tokenspeed.runtime.utils.common, whose package pulls PyTorch/psutil. Prefer the
 # real module (container runs); register a minimal equivalent only where the
 # runtime deps are absent, so the pure math stays testable everywhere.
 try:

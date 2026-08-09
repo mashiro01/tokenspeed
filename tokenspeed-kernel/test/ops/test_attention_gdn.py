@@ -282,9 +282,9 @@ def test_gdn_chunk_prefill_matches_fla_reference(device: str, solution: str, req
     assert result.h_layout is GdnCheckpointLayout.NONE
 
     # FLA's own native state layout is [N, Hv, K, V] (V-last); gdn_chunk_prefill's
-    # public contract is K-last [N, Hv, V, K] (matches the runtime pool +
-    # flashinfer), so transpose at this reference's boundary (mirrors
-    # triton_gdn_chunk_prefill's own in/out transpose).
+    # public contract is K-last [N, Hv, V, K] (matching the runtime pool and
+    # FlashInfer), so transpose at this reference's boundary (mirroring
+    # triton_gdn_chunk_prefill's own input/output transpose).
     ref_out, ref_state_kv = _fla_chunk_gated_delta_rule()(
         q=q,
         k=k,
@@ -585,7 +585,7 @@ def test_gdn_decode_step_output_state_indices_remap(
 
 @pytest.mark.parametrize("solution", ["triton", "flashinfer"])
 def test_gdn_decode_step_padding_index_is_isolated(device: str, solution: str, require):
-    # -1 (CUDA-graph padding) rows must not corrupt any other batch entry's
+    # -1 (CUDA graph padding) rows must not corrupt any other batch entry's
     # read or write, regardless of how each backend treats the padding row
     # itself (skip vs sacrificial-row redirect are both valid per-kernel).
     require("attention", "gdn_decode_step", solution, torch.bfloat16, "q")

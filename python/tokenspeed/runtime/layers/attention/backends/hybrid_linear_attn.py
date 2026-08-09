@@ -347,7 +347,7 @@ class MambaAttnBackend(AttentionBackend):
         self.state_paging_active = False
         self._state_page_size = 1
         self._state_group_ids: tuple[str, ...] = ()
-        # CUDA-graph buffers: one persistent dual-index
+        # CUDA graph buffers: one persistent dual-index
         # (state_in/state_out) [bs] buffer per state group and captured batch
         # size. Values are keyed by group ID and indexed by ``bs - 1``.
         self.state_in_by_group: dict[str, list[torch.Tensor]] = {}
@@ -444,7 +444,7 @@ class MambaAttnBackend(AttentionBackend):
         (``seq_lens - draft_token_num``); per-position outputs go to the
         verify scratch, and the accepted state is committed back by
         ``update_mamba_state_after_mtp_verify``. Returns the per-group in
-        pages, the committed lengths, and the per-group group tables (kept
+        pages, the committed lengths, and the tables for each group (kept
         for the commit's dynamic page resolve).
         """
         committed = (seq_lens[:bs].to(torch.int64) - draft_token_num).clamp_min(0)
@@ -523,7 +523,7 @@ class MambaAttnBackend(AttentionBackend):
         """Pointer tables for the batched verify state copies: per-layer base
         addresses of the state slabs and their verify scratches, plus each
         layer's index into ``_state_group_ids``. Rebuilt only when the
-        scratch is (re)allocated; the tensors are stable so CUDA-graph capture
+        scratch is (re)allocated; the tensors are stable so CUDA graph capture
         can record them."""
         tables = getattr(self, "_verify_copy_tables", None)
         if tables is not None:
@@ -641,7 +641,7 @@ class MambaAttnBackend(AttentionBackend):
     def _verify_scratch_grid(self, bs: int, draft_token_num: int) -> torch.Tensor:
         """Scratch row grid ``[bs, draft_token_num]``: row ``req*(T+1)`` is
         the seeded init window, rows ``req*(T+1)+1+t`` the per-position
-        outputs. Memoized per (bs, T): CUDA-graph capture records the tensor's
+        outputs. Memoized per (bs, T): CUDA graph capture records the tensor's
         storage, so replays must present the identical tensor."""
         cache = getattr(self, "_verify_grid_cache", None)
         if cache is None:

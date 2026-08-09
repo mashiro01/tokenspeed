@@ -24,14 +24,14 @@ def _import_backend():
 class TRTLLMCacheGroupsTest(unittest.TestCase):
     """The trtllm backend consumes per-group tables through the shared
     CacheGroupsMixin: table/write-loc selection routes by layer.group_id,
-    metadata drops the single-table single table on the grouped-cache path, and the CUDA-graph
+    metadata drops the single-table field on the grouped-cache path, and the CUDA graph
     buffers follow the capture/replay discipline."""
 
     def setUp(self):
         try:
             self.Backend, self.Metadata = _import_backend()
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         import torch
 
         self.torch = torch
@@ -307,8 +307,8 @@ class TRTLLMCacheGroupsTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "missing captured groups"):
             b._replay_stale_guard(bs, {"full_attention": self.torch.zeros((bs, 1))})
 
-        # Replay fill copies rows, pads column tails with the trtllm dummy
-        # page 0 (table_tail_pad), recomputes locs (fused triton).
+        # Replay fill copies rows and pads column tails with the TensorRT-LLM dummy
+        # page 0 (table_tail_pad), and recomputes locations (fused Triton).
         seq_lens = self.torch.tensor([65, 1, 1, 1], dtype=self.torch.int32).cuda()
         src = {
             "full_attention": self.torch.tensor(

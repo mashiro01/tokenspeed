@@ -51,7 +51,7 @@ if platform.is_nvidia:
 
     def flashinfer_trtllm_fp8_moe_process_weights(plan: dict, w: torch.nn.Module):
         # The shared MoE checkpoint loader stores w13 as a concatenated
-        # ``[w1(gate) | w3(up)]`` block; the TRT-LLM-Gen gated kernel consumes
+        # ``[w1(gate) | w3(up)]`` block; the TensorRT-LLM-Gen gated kernel consumes
         # ``[w3 | w1]`` ordering (same swap flashinfer_cutlass applies). Swap the
         # gate/up halves of both the weight and its block-scale in place.
         half_w = w.w13_weight.shape[1] // 2
@@ -116,7 +116,7 @@ if platform.is_nvidia:
             return x.new_empty(0, hidden_size, dtype=torch.bfloat16)
 
         # Per-token group (block=128) FP8 quantization of activations. The
-        # TRT-LLM-Gen kernel expects ``hidden_states_scale`` as a 2D
+        # TensorRT-LLM-Gen kernel expects ``hidden_states_scale`` as a 2D
         # ``[hidden_size // 128, num_tokens]`` float32 tensor for the DeepSeekFp8
         # recipe. ``per_token_group_quant_fp8`` already emits the scale in that
         # ``[K, M]`` (group-major) orientation, so no transpose is needed.

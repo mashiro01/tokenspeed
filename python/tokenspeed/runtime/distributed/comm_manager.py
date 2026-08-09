@@ -173,8 +173,8 @@ class CommManager:
         if self.use_all_reduce(self.is_moe):
             hidden_states = all_reduce(hidden_states, self.mapping.attn.tp_group)
             # The output residual is expected to have attn_tp_num_tokens.
-            # For first layer, the input residual has attn_tp_num_tokens.
-            # Otherwise, if this layer experiences a RSAG -> AR switch, residual needs allgather.
+            # For the first layer, the input residual has attn_tp_num_tokens.
+            # Otherwise, an RSAG -> AR switch requires an all-gather of the residual.
             if self.layer_id > 0 and not self.use_all_reduce(self.prev_is_moe):
                 residual = token_all_gather(
                     residual,
@@ -189,8 +189,8 @@ class CommManager:
                 scattered_num_tokens=token_list,
             )
             # The output residual is expected to have scattered_num_tokens.
-            # For first layer, the input residual has attn_tp_num_tokens, so needs slice.
-            # Otherwise, if this layer experiences a AR -> RSAG switch, residual needs slice.
+            # For the first layer, the input residual has attn_tp_num_tokens and must be sliced.
+            # Otherwise, an AR -> RSAG switch requires the residual to be sliced.
             if self.layer_id == 0 or self.use_all_reduce(self.prev_is_moe):
                 offset = sum(token_list[: self.mapping.attn.tp_rank])
                 residual = residual[offset : offset + hidden_states.size(0)]

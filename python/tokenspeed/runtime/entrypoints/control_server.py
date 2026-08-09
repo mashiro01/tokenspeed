@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Control HTTP server (sidecar) that runs alongside the smg gateway.
+"""Control HTTP server (sidecar) that runs alongside the SMG gateway.
 
 Runs automatically on ``main_port + 1`` when ``tokenspeed serve`` starts.
 Override the port with ``--control-port PORT``.
@@ -29,7 +29,7 @@ Architecture::
                     ├─ /health, /get_server_info, /get_model_info,
                     │  /health_check, /abort  ──►  gRPC engine  (direct)
                     └─ /generate, /v1/*, /flush_cache
-                         ──►  smg gateway  :8000  ──►  gRPC engine
+                         ──►  SMG gateway  :8000  ──►  gRPC engine
 """
 
 from __future__ import annotations
@@ -207,7 +207,7 @@ async def _proxy_request(
 
 
 # sglang-native /generate clients (e.g. slime, verl) post {"text"|"input_ids",
-# "sampling_params"} with no `model` field; the smg gateway needs `model` to
+# "sampling_params"} with no `model` field; the SMG gateway needs `model` to
 # select a tokenizer/worker (else `tokenizer_not_found`). Default it to the
 # single served model so tokenspeed is a drop-in sglang generation endpoint.
 _served_model_id: str | None = None
@@ -542,7 +542,7 @@ def build_control_server(
     to detect when the socket is bound and accepting connections.
 
     Args:
-        gateway_url: Base URL of the smg gateway for generation passthrough.
+        gateway_url: Base URL of the SMG gateway for generation passthrough.
         engine_grpc_addr: ``host:port`` of the gRPC engine for direct calls.
         rl_control_url: Base URL of the in-engine RL control plane (vLLM-compatible
             + SGLang-compatible weight sync). Empty disables those routes (they

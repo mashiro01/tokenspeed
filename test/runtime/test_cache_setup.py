@@ -107,7 +107,7 @@ def _msa_config() -> MSAConfig:
 
 
 def _hybrid_setup_with_narrow_draft():
-    # The recipe merges target and draft layers BEFORE the builder
+    # The recipe merges target and draft layers before the builder
     # (merge_continuation_layers); "state" here is a layer-external group,
     # plain tuple concatenation like Inkling's checkpoint columns.
     (
@@ -515,8 +515,8 @@ def test_heterogeneous_draft_guards_fail_fast() -> None:
 def test_hybrid_draft_layers_share_the_merged_plan() -> None:
     setup = _hybrid_setup_with_narrow_draft()
 
-    # One big model: the draft layer's field is planned as a continuation
-    # layer in the SAME plan; page ids come from the same shared groups.
+    # For a single large model, the draft layer's field is planned as a
+    # continuation layer in the same plan; page IDs come from the same shared groups.
     assert setup.num_draft_layers == 1
     plan = setup.spec.memory_plan
     target_field = plan.field("layer.0.kv")
@@ -551,7 +551,7 @@ def test_hybrid_draft_only_sliding_group_packs_by_ratio() -> None:
         draft_layer_types=("full_attention", "sliding_attention"),
         draft_group_ids=("full_attention", "draft_swa"),
     )
-    # ONE spec derivation over the merged layers, per-layer windows.
+    # Derive one specification over the merged layers, with per-layer windows.
     group_specs = build_paged_cache_group_specs(
         layer_types=layer_types,
         group_ids=group_ids,
@@ -574,10 +574,10 @@ def test_hybrid_draft_only_sliding_group_packs_by_ratio() -> None:
         max_padding_fraction=1.0,
     )
 
-    # One big model: both draft layers are continuation layers (global
+    # For a single large model, both draft layers are continuation layers (global
     # layers 1 and 2) of the one merged plan. The full_attention group is
-    # shared; the draft-only sliding group is planned alongside with its
-    # own packing, and its spec joins the ONE published spec set.
+    # shared; the draft-only sliding group is planned alongside it with its
+    # own packing, and its specification joins the single published specification set.
     assert setup.num_draft_layers == 2
     plan = setup.spec.memory_plan
     assert plan.field("layer.1.kv").group_id == "full_attention"
@@ -593,11 +593,11 @@ def test_hybrid_draft_only_sliding_group_packs_by_ratio() -> None:
 
 
 def test_union_contract_flows_draft_groups_to_scheduler_config() -> None:
-    """No new contract: the one spec publishes draft-only
+    """No new contract is needed: the single specification publishes draft-only
     groups as ordinary groups; pool publication and the scheduler config
     conversion carry them with their natural retention — the C++ side
-    instantiates its existing SwaManager for them, no draft concept
-    anywhere."""
+    instantiates its existing ``SwaManager`` for them without introducing a
+    draft-specific concept."""
     import torch
 
     from tokenspeed.runtime.engine.scheduler_utils import pool_to_paged_cache_groups
@@ -655,14 +655,14 @@ def test_union_contract_flows_draft_groups_to_scheduler_config() -> None:
     assert set(groups) == {"full_attention", "draft_swa"}
     swa = groups["draft_swa"]
     assert swa.sliding_window_tokens == 8
-    # Packing and page counts come from the ONE merged plan.
+    # Packing and page counts come from the single merged plan.
     plan_group = setup.spec.memory_plan.group("draft_swa")
     assert swa.cache_blocks_per_lcm_block == plan_group.cache_blocks_per_lcm_block
     assert swa.total_pages == plan_group.page_count
 
 
 def test_draft_view_maps_local_layer_ids_to_continuation_planes() -> None:
-    """Tripwire for the draft layer-map DIRECTION: a draft model's local
+    """Tripwire for the draft layer-map direction: a draft model's local
     layer 0 must resolve to the merged pool's continuation plane
     (num_target_layers), never to the target's layer 0. The inverse map
     (the hybrid {global: pool_idx} convention) silently corrupts the
@@ -683,9 +683,9 @@ def test_draft_view_maps_local_layer_ids_to_continuation_planes() -> None:
     )
     # Local draft layer 0 -> global continuation plane 61.
     assert draft_pool.get_key_buffer(0) == num_target_layers
-    # A layer already carrying its global id (V4 MTP convention) passes through.
+    # A layer already carrying its global ID (V4 MTP convention) passes through.
     assert draft_pool.get_key_buffer(num_target_layers) == num_target_layers
 
-    # The hybrid default stays the inverse: global sparse ids -> compact slots.
+    # The hybrid default remains the inverse: global sparse IDs → compact slots.
     hybrid_pool = LayerMappedKVPool(_FakePool(), [3, 7, 11])
     assert hybrid_pool.get_key_buffer(7) == 1

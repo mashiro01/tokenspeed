@@ -20,7 +20,7 @@
 
 """SM100 FMHA kernels with relative bias and MXFP8 (rel_mha).
 
-Two CuteDSL kernels, their prepass helpers, and the runtime-facing rel_mha
+Two CuTe DSL kernels, their prepass helpers, and the runtime-facing rel_mha
 operator modules, plus a compatibility layer over the installed
 ``tokenspeed-fa4`` distribution:
 

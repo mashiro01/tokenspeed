@@ -51,8 +51,8 @@ def test_audit_logits_flags_per_extend_row():
 
 
 def test_audit_logits_reduces_verify_rows_per_decode_slot():
-    """Spec-verify layout: ne extend rows then nd*n verify rows reduce to
-    one flag per request slot."""
+    """Reduce ``ne`` extend rows and ``nd * n`` verification rows to one flag
+    per request slot in the speculative-verification layout."""
     guard = NanGuard(max_bs=4, device="cpu")
     # 1 extend row + 2 decode slots x 3 verify rows.
     logits = torch.zeros((7, 8))

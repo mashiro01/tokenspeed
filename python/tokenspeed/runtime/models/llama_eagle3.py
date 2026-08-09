@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""LLaMA Eagle3 draft model for speculative decoding.
+"""Llama Eagle3 draft model for speculative decoding.
 
 Extends base classes. Preserves the low-latency fused allreduce+norm
 path from the original implementation.
@@ -571,8 +571,8 @@ class Eagle3LlamaModel(BaseTransformerModel):
             fuse_embed_reduce=fuse_embed_reduce,
         )
 
-        # Decide on pre-slice token count so this matches the path midlayer
-        # actually took; under draft reduce, hidden_states.shape[0] shrinks.
+        # Select the pre-slice token count that matches the midlayer path. Draft
+        # reduction decreases hidden_states.shape[0].
         if midlayer.comm_manager.should_fuse(input_ids.shape[0]):
             hidden_states_to_logits, hidden_states_to_aux = hidden_states, residual
         else:

@@ -22,7 +22,7 @@ For a compact compatibility table, see
 | `--download-dir` | Hugging Face download/cache directory. |
 | `--hf-overrides` | JSON overrides for model configuration values. |
 
-## Precision And Quantization
+## Precision and Quantization
 
 | Parameter | Purpose |
 | --- | --- |
@@ -40,7 +40,7 @@ For a compact compatibility table, see
 | `--port` | HTTP bind port. |
 | `--served-model-name` | Model name returned by the OpenAI-compatible API. |
 | `--api-key` | API key required by the server. |
-| `--chat-template` | Built-in chat template name or template file path (handled by the smg gateway). |
+| `--chat-template` | Built-in chat template name or template file path (handled by the SMG gateway). |
 | `--stream-interval` | Streaming buffer interval in generated tokens. Smaller values stream more frequently. |
 | `--stream-output` | Return generated text as disjoint streaming segments. |
 | `--weight-version` | Initial model-weight version stamped into generation metadata. Defaults to `default`. |
@@ -67,7 +67,7 @@ Use `GET /get_weight_version` to read the current value,
 `POST /update_weight_version` with `{"new_version": "..."}` to set it directly,
 and `GET /model_info` to read the model path and version together.
 
-## Scheduler And Memory
+## Scheduler and Memory
 
 | Parameter | Purpose |
 | --- | --- |
@@ -93,7 +93,7 @@ issue budget, while `--max-total-tokens` controls the global token pool.
 | --- | --- |
 | `--tensor-parallel-size`, `--tp` | Familiar alias for setting attention tensor parallel size. |
 | `--attn-tp-size` | Tensor parallel size for attention. |
-| `--dense-tp-size` | Tensor parallel size for dense layers. Defaults to the attention replica width (attn TP x CP): the full world without DP attention, one replica with it. |
+| `--dense-tp-size` | Tensor parallel size for dense layers. Defaults to the attention replica width (attention TP × CP): the full world without DP attention, one replica with it. |
 | `--moe-tp-size` | Tensor parallel size for MoE layers. |
 | `--data-parallel-size` | Number of data-parallel replicas. |
 | `--mm-encoder-tp-mode` | Multimodal encoder parallelism: `weights` shards encoder weights with attention TP; `data` uses TP1 whole-item DP and currently requires aggregate serving and no attention context parallelism. |
@@ -129,12 +129,12 @@ When `--dp-sampling` is enabled, the logits processor owns the per-forward
 logits layout decision and carries the resulting plan to the sampling backend
 with the logits output.
 
-## Reasoning And Tool Calling
+## Reasoning and Tool Calling
 
 | Parameter | Purpose |
 | --- | --- |
-| `--reasoning-parser` | Parser for extracting reasoning content from model outputs (handled by the smg gateway). |
-| `--tool-call-parser` | Parser for OpenAI-compatible tool-call payloads (handled by the smg gateway). |
+| `--reasoning-parser` | Parser for extracting reasoning content from model outputs (handled by the SMG gateway). |
+| `--tool-call-parser` | Parser for OpenAI-compatible tool-call payloads (handled by the SMG gateway). |
 | `--enable-custom-logit-processor` | Allow custom logit processors. Keep disabled unless the deployment needs it. |
 
 Common reasoning parser values include `kimi_k25`, `base`, `qwen3`,
@@ -203,9 +203,9 @@ Req: chatcmpl-019ef6b7 Finish! RequestStats(status='finished', reason='stop', pr
 | `prefill_ms` | Scheduled → prefill complete. |
 | `ttft_ms` | Received → first output token (always ≥ `prefill_ms`; it also spans the queue). |
 | `total_ms` | Received → finished/aborted. |
-| `preempt_ms` / `preempt_count` | Wall-clock this request's decode was delayed by prefilling other requests, and the number of such interruptions. Host-side best-effort. |
+| `preempt_ms` / `preempt_count` | Wall-clock time this request's decode was delayed by prefilling other requests, and the number of such interruptions. Host-side best-effort. |
 | `decode_tps` | Decode throughput (generated tokens / decode window). |
-| `acc_len` / `acc_rate` | Spec-decode acceptance length and rate (`None` when speculative decoding is off). |
+| `acc_len` / `acc_rate` | Speculative decoding acceptance length and rate (`None` when speculative decoding is off). |
 | `recv_ts` / `commit_ts` / `finish_ts` | Absolute epoch timestamps for received / scheduled / finished. |
 
 ### KV Cache Events
@@ -223,7 +223,7 @@ Example:
 ```
 
 The ZMQ publisher sends three frames: topic bytes, an 8-byte big-endian sequence
-number, and a msgpack payload. The payload is an array-like `KVEventBatch`:
+number, and a MessagePack payload. The payload is an array-like `KVEventBatch`:
 
 ```python
 [timestamp, [["BlockStored", [block_hash], parent_hash, token_ids, block_size]], attn_dp_rank]

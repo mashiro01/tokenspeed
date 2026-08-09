@@ -24,7 +24,7 @@ multicasts the pre-epilogue sum; every rank re-runs the deterministic epilogue).
 Covers what the one-shot suite cannot: token counts above
 ``MNNVL_ONESHOT_MAX_TOKEN``, the one-shot/two-shot dispatch boundary, agreement
 between the two paths, cross-rank bitwise identity of the epilogue, repeated
-launches (Lamport 3-slot rotation), and CUDA-graph capture/replay.
+launches (Lamport 3-slot rotation), and CUDA graph capture/replay.
 
 Single-GPU pytest runs skip this file. Exercise it with::
 
@@ -159,7 +159,7 @@ def _ref_allreduce(x):
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("token_num", [129, 256, 1024, 2048])
 def test_twoshot_plain_allreduce_matches_nccl(token_num):
-    """Above the one-shot cap the kernel must still equal a NCCL all-reduce."""
+    """Above the one-shot cap, the kernel must still match an NCCL all-reduce."""
     from tokenspeed_kernel.thirdparty.cuda.trtllm import AllReduceFusionPattern
 
     ctx = _skip_unless_mnnvl()
@@ -198,7 +198,7 @@ def test_dispatch_boundary_oneshot_vs_twoshot():
 
 
 # --------------------------------------------------------------------------
-# fused residual + rmsnorm (the pattern prefill actually uses)
+# Fused residual addition and RMSNorm, matching the prefill execution path.
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("token_num", [129, 512, 2048])
 def test_twoshot_residual_rmsnorm_matches_reference(token_num):

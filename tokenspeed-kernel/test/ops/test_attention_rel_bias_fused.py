@@ -21,7 +21,7 @@ The registered rel_mha kernels route to the fused sheared-bias path when the
 installed flash-attn build ships it and the call satisfies its constraints
 (extent multiple of 128; with a sliding window the window length must equal
 the extent — the kernel slices the table to it). These tests pin the fused
-route against both the torch reference and the score_mod gather route on
+route against both the PyTorch reference and the score_mod gather route on
 identical inputs, plus the fallback guards.
 
 Skipped when the installed flash-attn lacks ``rel_bias`` (stock wheels).

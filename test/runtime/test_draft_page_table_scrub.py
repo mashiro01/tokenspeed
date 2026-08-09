@@ -35,11 +35,11 @@ def _publish(staging, bs, table):
 
 
 class DraftPageTableScrubTest(unittest.TestCase):
-    """Rows past the current batch must never keep a prior batch's page ids.
+    """Rows past the current batch must never retain a prior batch's page IDs.
 
-    CUDA-graph replay reads padded_bs rows straight off this table (row i IS
-    batch position i, so the req-pool sink row does not shield it). A stale
-    id left by an earlier, larger batch routes the multi-step draft's KV
+    CUDA graph replay reads ``padded_bs`` rows directly from this table (row i is
+    batch position i, so the request-pool sink row does not shield it). A stale
+    ID left by an earlier, larger batch routes the multi-step draft's KV
     writes into another request's pages; the victim then mispredicts
     permanently (#955: M3 EAGLE3 accept 0.665 -> 0.0015).
     """
@@ -105,7 +105,7 @@ class IdleReplayScrubTest(unittest.TestCase):
     A DP rank that served a large batch and then goes idle replays the
     captured drafter graph at padded_bs while another rank decodes; without
     the idle-path scrub the stale rows route idle draft KV writes into
-    live pages (codex P2 on #955).
+    live pages (P2 review finding in #955).
     """
 
     def test_idle_replay_sees_zeroed_rows(self):
@@ -142,7 +142,7 @@ class IdleReplayScrubTest(unittest.TestCase):
             draft_page_table=staging.table,
             forward_step=_Step(),
         )
-        # Simulate a prior larger batch leaving real ids behind.
+        # Simulate a prior larger batch leaving real IDs behind.
         staging.table[:6] = 7
         ModelExecutor.execute_idle_forward(
             ex, global_num_tokens=[0], global_bs=[0], all_decode_or_idle=True

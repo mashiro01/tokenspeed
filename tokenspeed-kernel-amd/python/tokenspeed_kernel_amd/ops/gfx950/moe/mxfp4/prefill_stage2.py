@@ -999,7 +999,7 @@ def gluon_mxfp4_moe_stage2_1x2_kernel(
                 # [token_num, topk, N] and BLOCK_N divides N for our DSv3 /
                 # Kimi shapes, so every chunk column is in-bounds. Keeping
                 # the per-element N check would block dword->dwordx4 store
-                # vectorisation because the compiler can't prove uniformity.
+                # vectorization because the compiler can't prove uniformity.
                 # Token-row validity is kept -- padded rows have
                 # token_id == num_valid_tokens >= token_num.
                 tok_ok = token_id_s[:, None] < token_num
@@ -1654,10 +1654,10 @@ def invoke_gluon_mxfp4_moe_stage2_1x2(
         c_stride_m = partials.stride(1)
         c_stride_n = partials.stride(2)  # = 1
     else:
-        # Atomic path (small M): GEMM atomic_add_pk_bf16's directly into
-        # `out`. Caller's `out` must be zero-initialised so the first
-        # accumulator lands on a clean slate. We zero it here -- one
-        # bf16 fill is cheap relative to skipping the scratch + reduce.
+        # Atomic path (small M): the GEMM writes atomic_add_pk_bf16 results
+        # directly into ``out``. The output must be zero-initialized before the
+        # first accumulation, so clear it here. One BF16 fill is inexpensive
+        # compared with the avoided scratch buffer and reduction.
         out.zero_()
         c_ptr = out
         c_stride_m = out.stride(0)

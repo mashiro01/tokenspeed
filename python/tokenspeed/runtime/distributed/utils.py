@@ -82,9 +82,10 @@ def split_tensor_along_last_dim(
 
 @dataclasses.dataclass
 class StatelessProcessGroup:
-    """A dataclass to hold a metadata store, and the rank, world_size of the
-    group. Only use it to communicate metadata between processes.
-    For data-plane communication, create NCCL-related objects.
+    """Holds a metadata store together with the rank and world_size of the group.
+
+    Use it only to communicate metadata between processes; for data-plane
+    communication, create NCCL-related objects instead.
     """
 
     rank: int

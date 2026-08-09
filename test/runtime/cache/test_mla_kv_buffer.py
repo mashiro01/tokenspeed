@@ -80,7 +80,7 @@ def _empty_kv(dtype: torch.dtype) -> torch.Tensor:
 
 
 def _torch_set_reference(kv: torch.Tensor, loc, k_nope, k_rope) -> torch.Tensor:
-    """Pure-torch scatter-write reference."""
+    """Pure-PyTorch scatter-write reference."""
     out = kv.clone()
     out[loc, :NOPE_DIM] = k_nope[:, 0, :]
     out[loc, NOPE_DIM:] = k_rope[:, 0, :]
@@ -88,7 +88,7 @@ def _torch_set_reference(kv: torch.Tensor, loc, k_nope, k_rope) -> torch.Tensor:
 
 
 def _torch_get_reference(kv: torch.Tensor, loc) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure-torch scatter-read reference."""
+    """Pure-PyTorch scatter-read reference."""
     return (
         kv[loc, :NOPE_DIM].unsqueeze(1).contiguous(),
         kv[loc, NOPE_DIM:].unsqueeze(1).contiguous(),
@@ -126,7 +126,7 @@ def _rotate_rope_reference(
 @pytest.mark.parametrize("pattern", ["seq", "rand"])
 def test_set_matches_torch_reference(n_loc, dtype, pattern):
     """set_mla_kv_buffer_triton scatters k_nope/k_rope into kv_buffer at loc
-    indices, byte-for-byte vs a torch reference. Spans both dispatch branches
+    indices, byte-for-byte vs a PyTorch reference. Spans both dispatch branches
     via the n_loc parametrization."""
     loc, k_nope, k_rope = _make_inputs(n_loc, dtype, pattern)
     kv = _empty_kv(dtype)
@@ -205,7 +205,7 @@ def test_set_pdl_invariant(n_loc, dtype):
 @pytest.mark.parametrize("pattern", ["seq", "rand"])
 def test_get_matches_torch_reference(n_loc, dtype, pattern):
     """get_mla_kv_buffer_triton gathers from kv_buffer at loc indices into
-    cache_k_nope / cache_k_rope outputs, byte-for-byte vs a torch reference."""
+    cache_k_nope / cache_k_rope outputs, byte-for-byte vs a PyTorch reference."""
     # Populate kv_buffer with random data we'll read back.
     if dtype == torch.float8_e4m3fn:
         bf = torch.randn(NUM_PAGES, TOTAL_DIM, device="cuda", dtype=torch.bfloat16) * 50

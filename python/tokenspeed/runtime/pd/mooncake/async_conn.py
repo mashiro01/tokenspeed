@@ -184,7 +184,7 @@ class MooncakeAsyncKVManager(MooncakeKVManager):
 
         if bootstrap_room not in self.transfer_infos:
             # This means that the current rank is a dummy rank for this request,
-            # and it has already been marked as success, so there is no need to
+            # and it has already been marked successful, so there is no need to
             # add further chunks into the transfer queue.
             return
 

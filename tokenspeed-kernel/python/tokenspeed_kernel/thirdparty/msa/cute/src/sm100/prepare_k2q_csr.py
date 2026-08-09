@@ -6,7 +6,7 @@
 Thin dispatcher that calls the CUDA C++ kernel pipeline in
 ``src.sm100.build_k2q_csr``. Supports ``topK in {4, 8, 16, 32}`` and
 ``blk_kv == 128`` only — other shapes raise ``ValueError`` rather than
-silently falling back to a torch-reference path.
+silently falling back to a PyTorch reference path.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def _ceil_div(x: int, y: int) -> int:
 class SparseK2qCsrBuilderSm100:
     """Build the k2q CSR reverse index for sparse attention on SM100.
 
-    The public API matches the historical CUTE DSL builder so callers
+    The public API matches the historical CuTe DSL builder so callers
     (``sparse_index_utils.build_k2q_csr``, attention kernels) need no
     changes. Internally the kernel pipeline runs five CUDA C++ kernels:
     ``build_row_map`` -> ``hist`` -> ``row_prefix`` -> ``tile_prefix_smem``

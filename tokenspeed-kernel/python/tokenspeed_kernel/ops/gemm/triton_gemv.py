@@ -89,7 +89,7 @@ def _rowcta_gemv_kernel(
     tl.store(out_ptr + n, tl.sum(acc).to(out_ptr.dtype.element_ty))
 
 
-# Registry dispatch: rowcta owns M == 1 while torch handles other shapes.
+# Registry dispatch: rowcta handles M == 1, while PyTorch handles other shapes.
 _BF16_SIG = frozenset(
     {
         format_signature(

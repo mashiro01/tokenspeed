@@ -19,7 +19,7 @@
 namespace flashinfer {
 
 enum class QuantizationSFLayout {
-  // Block scale factors are stored in swizzled layout for cutlass FP4 kernel. Scale factor
+  // Block scale factors use the swizzled layout required by the CUTLASS FP4 kernel. Scale-factor
   // blocks are organized in 512-byte blocks in global memory, with each block having 128x4 FP8
   // values. The SF matrix dimensions are therefore padded - rows to the nearest multiple of 128 and
   // columns to the nearest multiple of 4.
@@ -30,7 +30,7 @@ enum class QuantizationSFLayout {
   SWIZZLED_128x4,
   SWIZZLED_8x4,
 
-  // Block scale factors are stored in linear layout (row-major). This is used in some trtllm-gen
+  // Block scale factors are stored in linear layout (row-major). This is used in some TRTLLM-GEN
   // kernels standard.
   LINEAR
 };

@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Block constraint from flashinfer: block_num % (128 / page_size) == 0
+# FlashInfer block constraint: block_num % (128 / page_size) == 0.
 TRTLLM_BLOCK_CONSTRAINT = 128
 
 # Shared workspace buffer for fused kernels (256 MB, zero-initialized).
@@ -129,7 +129,7 @@ class TRTLLMMLABackend(MlaCacheGroupMixin, AttentionBackend):
 
         self.max_context_len = config.context_len
         self.page_size = config.page_size
-        # Cache-group (LCM) state. The trtllm kernel walks pages at page_size,
+        # Cache-group (LCM) state. The TensorRT-LLM kernel walks pages at page_size,
         # padded to the fused-kernel block constraint (see _calc_padded_blocks).
         self._cache_groups_bound = False
         self._cache_contract_bound = False
@@ -455,7 +455,7 @@ class TRTLLMMLABackend(MlaCacheGroupMixin, AttentionBackend):
         # persistent kv-indices buffer already exists, nothing to allocate.
         if forward_mode.is_extend_or_mixed():
             raise NotImplementedError(
-                f"trtllm_mla CUDA graph capture not supported for {forward_mode}"
+                f"TensorRT-LLM MLA CUDA graph capture is not supported for {forward_mode}"
             )
 
         max_blocks = self._calc_padded_blocks(self.max_context_len)
@@ -507,7 +507,7 @@ class TRTLLMMLABackend(MlaCacheGroupMixin, AttentionBackend):
     ):
         if forward_mode is not None and forward_mode.is_extend_or_mixed():
             raise NotImplementedError(
-                f"trtllm_mla CUDA graph replay not supported for {forward_mode}"
+                f"TensorRT-LLM MLA CUDA graph replay is not supported for {forward_mode}"
             )
 
         metadata = self.decode_cuda_graph_metadata[bs]

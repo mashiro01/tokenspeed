@@ -178,7 +178,7 @@ def _lm_head_matmul(hidden_states: torch.Tensor, weight: torch.Tensor) -> torch.
 
     Only enabled for Kimi (``model_type == "kimi_k2"``) at the call site —
     on DSv3 the fused kernel's PDL launch surface caused a downstream EAGLE3
-    spec decode AR regression that we have not characterised end-to-end; on
+    spec decode AR regression that we have not characterized end-to-end; on
     Kimi the perf win is the largest and the regression has not been
     reproduced, so we gate the fused path to Kimi only.
     """
@@ -411,8 +411,8 @@ class LogitsProcessor(nn.Module):
                 logits_metadata.extend_logprob_start_lens_cpu,
                 logits_metadata.extend_seq_lens_cpu,
             ):
-                # It can happen in chunked prefill. We still need to sample 1 token,
-                # But we don't want to include it in input logprob.
+                # This can occur during chunked prefill. Sample one token, but
+                # exclude it from the input log probability.
                 if extend_len == extend_logprob_start_len:
                     start_len = extend_logprob_start_len - 1
                 else:

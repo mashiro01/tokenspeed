@@ -4,8 +4,8 @@ The kernel's v/z access was reworked from one V_PER_GROUP * HEAD_V arange
 into a per-head static_range loop so any integer head ratio works (Triton
 arange requires a power-of-2 span; ratio 3 * 128 = 384 is not one).
 
-- correctness: bit-exact vs a plain torch split reference for ratios
-  1/2/3/4, plus 16-byte alignment of every output (flashinfer's CuteDSL
+- correctness: bit-for-bit comparison with a plain PyTorch split reference for ratios
+  1/2/3/4, plus 16-byte alignment of every output (FlashInfer's CuTe DSL
   gdn_decode_mtp requirement).
 - perf: the looped kernel must not regress vs the previous wide-arange
   implementation on the power-of-2 ratios it used to handle (1/2/4).
@@ -164,7 +164,7 @@ def _make_inputs(batch, nk, nv, device="cuda"):
     return mixed_qkvz, mixed_ba
 
 
-@unittest.skipUnless(HAS_CUDA, "needs CUDA + triton")
+@unittest.skipUnless(HAS_CUDA, "requires CUDA and Triton")
 class FusedQkvzbaTest(unittest.TestCase):
     def _fused(self):
         from tokenspeed.runtime.models.qwen3_5 import (
@@ -273,7 +273,7 @@ class FusedQkvzbaTest(unittest.TestCase):
         self.assertLessEqual(
             t_fused,
             t_torch,
-            f"ratio 3 fused {t_fused:.4f}ms slower than torch "
+            f"ratio 3 fused {t_fused:.4f} ms slower than PyTorch "
             f"fallback {t_torch:.4f}ms",
         )
 

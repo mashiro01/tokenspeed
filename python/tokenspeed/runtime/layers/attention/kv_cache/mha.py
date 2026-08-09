@@ -389,7 +389,8 @@ class MHATokenToKVPoolMXFP8(MHATokenToKVPool):
         layer_id = (
             layer_id_override if layer_id_override is not None else layer.layer_id
         )
-        # Byte views: triton can't mask-fill fp8; locs are per-layer view rows (target the served view)
+        # Byte views: Triton cannot mask-fill FP8; locations are rows in each
+        # layer's view and target the served view.
         store_kv_cache(
             cache_k.view(torch.uint8),
             cache_v.view(torch.uint8),

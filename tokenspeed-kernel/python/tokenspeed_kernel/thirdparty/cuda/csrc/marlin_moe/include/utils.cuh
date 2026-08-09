@@ -56,7 +56,7 @@ __host__ __device__ constexpr auto div_ceil(T a, U b) {
 }  // namespace device
 
 // Trimmed host-side helpers the vendored moe_align_kernel.cu still references
-// (RuntimeCheck / RuntimeDeviceCheck / LaunchKernel). Behaviour matches the
+// (RuntimeCheck / RuntimeDeviceCheck / LaunchKernel). Behavior matches the
 // original versions for the launch shapes marlin uses (no PDL / cluster),
 // routed through TVM-FFI error reporting.
 namespace host {

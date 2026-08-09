@@ -21,7 +21,7 @@
 """Multimodal forward-path runtime, factored out of ModelExecutor.
 
 Owns the M-RoPE position-override machinery (pinned staging, GPU delta
-buffer, prefill/decode build paths), encoder CUDA-graph wrapper
+buffer, prefill/decode build paths), encoder CUDA graph wrapper
 installation, and the drafter's multimodal pad-token wiring. The
 ``mrope_positions_buf`` itself stays in ``InputBuffers``: captured graphs
 record its address, and the prefill graph re-pads its tail rows.
@@ -262,11 +262,11 @@ class MultimodalRuntime:
 
     @staticmethod
     def install_encoder_graphs(model, server_args) -> dict:
-        """Install encoder CUDA-graph wrappers onto the model.
+        """Install encoder CUDA graph wrappers onto the model.
 
         Overrides modality encoder callables (e.g. ``image_encoder``,
         ``video_encoder``) with model-built graph wrappers — the
-        multimodal-encoder analogue of ``forward_step``'s
+        multimodal-encoder analog of ``forward_step``'s
         ``CudaGraphWrapper``. Returns the installed wrappers by attribute
         name (empty when the model has no encoder-graph support or it is
         disabled).

@@ -129,7 +129,7 @@ class DistributedInitializer:
     def initialize(config: DistributedConfig) -> float:
         torch.get_device_module(config.device).set_device(config.gpu_id)
         logger.info(
-            "Init torch distributed begin. Avail mem=%.4f GB",
+            "Init PyTorch distributed begin. Avail mem=%.4f GB",
             get_available_gpu_memory(config.device, config.gpu_id),
         )
         if config.device == "cuda":
@@ -165,7 +165,7 @@ class DistributedInitializer:
         pg_manager.init_process_group(config.mapping.dense.tp_group)
         pg_manager.init_process_group(config.mapping.moe.tp_ep_group)
 
-        # Register the trtllm one-shot all-reduce workspaces for the TP
+        # Register the TensorRT-LLM one-shot all-reduce workspaces for the TP
         # groups. AutoBackend routes small SUM all-reduces (<= 2 MB payload,
         # i.e. the per-step decode reductions) through them; larger payloads
         # and every other op keep using NCCL. Without this the one-shot

@@ -116,7 +116,7 @@ def test_bias_straddling_the_vocab_edge_is_partly_real_partly_zero() -> None:
 
 
 def _install_recording_argmax(drafter: DSpark, lm_head_weight: torch.Tensor) -> list:
-    """Replace the vocab-parallel argmax with a recording torch reference."""
+    """Replace the vocab-parallel argmax with a recording PyTorch reference."""
     seen: list[tuple[int, torch.Tensor]] = []
 
     def fake_argmax(hidden, out=None, bias_fn=None):

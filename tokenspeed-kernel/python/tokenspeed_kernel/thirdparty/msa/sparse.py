@@ -10,7 +10,7 @@ as a real Python subpackage, so historically every caller had to replicate that
 ``from interface import ...``.
 
 This module encapsulates that mechanism **once** and re-exports the public
-sparse API, so downstream consumers (for example an sglang attention backend)
+sparse API, so downstream consumers (for example, an SGLang attention backend)
 can simply do::
 
     from fmha_sm100.sparse import (
@@ -26,17 +26,17 @@ can simply do::
 The convenience aliases are also re-exported lazily from the package root, so
 ``from fmha_sm100 import sparse_atten_func`` works too (see ``__init__.py``).
 
-Importing this module pulls in the CuTe-DSL stack (``nvidia-cutlass-dsl`` etc.)
-and is SM100 specific, so keep it off the hot import path
+Importing this module pulls in the CuTe DSL stack, including
+``nvidia-cutlass-dsl``, and is specific to SM100. Keep it off the hot import path
 and import it lazily where needed.
 
-NOTE (packaging): the ``sys.path.insert`` below exposes the ``cute/``
-top-level modules (``interface``, ``src``, ``quantize`` ...) as importable
-top-level names, which can shadow same-named modules elsewhere. The long-term
-fix is to make ``cute`` a real subpackage with relative imports;
+The ``sys.path.insert`` below exposes the ``cute/`` top-level modules, such as
+``interface``, ``src``, and ``quantize``, as importable top-level names. They can
+shadow modules with the same names elsewhere. The long-term
+fix is to make ``cute`` a real subpackage with package-qualified absolute imports;
 that is a larger, runtime-validated change tracked separately. This shim keeps
 the public import path stable in the meantime and matches the existing
-behaviour of ``sparse_fmha_adapter.py``.
+behavior of ``sparse_fmha_adapter.py``.
 """
 
 from __future__ import annotations

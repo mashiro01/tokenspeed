@@ -18,9 +18,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Inference-only dense Llama model compatible with HuggingFace weights.
+"""Inference-only dense Llama model compatible with Hugging Face weights.
 
-Covers Llama-2 / Llama-3 / Llama-3.1 / Llama-3.2 dense checkpoints whose
+Covers Llama 2, Llama 3, Llama 3.1, and Llama 3.2 dense checkpoints whose
 ``config.architectures`` is ``["LlamaForCausalLM"]``. MoE and Eagle3 draft
 variants have their own modules (``longcat_large.py``, ``llama_eagle3.py``).
 """
@@ -102,7 +102,7 @@ class LlamaMLP(nn.Module):
         )
         if hidden_act != "silu":
             raise ValueError(
-                f"Unsupported activation: {hidden_act}. Only silu is supported."
+                f"Unsupported activation: {hidden_act}. Only the SiLU activation is supported."
             )
         self.act_fn = SiluAndMul()
 
@@ -236,7 +236,7 @@ class LlamaAttention(nn.Module):
         so the backend writes KV the normal way — without this fallback, layers
         with non-trivial k/v scales silently lose their KV writes. Subclasses
         (e.g. Eagle3 draft head) override this hook to insert spec-decode
-        behaviour around the same scaffolding.
+        behavior around the same scaffolding.
         """
         if ctx.attn_backend.support_kv_cache_prewrite(ctx.forward_mode):
             fused_kv_arg = self._build_fused_kv_arg(v, ctx, out_cache_loc)

@@ -150,7 +150,7 @@ class Qwen3_5MoeMLP(nn.Module):
         if hidden_act != "silu":
             raise ValueError(
                 f"Unsupported activation: {hidden_act}. "
-                "Only silu is supported for now."
+                "Only the SiLU activation is currently supported."
             )
         self.act_fn = SiluAndMul()
 
@@ -231,10 +231,10 @@ class Qwen3_5MoeSparseMoeBlock(nn.Module):
         self.tp_size = mapping.world_size
         self.stream_fork = StreamFork(alt_stream)
         # DeepEP needs a MoE backend whose apply kernel drives the
-        # dispatch/combine legs itself: nvfp4 via flashinfer cutedsl, or
-        # block-scale fp8 via DeepGEMM masked grouped GEMMs.
-        # Draft models (non-quantized) must fall back to the TP path even
-        # when the target model has deep_ep configured globally.
+        # dispatch and combine stages itself: NVFP4 through FlashInfer's CuTe
+        # DSL, or block-scaled FP8 through DeepGEMM masked grouped GEMMs.
+        # Nonquantized draft models must fall back to the TP path even when
+        # the target model has DeepEP configured globally.
         moe_backend = get_moe_backend()
         self.use_deepep = get_all2all_backend().is_deepep() and (
             moe_backend.is_flashinfer_cutedsl() or moe_backend.is_deep_gemm()

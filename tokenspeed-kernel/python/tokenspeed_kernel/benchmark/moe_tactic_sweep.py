@@ -18,29 +18,30 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Offline tactic sweeper for the flashinfer TRTLLM-Gen SiTU MoE.
+"""Offline tactic sweeper for the FlashInfer TRTLLM-GEN SiTU MoE.
 
-Why this exists: flashinfer's autotuner mispicks tactics for this op on two
-counts -- its per-tactic profiling measurements do not track end-to-end kernel
+Why this exists: FlashInfer's autotuner selects poor tactics for this operation
+for two reasons: its per-tactic profiling measurements do not track end-to-end kernel
 time, and ``trtllm_get_valid_moe_configs`` gates tile_N eligibility on total
 ``num_tokens`` where the batched-GEMM workload actually depends on
 tokens-per-expert (``num_tokens * top_k / num_experts``). For many-expert EP
-deployments (e.g. Kimi-K3: 896 experts, EP8) both bites: at 2048 tokens the
+deployments (for example, Kimi-K3 with 896 experts and EP8), both issues matter: at 2,048 tokens, the
 enumeration offers only fat tiles and the tuner then picks the worst of them,
-while the excluded narrow tiles measure fastest end to end.
+while the excluded narrow tiles have the fastest end-to-end measurements.
 
 This tool sweeps candidate tactics with real end-to-end CUDA-event timing on
-representative random weights, writes the winners into flashinfer's autotuner,
+representative random weights, writes the winners into FlashInfer's autotuner,
 and saves the result via ``AutoTuner.save_configs`` -- a JSON table whose
 embedded metadata pins the GPU device name and FlashInfer/CUDA/cuDNN versions,
-so a table can never be applied on a mismatched host. Name it vLLM-configs style
-and ship it under ``ops/moe/flashinfer/tactics/`` to have it auto-load at
+so a table can never be applied on a mismatched host. Name it according to the
+vLLM configuration convention and ship it under ``ops/moe/flashinfer/tactics/``
+to have it load automatically at
 startup (see ops.tuning). By default the output filename is generated from the
 model/layout and current GPU, FlashInfer, and cuDNN versions. Pass ``--output``
 to choose the path explicitly.
 
-Cost is bounded by a two-stage search: measured spreads within one tile_N
-family are <3%, so stage one samples a few configs per family to pick the
+Cost is bounded by a two-stage search: measured spreads within one ``tile_N``
+family are below 3%, so stage one samples a few configurations per family to select the
 family and stage two refines within it. A full run at Kimi-K3 shapes is a few
 minutes on one idle GPU. Re-run whenever the FlashInfer or cuDNN version, GPU
 model, or MoE shape changes (the metadata guard turns a stale table into a
@@ -84,10 +85,10 @@ STAGE2_MAX_CONFIGS = 64
 
 
 def _make_weights(local_experts: int, hidden: int, ispp: int, device, seed: int):
-    """Random weights in the prepared TRTLLM layout (perf-representative).
+    """Random weights in the prepared TRTLLM layout (performance-representative).
 
     Scale bytes are pinned to 127 (2^0) so garbage exponents cannot produce
-    inf/nan; tactic ranking depends on shapes and routing, not weight values.
+    infinities or NaNs; tactic ranking depends on shapes and routing, not weight values.
     """
     g = torch.Generator(device="cpu").manual_seed(seed)
     w13 = torch.randint(
@@ -140,14 +141,14 @@ def _time_call(fn, iters: int, warmup: int = 3) -> float:
         fn()
     stop.record()
     torch.cuda.synchronize()
-    return start.elapsed_time(stop) * 1000.0 / iters  # us
+    return start.elapsed_time(stop) * 1000.0 / iters  # Microseconds.
 
 
 def _candidate_tactics(args) -> list[tuple[int, int]]:
     """All (tile_N, config) pairs across every tile family for this shape.
 
-    Enumerated at several ``num_tokens`` values and unioned, because the
-    upstream enumeration gates tile_N availability on num_tokens -- the whole
+    Enumerated at several ``num_tokens`` values and combined because the
+    upstream enumeration gates ``tile_N`` availability on ``num_tokens``: the
     reason narrow tiles need this sweeper to be reachable at large batches.
     """
     from flashinfer.fused_moe.core import gen_trtllm_gen_fused_moe_sm100_module
@@ -279,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         "--min-bucket",
         type=int,
         default=DEFAULT_SWEEP_MIN_BUCKET,
-        help="Sweep buckets >= this; smaller buckets keep the autotuner's pick",
+        help="Sweep buckets at or above this value; smaller buckets keep the autotuner's selection",
     )
     parser.add_argument("--coarse-iters", type=int, default=8)
     parser.add_argument("--fine-iters", type=int, default=50)
@@ -349,8 +350,8 @@ def main(argv: list[str] | None = None) -> int:
             seed=100 + bucket,
         )
 
-        # Stage 1: a few configs per family picks the family (<3% intra-family
-        # spread measured); stage 2 refines within the winner.
+        # Stage 1 samples a few configurations per family and selects the family
+        # (the measured intrafamily spread is below 3%); stage 2 refines the winner.
         stage1: list[tuple[float, tuple[int, int]]] = []
         for family in families:
             for tac in [t for t in candidates if t[0] == family][
@@ -383,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     tuner.save_configs(output)
-    # Round-trip guard: a table this process cannot re-load would be useless
+    # Round-trip guard: a table this process cannot reload would be useless
     # at serving time; fail loudly here rather than at the first deploy.
     tuner.profiling_cache.clear()
     tuner._file_configs.clear()

@@ -35,7 +35,7 @@ _PGID_DIR = Path("/tmp/ci-pgid")
 
 
 def _safe_runner_id(runner_id: str) -> str:
-    """Sanitise runner_id so it is safe to use as a filename."""
+    """Sanitize runner_id so it is safe to use as a filename."""
     return re.sub(r"[^A-Za-z0-9_.-]", "_", runner_id)
 
 
@@ -415,5 +415,5 @@ if __name__ == "__main__":
     parser.add_argument("command", choices=["cleanup-stale"])
     args = parser.parse_args()
     if args.command == "cleanup-stale":
-        # Survivors of cancelled/timed-out jobs hold WORK_DIR files open, so rm -rf fails on NFS.
+        # Survivors of canceled/timed-out jobs hold WORK_DIR files open, so rm -rf fails on NFS.
         make_manager().cleanup_stale()

@@ -2,7 +2,10 @@
   <img src="https://raw.githubusercontent.com/lightseekorg/tokenspeed/main/assets/banner/tokenspeed-banner.png" alt="TokenSpeed: Tokens at the speed of light" width="100%" />
 </p>
 
-TokenSpeed is a speed-of-light LLM inference engine designed for **agentic workloads**, with TensorRT-LLM-level performance and vLLM-level usability. Our goal is to be the most performant inference engine for production agentic workloads.
+TokenSpeed is a speed-of-light LLM inference engine designed for **agentic
+workloads**, with TensorRT-LLM-level performance and vLLM-level usability. Our
+goal is to be the highest-performing inference engine for production agentic
+workloads.
 
 Core components:
 
@@ -13,16 +16,16 @@ Core components:
   lifecycle, KV cache ownership, and overlap timing are encoded as a
   finite-state machine, with safe KV resource reuse enforced by the type system at compile time.
 - **Kernels**: pluggable, layered kernel system with a portable public API and
-  a centralized registry including one of the fastest **MLA**
-  (Multi-head Latent Attention) implementations on Blackwell for agentic workload.
+  a centralized registry. It includes one of the fastest **MLA**
+  (multi-head latent attention) implementations on Blackwell for agentic workloads.
 - **Entrypoint**: SMG-integrated AsyncLLM for low-overhead CPU-side request
   handling.
 
 ## News
 
 - [2026/08] TokenSpeed joins the [PyTorch Ecosystem](https://github.com/pytorch-fdn/ecosystem/issues/77#issuecomment-5184836537).
-- [2026/07] [Kimi K3](https://huggingface.co/moonshotai/Kimi-K3#5-deployment) at Day 0: Frontier Model Enablement on Leading Platforms with TokenSpeed. [[blog](https://lightseek.org/blog/tokenspeed-kimi-k3.html)]
-- [2026/07] [TML Inkling](https://thinkingmachines.ai/news/introducing-inkling/) at Day 0: FP4 Inference on NVIDIA and [AMD](https://huggingface.co/lightseekorg/Inkling-MXFP4) with [TokenSpeed](https://thinkingmachines.ai/news/introducing-inkling/#inkling-availability). [[blog](https://lightseek.org/blog/tokenspeed-inkling.html)]
+- [2026/07] Day-0 support for [Kimi K3](https://huggingface.co/moonshotai/Kimi-K3#5-deployment): frontier-model enablement on leading platforms with TokenSpeed. [[blog](https://lightseek.org/blog/tokenspeed-kimi-k3.html)]
+- [2026/07] Day-0 support for [TML Inkling](https://thinkingmachines.ai/news/introducing-inkling/): FP4 inference on NVIDIA and [AMD](https://huggingface.co/lightseekorg/Inkling-MXFP4) with [TokenSpeed](https://thinkingmachines.ai/news/introducing-inkling/#inkling-availability). [[blog](https://lightseek.org/blog/tokenspeed-inkling.html)]
 - [2026/06] Deep dive into the design and optimization of TokenSpeed-Kernel. [[blog](https://pytorch.org/blog/lightseek-tokenspeed-kernel/)]
 - [2026/05] 🚀 TokenSpeed hits 580 TPS on Qwen3.5-397B-A17B for agentic workloads. [[blog](https://pytorch.org/blog/up-to-580tps-new-speed-record-of-qwen3-5-397b-a17b-on-gpu-for-agentic-workloads-with-tokenspeed/)]
 - [2026/05] TokenSpeed announced — a speed-of-light LLM inference engine for agentic workloads. [[blog](https://lightseek.org/blog/lightseek-tokenspeed.html)]

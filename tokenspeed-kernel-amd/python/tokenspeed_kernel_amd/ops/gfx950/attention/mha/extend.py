@@ -26,7 +26,7 @@ the MFMA ``M`` dimension (``BLOCK_M = BLOCK_Q * GROUP_SIZE``), so each KV tile i
 loaded once and reused across the group. The grid is ragged and token-based,
 ``(total_num_q_blocks, n_kv_heads)``: each program binary-searches
 ``cu_seqlens_q`` to self-locate its request/q-block, keeping the launch
-CUDA-graph static while a ``q=1`` request costs a single block.
+CUDA graph static while a ``q=1`` request costs a single block.
 """
 
 from __future__ import annotations

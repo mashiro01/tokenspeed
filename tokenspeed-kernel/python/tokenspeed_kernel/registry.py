@@ -100,11 +100,11 @@ class Priority(IntEnum):
     +--------------+--------+----------------------------------------------------+
     | PORTABLE     |  4..7  | In-tree generic implementation with no arch or     |
     |              |        | shape gating beyond the family contract — e.g.     |
-    |              |        | default Triton, or PyTorch reference patsh used as |
+    |              |        | default Triton, or PyTorch reference paths used as |
     |              |        | last-resort coverage.                              |
     +--------------+--------+----------------------------------------------------+
     | PERFORMANT   | 8..11  | In-tree generally optimized kernel, covering a     |
-    |              |        | broad arch range — e.g. optimizied Triton for      |
+    |              |        | broad arch range — e.g. optimized Triton for       |
     |              |        | Hopper+. The default winner on supported vendor.   |
     +--------------+--------+----------------------------------------------------+
     | SPECIALIZED  | 12..15 | In-tree highly optimized kernel, narrowly gated on |

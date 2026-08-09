@@ -1,7 +1,7 @@
 """Unit tests for the vendored MiniMax-M3 fused qk-norm + RoPE + KV/index-insert
 CUDA kernel.
 
-Validates against an independent torch golden (Gemma RMSNorm with the raw weight
+Validates against an independent PyTorch reference (Gemma RMSNorm with the raw weight
 -- the kernel adds ``1 + w`` internally -- then partial-NeoX RoPE) across:
   * norm+RoPE only (no cache insert),
   * K/V + index-K insert into TokenSpeed's separate flat slot-indexed buffers,

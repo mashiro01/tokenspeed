@@ -21,7 +21,7 @@
 /*
  * Fused MoE finalize + shared-output add (bf16 output, SM>=90 for PDL).
  *
- * Forked from flashinfer's ``finalizeKernel`` and ``finalizeKernelVecLoad``
+ * Forked from FlashInfer's ``finalizeKernel`` and ``finalizeKernelVecLoad``
  * (trtllm_fused_moe_dev_kernel.cu:639 and :803), stripped of the MoE
  * backend's KernelParams / UsePdl templating, and extended with an
  * optional shared_output residual add on the epilogue side.
@@ -50,7 +50,8 @@
  * use bf16).
  *
  * Expert-weight scale convention: in our target backends
- * (flashinfer trtllm nvfp4 + unquantized), ``apply_routed_scaling_factor_on_output``
+ * (FlashInfer TRTLLM-GEN NVFP4 and unquantized),
+ * ``apply_routed_scaling_factor_on_output``
  * is True, so the routed scaling factor is already folded into
  * ``expert_weights`` at topk time. This kernel does not apply any
  * additional scale.
@@ -332,7 +333,7 @@ void dispatchFinalize(int numTokens, int hiddenDim, int hiddenDimPadded, int top
                        hiddenDimPadded, topK, numShared, inPtr, expandedIdxPtr, weightsPtr,
                        sharedPtr, outPtr);
   };
-  // Match flashinfer's LAUNCH_TOPK_EXPW dispatch order.
+  // Match FlashInfer's LAUNCH_TOPK_EXPW dispatch order.
   if (topK % 4 == 0) {
     launch(std::integral_constant<int, 4>{});
   } else if (topK % 2 == 0) {
@@ -397,7 +398,7 @@ void moe_finalize_fuse_shared(TensorView out, TensorView gemm2_out,
   cudaSetDevice(out.device().device_id);
   cudaStream_t const stream = get_stream(out.device());
 
-  // Dispatch heuristic (matches flashinfer): few waves → general kernel,
+  // Dispatch heuristic (matches FlashInfer): few waves → general kernel,
   // many waves → vectorized. The 1184 threshold comes from 148 SMs × 8
   // blocks/SM on Blackwell.
   constexpr int kNumThreads = 256;

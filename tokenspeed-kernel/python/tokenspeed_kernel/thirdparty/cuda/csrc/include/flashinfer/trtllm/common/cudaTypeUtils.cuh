@@ -55,7 +55,7 @@ inline __device__ __nv_bfloat16 ldg(__nv_bfloat16 const* val) {
 }
 #endif  // ENABLE_BF16
 
-// Get type2 from type or vice versa (applied to half and bfloat16)
+// Convert between scalar and vector types (applies to FP16 and BF16).
 template <typename T>
 struct TypeConverter {
   using Type = half2;
@@ -83,7 +83,7 @@ struct TypeConverter<__nv_bfloat16> {
 };
 #endif  // ENABLE_BF16
 
-// Defined math operations (bfloat16 fallback to fp32 when it is not supported)
+// Math operations with a BF16-to-FP32 fallback when BF16 is unsupported.
 template <typename T>
 inline __device__ T hadd2(T a, T b) {
   return __hadd2(a, b);

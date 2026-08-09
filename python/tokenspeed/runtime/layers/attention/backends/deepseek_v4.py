@@ -2100,7 +2100,7 @@ class DeepseekV4AttentionBackend(AttentionBackend):
                 rows = int(src.shape[0])
                 if rows < active_rows:
                     raise RuntimeError(
-                        "DeepSeek V4 CUDA-graph replay base-offsets row count "
+                        "DeepSeek V4 CUDA graph replay base-offsets row count "
                         f"{rows} < actual_bs={active_rows} for group {gid!r}"
                     )
                 buf[:active_rows].copy_(src[:active_rows].to(torch.int32))
@@ -2174,7 +2174,7 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         del kwargs
         if forward_mode is not None and not forward_mode.is_decode_or_idle():
             raise NotImplementedError(
-                f"DeepSeek V4 CUDA graph capture not supported for {forward_mode}"
+                f"DeepSeek V4 CUDA graph capture is not supported for {forward_mode}"
             )
         if num_tokens_arg is None:
             num_tokens = bs
@@ -2310,7 +2310,7 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         del kwargs
         if forward_mode is not None and not forward_mode.is_decode_or_idle():
             raise NotImplementedError(
-                f"DeepSeek V4 CUDA graph replay not supported for {forward_mode}"
+                f"DeepSeek V4 CUDA graph replay is not supported for {forward_mode}"
             )
         if num_tokens_arg is None:
             num_tokens = bs

@@ -33,7 +33,7 @@
  * SOFTWARE.
  */
 //
-// Vendored/adapted from flashinfer
+// Vendored and adapted from FlashInfer's
 //   include/flashinfer/comm/trtllm_mnnvl_allreduce.cuh (Apache-2.0 per
 //   upstream header): the MNNVL one-shot Lamport protocol (buffer-flags
 //   rotation, multicast payload store, local-buffer polling, dirty-buffer
@@ -48,7 +48,7 @@
 //     32-bit sentinel 0x80000000 (fp32 -0.0).
 //   * All mutable protocol state lives in a 9-word device uint32 array
 //     ("buffer_flags"), so the kernel is stateless across launches and is
-//     safe under CUDA-graph replay:
+//     safe under CUDA graph replay:
 //       [0] current buffer index (0..2)
 //       [1] dirty buffer index (buffer used by the previous call)
 //       [2] bytes per lamport buffer (32B aligned: stage 1 sits at half)
@@ -122,7 +122,7 @@ struct MnnvlCommArgs {
 };
 
 // Device-side view over buffer_flags; see the protocol summary above.
-// Ported from flashinfer's LamportFlags, specialized to a single stage.
+// Ported from FlashInfer's LamportFlags, specialized to a single stage.
 struct MnnvlLamportFlags {
   __device__ __forceinline__ explicit MnnvlLamportFlags(uint32_t* buffer_flags)
       : flags_ptr(buffer_flags), access_ptr(&buffer_flags[8]) {
@@ -275,7 +275,7 @@ struct MnnvlLamportFlags {
 
 // One-shot MNNVL-structured allreduce with the vendored FusedOp epilogue.
 //
-// Geometry (mirrors flashinfer's oneshotAllreduceFusionKernel): one cluster
+// Geometry (mirrors FlashInfer's oneshotAllreduceFusionKernel): one cluster
 // per token, grid (num_tokens, cluster_size), cluster dim on y; the hidden
 // dimension is partitioned EXACTLY across the cluster (host-side checked),
 // so every thread is in-bounds and FusedOp's block/cluster reductions see
@@ -361,7 +361,7 @@ __global__ void __launch_bounds__(1024)
 
 // Two-shot MNNVL allreduce with the vendored FusedOp epilogue.
 //
-// The communication skeleton follows flashinfer's twoshotAllreduceKernel
+// The communication skeleton follows FlashInfer's twoshotAllreduceKernel
 // (trtllm_mnnvl_allreduce.cuh): round-robin ownership, shard-local staging,
 // chunked reduction, two independently-rotated Lamport stages. Only the
 // epilogue differs -- upstream emits a plain all-reduce and runs RMSNorm as a

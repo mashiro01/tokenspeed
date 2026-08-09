@@ -20,7 +20,7 @@
 
 """Kernel dispatch for trtllm-kernel quant and MoE helpers.
 
-The implementation uses TRT-LLM CUDA kernels exposed as torch.ops.trtllm /
+The implementation uses TensorRT-LLM CUDA kernels exposed as torch.ops.trtllm /
 torch.ops.tensorrt_llm.
 """
 

@@ -35,7 +35,7 @@ causal mask on diagonal blocks — the sheared ``-inf`` pattern is the mask —
 so this anchor convention is load-bearing.
 
 All kernels compile once per static config with TVM FFI enabled; runtime
-calls take torch tensors with dynamic batch, row, and page counts.
+calls accept PyTorch tensors with dynamic batch, row, and page counts.
 """
 
 from __future__ import annotations

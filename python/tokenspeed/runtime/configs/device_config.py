@@ -34,5 +34,5 @@ class DeviceConfig:
         if device == "cuda":
             self.device_type = device
         else:
-            raise RuntimeError(f"Not supported device type: {device}")
+            raise RuntimeError(f"Unsupported device type: {device}")
         self.device = torch.device(self.device_type)

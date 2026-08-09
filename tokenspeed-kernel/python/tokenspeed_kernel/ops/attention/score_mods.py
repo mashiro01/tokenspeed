@@ -22,7 +22,7 @@
 
 A ``score_mod`` is a ``cute.jit`` closure that FA4 fuses into the attention
 kernel to modify pre-softmax logits. FA4 keys kernel compilation on the hash
-of the closure object, so factories in this module MUST be memoized
+of the closure object, so factories in this module must be memoized
 (``functools.cache``): calling a factory twice with the same arguments must
 return the same closure object, otherwise every call would trigger a fresh
 kernel compilation.
@@ -55,7 +55,7 @@ def get_relative_bias_score_mod(rel_extent: int) -> Callable:
 
     The returned closure adds ``rel_logits[global_q_idx, h_idx, q_pos - kv_pos]``
     to the pre-softmax attention logit when ``0 <= q_pos - kv_pos < rel_extent``
-    and 0 otherwise, where ``q_pos = q_idx + (seqlen_k - seqlen_q)`` is the
+    and ``0`` otherwise, where ``q_pos = q_idx + (seqlen_k - seqlen_q)`` is the
     absolute query position within its sequence (so cached-prefix extend and
     decode line up with prefill).
 
@@ -80,12 +80,12 @@ def get_relative_bias_score_mod(rel_extent: int) -> Callable:
         kernel compilation on the closure object.
 
     Raises:
-        ImportError: If the FA4 CUTE interface (``flash_attn.cute`` on
+        ImportError: If the FA4 CuTe interface (``flash_attn.cute`` on
             Blackwell) is not available.
     """
     if cute is None or Float32 is None or SeqlenInfoQK is None:
         raise ImportError(
-            "get_relative_bias_score_mod requires the FA4 CUTE interface "
+            "get_relative_bias_score_mod requires the FA4 CuTe interface "
             "(cutlass.cute and flash_attn.cute, NVIDIA Blackwell only)."
         ) from _cute_import_error
 
@@ -113,6 +113,7 @@ def get_relative_bias_score_mod(rel_extent: int) -> Callable:
         rel_bias = Float32(rel_bias) if rel_dist_0 == rel_idx else Float32(0.0)
         return scores + rel_bias
 
-    # Tag as the rel-bias score_mod so fa4 ops can route it to the fused rel_bias kernel path.
+    # Tag this as the relative-bias score_mod so FA4 operations can route it to
+    # the fused rel_bias kernel path.
     score_mod_rel_bias.rel_extent = rel_extent
     return score_mod_rel_bias

@@ -54,7 +54,7 @@ def _torch_moe_ref(x, w13, w2, topk_ids, topk_weights) -> torch.Tensor:
 
 @pytest.mark.parametrize("num_tokens", [1, 8, 16])
 def test_gluon_bf16_moe_apply_matches_reference(num_tokens):
-    """moe_plan selects the gluon bf16 apply and it matches the fp32 oracle."""
+    """moe_plan selects the Gluon BF16 path, which matches the FP32 oracle."""
     dev = "cuda"
     g = torch.Generator(device=dev).manual_seed(0)
     x = torch.randn(num_tokens, D, dtype=torch.bfloat16, device=dev, generator=g)

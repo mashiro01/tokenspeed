@@ -19,7 +19,7 @@
 # TensorRT-LLM source with logic unchanged (formatting follows the repo style).
 # ``_ScratchBuffers`` / ``get_memory_buffers`` replace
 # TensorRT-LLM's native ``memory_buffer_utils.get_memory_buffers`` with a
-# self-contained, CUDA-graph-friendly arena so the runners carry no dependency
+# self-contained, CUDA graph-friendly arena so the runners carry no dependency
 # on the TensorRT-LLM native stack.
 """Class-level runners driving the single-pass multi-CTA radix top-k kernels.
 
@@ -68,7 +68,7 @@ class _ScratchBuffers:
     ``get_buffer(shape, dtype, buffer_name=..., reserve_buffer=...)``. The real
     implementation reuses a growable arena keyed by name; this mirrors that so a
     hot decode loop does not re-allocate every call, and so the returned tensor
-    keeps a stable device address across calls (required for CUDA-graph replay).
+    keeps a stable device address across calls (required for CUDA graph replay).
     """
 
     def __init__(self) -> None:

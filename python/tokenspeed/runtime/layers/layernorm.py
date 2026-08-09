@@ -118,7 +118,7 @@ class RMSNorm(torch.nn.Module):
         if _is_amd:
             if residual is not None:
                 if out is not None:
-                    raise ValueError("fused add rmsnorm does not support out")
+                    raise ValueError("Fused add RMSNorm does not support out")
                 return triton_rmsnorm(
                     x,
                     self.weight.data,
@@ -165,7 +165,7 @@ class RMSNorm(torch.nn.Module):
         has_partial_norm_out: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward method with allreduce fusion, prioritizing flashinfer fused operations
+        Run the forward pass with all-reduce fusion, prioritizing FlashInfer operations.
         """
 
         if residual is not None:
@@ -209,9 +209,7 @@ class RMSNorm(torch.nn.Module):
         fuse_block_quant_fp8: bool = False,
         add_in: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward method with reducescatter fusion, prioritizing flashinfer fused operations
-        """
+        """Run the forward pass with FlashInfer reduce-scatter fusion."""
 
         if residual is not None:
 
@@ -364,10 +362,10 @@ class GemmaRMSNorm(torch.nn.Module):
         fuse_block_quant_fp8: bool = False,
         add_in: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward method with reducescatter fusion for GemmaRMSNorm.
-        Uses gemma_weight (= weight + 1.0) as gamma so that the standard
-        fused kernel computes x * (1 + weight) matching GemmaRMSNorm semantics.
+        """Run GemmaRMSNorm with reduce-scatter fusion.
+
+        Use ``gemma_weight`` (``weight + 1.0``) as gamma so the standard fused
+        kernel computes ``x * (1 + weight)``, matching GemmaRMSNorm semantics.
         """
 
         if residual is not None:
@@ -477,23 +475,27 @@ class FusedRMSNorm(nn.Module):
         torch.Tensor | None,
         torch.Tensor | None,
     ]:
-        """
-        Forward method with allgather fusion, performing allgather + dual RMSNorm + optional FP8 block quantization.
+        """Run dual RMSNorm with all-gather fusion and optional FP8 quantization.
 
-        This method fuses allgather communication with dual RMSNorm computation
-        and optional FP8 block-wise quantization in a single kernel launch.
+        This method fuses all-gather communication, dual RMSNorm computation,
+        and optional block-wise FP8 quantization in a single kernel launch.
 
         Args:
-            qkv: Input tensor to allgather, shape [num_token_current_rank, q_lora_rank + kv_lora_rank + qk_rope_head_dim]
-            fuse_block_quant_fp8: Whether to perform FP8 block-wise quantization on the first norm output
-            trigger_completion_at_end: Whether to trigger completion event at the end of kernel
+            qkv: Input tensor to all-gather, shaped
+                ``[num_token_current_rank, q_lora_rank + kv_lora_rank +
+                qk_rope_head_dim]``.
+            fuse_block_quant_fp8: Whether to apply block-wise FP8 quantization
+                to the first normalized output.
+            trigger_completion_at_end: Whether to trigger a completion event
+                at the end of the kernel.
 
         Returns:
-            Tuple of (allgather_out, quant_out, k_nope, block_scale):
-                - allgather_out: Gathered tensor, shape [num_token_all_group, hidden_dim]
-                - quant_out: FP8 quantized first norm output (q_contiguous), None if fuse_block_quant_fp8=False
-                - k_nope: Second norm output
-                - block_scale: Quantization scales, None if fuse_block_quant_fp8=False
+            ``(allgather_out, quant_out, k_nope, block_scale)``, where
+            ``allgather_out`` is shaped ``[num_token_all_group, hidden_dim]``;
+            ``quant_out`` is the FP8-quantized first output, or ``None`` when
+            quantization is disabled; ``k_nope`` is the second normalized
+            output; and ``block_scale`` contains the quantization scales, or
+            ``None`` when quantization is disabled.
         """
 
         if len(group) > 1:

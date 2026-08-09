@@ -171,9 +171,9 @@ def test_gather_min_p_only(device: str) -> None:
 def _ref_topk_topp(
     probs: torch.Tensor, top_ks: torch.Tensor, top_ps: torch.Tensor
 ) -> torch.Tensor:
-    """Pure-torch baseline mirroring flashinfer's ``top_k_renorm_prob`` followed
+    """Pure-PyTorch baseline mirroring FlashInfer's ``top_k_renorm_prob`` followed
     by ``top_p_renorm_prob(is_deterministic=True)``. K >= V is treated as no
-    top-k cutoff (matches both the flashinfer clamp and the K = 1<<30 sentinel).
+    top-k cutoff (matching both the FlashInfer clamp and the K = 1 << 30 sentinel).
     """
     bs, V = probs.shape
     out = probs.clone()
@@ -189,7 +189,7 @@ def _ref_topk_topp(
         cs = torch.cumsum(sorted_vals, 0)
         p = float(top_ps[i].item())
         # Smallest prefix with cumulative mass >= p. Clamp to V to absorb
-        # fp32 rounding when p = 1.0 (cumsum's last value can fall a ulp
+        # FP32 rounding when p = 1.0 (the final cumulative sum can fall one ULP
         # short of 1.0 and would otherwise push keep past the end).
         keep = min((cs < p).sum().item() + 1, V)
         thresh = sorted_vals[keep - 1]

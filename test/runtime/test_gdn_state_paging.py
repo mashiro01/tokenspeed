@@ -64,7 +64,7 @@ class ComputeStatePageIndicesTest(unittest.TestCase):
                 compute_state_page_indices,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.fn = compute_state_page_indices
 
@@ -177,7 +177,7 @@ class CacheContractMetadataTest(unittest.TestCase):
                 MambaAttnBackend,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.ForwardMode = ForwardMode
         config = SimpleNamespace(
@@ -276,7 +276,7 @@ class VerifyMetadataTest(unittest.TestCase):
                 MambaAttnBackend,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.ForwardMode = ForwardMode
         config = SimpleNamespace(
@@ -351,7 +351,7 @@ class GDNStatePagingGPUTest(unittest.TestCase):
     """MambaAttnBackend state paging vs the
     FLA chunk_gated_delta_rule oracle over the full contiguous sequence."""
 
-    # Smallest fastpath parametrization: Hk = Hv = 16, D = 128 (sm100 GDN).
+    # Smallest fast-path parameterization: Hk = Hv = 16, D = 128 (SM100 GDN).
     H = 16
     D = 128
     P = 4  # state page size (tokens)
@@ -373,7 +373,7 @@ class GDNStatePagingGPUTest(unittest.TestCase):
                 MambaAttnBackend,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         if not torch.cuda.is_available():
             self.skipTest("needs a CUDA device")
         self.torch = torch
@@ -443,7 +443,7 @@ class GDNStatePagingGPUTest(unittest.TestCase):
 
     def test_paged_states_match_fla_oracle(self):
         if not self.gdn.is_available():
-            self.skipTest("sm100 GDN kernel unavailable")
+            self.skipTest("SM100 GDN kernel unavailable")
         torch = self.torch
         ForwardMode = self.ForwardMode
         from tokenspeed_kernel.ops.attention.triton.linear.chunk import (

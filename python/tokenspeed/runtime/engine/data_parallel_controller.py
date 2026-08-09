@@ -210,14 +210,15 @@ class DataParallelController:
         # port_args.scheduler_input_ipc_name (base_scheduler_port) is used by:
         # TokenizerManager -> DataParallelController
         #
-        # For DataParallelController -> Scheduler[dp_rank], we need different ports.
+        # Each DataParallelController -> Scheduler[dp_rank] connection requires
+        # a distinct port.
         # Following the same logic as PortArgs.init_new with dp_rank parameter:
         # scheduler_input_port = port_base + 4 + dp_rank
         # Since base_scheduler_port = port_base + 4, we have:
         # scheduler_input_port = base_scheduler_port + dp_rank
         #
-        # But we need to avoid conflict with TokenizerManager's port (base_scheduler_port).
-        # So we start from base_scheduler_port + 1 for dp_rank=0.
+        # Start dp_rank=0 at base_scheduler_port + 1 to avoid a conflict with
+        # TokenizerManager's base_scheduler_port.
 
         for dp_rank in range(server_args.mapping.attn.dp_size):
             # Create port_args for each dp_rank by adjusting scheduler_input_port

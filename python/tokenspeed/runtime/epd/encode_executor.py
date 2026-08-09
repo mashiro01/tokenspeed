@@ -108,7 +108,7 @@ class DisaggEncodeExecutor:
         self.senders = {}
         # RDMA requires every transferred buffer to be a registered memory region,
         # and mooncake rejects OVERLAPPING registrations -- registering each
-        # per-request ``item.encoded`` fails because the torch caching allocator
+        # per-request ``item.encoded`` fails because the PyTorch caching allocator
         # packs freed-but-still-registered tensors so a grown region straddles
         # others. Collapse every send through a fixed ring of pre-registered bounce
         # buffers: each slot is registered once at a fixed size (never grows, never

@@ -276,8 +276,8 @@ class PrefillGraph:
         one PRIVATE mempool (first capture
         allocates it), so graph memory stays ~the largest bucket's peak --
         but never the decode graphs' pool: eager ops cache raw pointers to
-        buffers they lazily allocated inside a decode capture (flashinfer's
-        trtllm-gen MoE runner), and a prefill capture reusing those freed
+        buffers they lazily allocated inside a decode capture (FlashInfer's
+        TRTLLM-GEN MoE runner), and a prefill capture reusing those freed
         blocks means every replay rewrites them, corrupting the next eager
         call (IMA; A/B-proven on qwen3.5 MTP).
 
@@ -440,7 +440,7 @@ class PrefillGraph:
             getattr(backend, "cache_active_pages_must_be_real", False)
         )
         # Full width: backends that derive the row stride from max_kv_len
-        # (trtllm) index the whole row even when the bucket is small.
+        # (``trtllm``) index the entire row even when the bucket is small.
         width = getattr(backend, "max_num_pages", 0) or -(
             -req_tokens // backend.page_size
         )
@@ -484,7 +484,7 @@ class PrefillGraph:
         them. A real forward carries more than ``context_len`` tokens only as
         a multi-request batch, never as one sequence.
 
-        The prefill analogue of decode's ``_init_capture_metadata``. KV writes
+        The prefill analog of decode's ``_init_capture_metadata``. KV writes
         go to the reserved dummy slot. Per-group tables use page 0 when a
         backend permits the null page for capture and page 1 when active
         metadata requires a real writable page. Backends with extra paged

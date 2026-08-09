@@ -85,7 +85,7 @@ def _reorder_w1w3_to_w3w1(x: torch.Tensor, dim: int = -2) -> torch.Tensor:
 
 
 def situ_moe_unavailable_reason() -> str | None:
-    """Report whether the flashinfer SiTU MoE runtime is usable in-process.
+    """Report whether the FlashInfer SiTU MoE runtime is usable in-process.
 
     Importable on every platform so runtime callers need no vendor guards.
 
@@ -96,11 +96,11 @@ def situ_moe_unavailable_reason() -> str | None:
         configuration errors.
     """
     if not platform.is_nvidia:
-        return "flashinfer TRTLLM-Gen SiTU MoE requires an NVIDIA platform"
+        return "FlashInfer TRTLLM-GEN SiTU MoE requires an NVIDIA platform"
     if _SITU_ACTIVATION_TYPE is None or _fi_fp4_routed_moe is None:
         return (
-            "Kimi-K3 SiTU requires flashinfer > 0.6.15 with native "
-            f"TRTLLM-Gen SiTU (PR #4180): {_situ_import_error}"
+            "Kimi-K3 SiTU requires FlashInfer > 0.6.15 with native "
+            f"TRTLLM-GEN SiTU (PR #4180): {_situ_import_error}"
         )
     return None
 
@@ -118,7 +118,7 @@ if platform.is_nvidia:
         get_w2_permute_indices_with_cache,
     )
 
-    # SiTU is native in flashinfer's TRTLLM-Gen MoE since PR #4180 (> 0.6.15);
+    # SiTU is native in FlashInfer's TRTLLM-GEN MoE since PR #4180 (> 0.6.15);
     # older builds lack the ActivationType.Situ member.
     try:
         from flashinfer.fused_moe import (
@@ -385,7 +385,7 @@ if platform.is_nvidia:
         plan: dict,
         w: torch.nn.Module,
     ):
-        # The private SiTU kernel uses the same standard TRT-LLM [up|gate]
+        # The private SiTU kernel uses the same standard TensorRT-LLM [up|gate]
         # physical layout as SwiGLU; keep the shared reorder/shuffle above.
         return _flashinfer_trtllm_mxfp4_moe_weights(plan, w, situ=True)
 
@@ -457,7 +457,7 @@ if platform.is_nvidia:
             topk_ids.to(torch.int32).contiguous(),
             topk_weights.to(torch.bfloat16).contiguous(),
         )
-        # The unpacked ``(ids, weights)`` tuple is flashinfer's precomputed-topk
+        # The unpacked ``(ids, weights)`` tuple is FlashInfer's precomputed-topk
         # format; expert IDs stay global and the kernel filters to the local
         # range. routing_method_type=1 (Renormalize) matches K3's
         # pre-normalized topk weights, which the kernel consumes as-is.
@@ -586,7 +586,7 @@ if platform.is_nvidia:
         reason = situ_moe_unavailable_reason()
         if reason is not None:
             # Skipping is normal for deployments that don't serve Kimi-K3, so
-            # log at INFO -- but keep the reason (e.g. a flashinfer build
+            # log at INFO, but keep the reason (for example, a FlashInfer build
             # without SiTU), which otherwise vanishes and makes "kernel not
             # found" failures hard to trace back here.
             logger.info("Kimi-K3 SiTU MoE kernel not registered: %s", reason)
@@ -615,7 +615,7 @@ if platform.is_nvidia:
                 "supports_ep": frozenset({True}),
                 "supports_all_to_all_ep": frozenset({False}),
                 "ispp_alignment": frozenset({1}),
-                # flashinfer's SiTU cubins are MxFP4 x MxFP8 (w4a8) only.
+                # FlashInfer's SiTU cubins are MxFP4 x MxFP8 (w4a8) only.
                 "internal_activation_dtype": frozenset({"fp8"}),
                 "supports_bias": frozenset({False}),
             },
@@ -658,7 +658,7 @@ if platform.is_nvidia:
                 value=0.0,
             )
 
-        # cute-dsl beats the cuda backend at every size under CUDA-graph
+        # cute-dsl beats the cuda backend at every size under CUDA graph
         # replay (1.5x at decode M, +6-16% at prefill); its higher eager
         # launch overhead is amortized by graph capture.
         x, x_scale = mxfp8_quantize(

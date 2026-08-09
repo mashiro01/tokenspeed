@@ -301,7 +301,7 @@ class EventLoop:
             draft_token_to_kv_pool=draft_token_to_kv_pool,
         )
 
-        # Per-rank GPU memory breakdown (weights by group, KV/graph/non-torch).
+        # Per-rank GPU memory breakdown (weights by group, KV/graph/non-PyTorch).
         # rank0 only; best-effort, never fails startup.
         if attn_tp_rank == 0:
             log_gpu_memory_summary(
@@ -328,7 +328,7 @@ class EventLoop:
         )
         # All ranks submit identical cache plans (the C++ scheduler is mirrored),
         # so a local in-flight counter mirrors across ranks: if it's 0 here, no
-        # rank has anything pending. Lets us skip the TP collective in
+        # rank has anything pending. This lets us skip the TP collective in
         # _commit_cache_results entirely when nothing is in flight.
         self._num_inflight_cache_ops = 0
         self.dp_rank = dp_rank
@@ -409,7 +409,7 @@ class EventLoop:
                     + ", ".join(unsupported)
                 )
         # Backend/pool compatibility is validated inside ModelExecutor
-        # (validate_scheduler_config), before CUDA-graph capture.
+        # (validate_scheduler_config), before CUDA graph capture.
         self._paged_cache_groups = paged_cache_groups
         scheduler_cfg = make_config(
             num_device_pages=geometry.num_device_pages,
@@ -1196,7 +1196,7 @@ class EventLoop:
         # would finish compiling and get admitted before being noticed.
         grammar_manager = self.request_handler.grammar_manager
         for rid in abort_rids:
-            self._request_abort_or_mark(rid, "client cancelled request")
+            self._request_abort_or_mark(rid, "client canceled request")
             grammar_manager.mark_abort(rid)
 
         # A pause(mode="abort") cancels every in-flight request through the same

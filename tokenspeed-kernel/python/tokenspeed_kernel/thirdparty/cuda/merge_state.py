@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""merge_state: vendored from flashinfer's MergeStateKernel + lse_scale knob + PDL.
+"""merge_state: vendored from FlashInfer's MergeStateKernel + lse_scale knob + PDL.
 
 The CUDA source lives at ``thirdparty/cuda/csrc/merge_state.cu``. This module is
 the public Python API — it loads the prebuilt ``.so`` lazily, validates inputs,
@@ -66,7 +66,7 @@ def merge_state(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Merge two attention partials.
 
-    Vendored from flashinfer's ``MergeStateKernel`` (see
+    Vendored from FlashInfer's ``MergeStateKernel`` (see
     ``thirdparty/cuda/csrc/merge_state.cu``) with two additions: ``lse_scale_log2``
     so callers can pass LSE in any base, and PDL hooks so the kernel can overlap
     its preamble with upstream / downstream PDL-aware kernels.
@@ -74,8 +74,8 @@ def merge_state(
     The kernel works in log2 space internally (PTX-native ``ex2.approx``).
     ``lse_scale_log2`` is the multiplier that converts the caller's LSE into
     log2 domain — pass ``LSE_LN = log2(e)`` (default) for natural-log LSE
-    (trtllm-gen / FA cute / cuteDSL MLA convention) or ``LSE_LOG2 = 1.0`` if
-    the caller's LSE is already in log2 (flashinfer C++ convention). The
+    (TRTLLM-GEN / FA cute / cuteDSL MLA convention) or ``LSE_LOG2 = 1.0`` if
+    the caller's LSE is already in log2 (the FlashInfer C++ convention). The
     output LSE is returned in the same basis as the input.
 
     Parameters

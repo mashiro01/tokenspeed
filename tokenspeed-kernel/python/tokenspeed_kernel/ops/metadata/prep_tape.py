@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Declarative one-launch CUDA-graph replay metadata prep.
+"""Declarative one-launch CUDA graph replay metadata prep.
 
 Attention backends refill the captured graph's persistent input buffers
 before every replay. Recorded eagerly that is a chain of tiny fills, copies

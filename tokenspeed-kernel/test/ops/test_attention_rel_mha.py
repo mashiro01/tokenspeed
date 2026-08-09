@@ -24,12 +24,12 @@ The rel_mha family is MHA plus a learned per-query relative-distance
 pre-softmax bias (TML/Inkling), taking the bias table as a first-class
 ``rel_logits`` tensor. How the bias is applied (fused sheared-bias FA4 path
 vs generic score_mod gather) is an implementation detail of the registered
-kernels; these tests pin the op outputs against a torch reference either
+kernels; these tests pin the operation outputs against a PyTorch reference either
 way. Extents that violate the fused-path constraints (not a multiple of
 128) exercise the gather fallback; the fused-specific parity tests live in
-test_attention_rel_bias_fused.py.
+``test_attention_rel_bias_fused.py``.
 
-Also locks the plain mha ops' interface: no relative-bias arguments.
+The tests also lock the plain MHA operations' interface: no relative-bias arguments.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _ref_rel_attn(
     window_left: int,
     scale: float,
 ) -> torch.Tensor:
-    """Per-sequence torch reference. q [Sq,H,D], k/v [Sk,KV,D], rel_logits [Sq,H,E]."""
+    """Provide a per-sequence PyTorch reference for Q, K/V, and relative logits."""
     Sq, H, _ = q.shape
     Sk, KV, _ = k.shape
     rep = H // KV

@@ -154,7 +154,7 @@ class Req:
         # processed.
         self.is_chunked = 0
 
-        # Incremental streamining
+        # Incremental streaming.
         self.send_token_offset: int = 0
         self.send_decode_id_offset: int = 0
         # because the decode server does not have the first output token logprobs

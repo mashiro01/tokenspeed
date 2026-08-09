@@ -60,7 +60,7 @@ def _gather_and_expand_scalars_kernel(
     if seed_ptr is not None:
         s = tl.load(seed_ptr + idx)
     if offsets_ptr is not None:
-        # Cast int32 valid_cache_lengths to int64 for flashinfer's offset arg.
+        # Cast INT32 valid_cache_lengths to INT64 for FlashInfer's offset argument.
         o = tl.load(offsets_ptr + idx).to(tl.int64)
 
     n_off = tl.arange(0, N_BLOCK)
@@ -77,7 +77,8 @@ def _gather_and_expand_scalars_kernel(
     if out_offsets_ptr is not None:
         tl.store(out_offsets_ptr + base + n_off, o, mask=mask)
 
-    # PDL: signal that dependents (e.g., flashinfer softmax) can begin preamble.
+    # PDL signals that dependents (for example, FlashInfer softmax) can begin
+    # their preambles.
     if ENABLE_PDL:
         tl.extra.cuda.gdc_launch_dependents()
 
@@ -105,7 +106,7 @@ def gather_and_expand_scalars(
 
     Replaces the pattern ``index_select(pool, index)`` followed by
     ``repeat_interleave(..., n)`` across up to six streams with one Triton
-    launch. ``offsets`` (int32) is cast to int64 inside the kernel.
+    launch. ``offsets`` is cast from INT32 to INT64 inside the kernel.
 
     Optional streams (min_p, seed, offsets) pass through as ``None`` — Triton
     specializes the kernel on pointer-None-ness at JIT time and the gated
@@ -113,9 +114,9 @@ def gather_and_expand_scalars(
 
     Args:
         ...
-        enable_pdl: opt into Programmatic Dependent Launch (Hopper+). Lets the
-            downstream flashinfer softmax/renorm kernels start their preamble
-            while our writes drain.
+        enable_pdl: Opt in to Programmatic Dependent Launch (Hopper+). This lets
+            downstream FlashInfer softmax and renormalization kernels begin their
+            preambles while these writes drain.
 
     Returns ``(temperatures, top_ks, top_ps, min_ps_or_None, seeds_or_None,
     offsets_or_None)``, each shape ``[bs * n]`` (or ``None`` when the

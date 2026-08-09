@@ -13,14 +13,14 @@ Blog: https://lightseek.org/blog/tokenspeed-inkling.html
 ```bash
 ## Docker
 
-### nvidia
+### NVIDIA
 docker pull lightseekorg/tokenspeed:latest
-### amd
+### AMD
 docker pull lightseekorg/tokenspeed-amd:latest
 
 ## Launch command
 
-# nvidia
+# NVIDIA
 ts serve \
     --model thinkingmachines/Inkling-NVFP4 \
     --attn-tp-size 4 \
@@ -43,7 +43,7 @@ ts serve \
     --speculative-eagle-topk 1 \
     --speculative-num-draft-tokens 4
 
-# amd
+# AMD
 ts serve \
     --model lightseekorg/Inkling-MXFP4 \
     --attn-tp-size 4 \
@@ -185,7 +185,7 @@ Notes:
 - DSpark proposal blocks use non-causal MLA draft attention. Both the `mla` and
   `trtllm_mla` draft backends preserve every block row during eager execution
   and CUDA graph capture. When K3's 128-token logical cache pages feed the
-  64-token TRT-LLM MLA kernel, the backend expands each logical page into its
+  64-token TensorRT-LLM MLA kernel, the backend expands each logical page into its
   two physical kernel pages before draft attention.
 - For Kimi K3, an eight-token verify window uses seven DSpark draft queries.
   The anchor query directly predicts the first draft through the Markov head;
@@ -312,7 +312,7 @@ pattern with Qwen3.5.
 
 ### Qwen3.8-Max
 
-Qwen3.8-max needs 16 GPUs, so it runs on two 8-GPU nodes. Launch
+Qwen3.8-Max needs 16 GPUs, so it runs on two 8-GPU nodes. Launch
 `tokenspeed serve` on every node with the same command, changing only
 `--node-rank`; every node points `--dist-init-addr` at node 0, which is the only
 rank that serves the HTTP API. See [Parallelism](../serving/parallelism.md) for

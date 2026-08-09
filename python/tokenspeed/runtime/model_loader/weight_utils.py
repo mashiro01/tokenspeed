@@ -253,7 +253,7 @@ def filter_duplicate_safetensors_files(
     hf_weights_files: list[str], hf_folder: str, index_file: str
 ) -> list[str]:
     # model.safetensors.index.json is a mapping from keys in the
-    # torch state_dict to safetensors file holding that weight.
+    # PyTorch state_dict to the SafeTensors file containing that weight.
     index_file_name = os.path.join(hf_folder, index_file)
     if not os.path.isfile(index_file_name):
         return hf_weights_files
@@ -345,10 +345,9 @@ def filter_files_not_needed_for_inference(hf_weights_files: list[str]) -> list[s
     return hf_weights_files
 
 
-# explicitly use pure text format, with a newline at the end
-# this makes it impossible to see the animation in the progress bar
-# but will avoid messing up with ray or multiprocessing, which wraps
-# each line of output with some prefix.
+# Use a plain-text format with a trailing newline. This disables progress-bar
+# animation but prevents Ray or multiprocessing from adding a prefix to each
+# output line.
 _BAR_FORMAT = "{desc}: {percentage:3.0f}% Completed | {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\n"  # noqa: E501
 
 
@@ -358,20 +357,20 @@ def np_cache_weights_iterator(
     hf_folder: str,
     hf_weights_files: list[str],
 ) -> Generator[tuple[str, torch.Tensor], None, None]:
-    """Iterate over the weights in the model np files.
+    """Iterate over the weights in the model's NumPy cache files.
 
-    Will dump the model weights to numpy files if they are not already dumped.
+    Dump the model weights to NumPy files if they have not already been dumped.
     """
     enable_tqdm = (
         not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
     )
-    # Convert the model weights from torch tensors to numpy arrays for
-    # faster loading.
+    # Convert the model weights from PyTorch tensors to NumPy arrays for faster
+    # loading.
     np_folder = os.path.join(hf_folder, "np")
     os.makedirs(np_folder, exist_ok=True)
     weight_names_file = os.path.join(np_folder, "weight_names.json")
     # Use file lock to prevent multiple processes from
-    # dumping the same model weights to numpy at the same time.
+    # dumping the same model weights to NumPy at the same time.
     with get_lock(model_name_or_path, cache_dir):
         if not os.path.exists(weight_names_file):
             weight_names: list[str] = []
@@ -415,7 +414,7 @@ def safetensors_encrypted_weights_iterator(
 class CheckpointPrefetcher:
     """Sequentially read checkpoint shards a bounded distance ahead of the consumer.
 
-    Copying weights out of an mmap'd safetensors shard demand-faults one page
+    Copying weights out of a memory-mapped safetensors shard demand-faults one page
     at a time; on cold network filesystems the sparse per-rank access pattern
     defeats readahead and every page fault becomes a synchronous round trip.
     Reading each shard sequentially first moves the bytes at streaming
@@ -788,10 +787,10 @@ def mamba_v2_sharded_weight_loader(
     tp_size: int,
     tp_rank: int,
 ) -> LoaderFunction:
-    """Create a weight loader for mamba v2. This ensures that the projections
-    are correctly sharded so that they can be split into x, B, C. It also
-    ensures the the all the groups corresponding to a head shard is placed
-    together with it.
+    """Create a weight loader for Mamba v2.
+
+    This loader shards the projections so they can be split into X, B, and C.
+    It also places all groups associated with a head shard alongside that shard.
     """
 
     def loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> None:

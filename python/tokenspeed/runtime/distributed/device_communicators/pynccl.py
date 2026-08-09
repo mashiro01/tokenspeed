@@ -80,7 +80,7 @@ class PyNcclCommunicator:
 
         self.group = group
 
-        # if world_size == 1, no need to create communicator
+        # A single-rank world does not require a communicator.
         if self.world_size == 1:
             self.available = False
             self.disabled = True
@@ -130,7 +130,7 @@ class PyNcclCommunicator:
         self.device = device
         # nccl communicator and stream will use this device
         # `torch.cuda.device` is a context manager that changes the
-        # current cuda device to the specified one
+        # Set the current CUDA device to the specified device.
         with torch.cuda.device(device):
             self.comm: ncclComm_t = self.nccl.ncclCommInitRank(
                 self.world_size, self.unique_id, self.rank

@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Inference-only Qwen2 model compatible with HuggingFace weights."""
+"""Inference-only Qwen2 model compatible with Hugging Face weights."""
 
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ class Qwen2MLP(nn.Module):
         if hidden_act != "silu":
             raise ValueError(
                 f"Unsupported activation: {hidden_act}. "
-                "Only silu is supported for now."
+                "Only the SiLU activation is currently supported."
             )
         self.act_fn = SiluAndMul()
 

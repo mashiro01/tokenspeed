@@ -2,9 +2,9 @@
 MiniMax-M2.5 NVFP4 (TP2) single-request perf & quality tests.
 
 Guards against "silly breakage" on the mm25 path by exercising:
-  - baseline (overlap + cudagraph): stream decode TPS floor + non-stream e2e
-    TPS floor + sampling (flashinfer) smoke
-  - no cudagraph: short-gen exact-string match against baseline reference
+  - baseline (overlap + CUDA graph): streaming decode TPS floor and nonstreaming end-to-end
+    TPS floor and FlashInfer sampling smoke test
+  - no CUDA graph: short-generation exact-string match against the baseline reference
   - no overlap: stream TPS strictly lower than overlap baseline + short-gen
     exact-string match
   - xgrammar JSON (poem schema): stream decode TPS floor + JSON validity
@@ -154,7 +154,7 @@ XGRAMMAR_MAX_TOKENS = 4096  # reasoning + JSON both fit; 1024 occasionally
 MIN_XGRAMMAR_GEN_TOKENS = 300
 
 # Base args. Notes:
-#  - sampling-backend flashinfer: exercises the flashinfer sampling path on
+#  - sampling-backend flashinfer: exercises the FlashInfer sampling path on
 #    every test.
 #  - reasoning-parser minimax: MiniMax-M2.5 emits <think>…</think>. With
 #    reasoning_parser set, xgrammar defers the response-format constraint
@@ -399,7 +399,7 @@ class TestMiniMaxM25Perf(unittest.TestCase):
             # Brief delay so the kernel releases GPU memory before next launch.
             time.sleep(10)
 
-    # Baseline: overlap + cudagraph (defaults). TPS floors + quality + sampling.
+    # Baseline: overlap and CUDA graph (defaults). TPS floors, quality, and sampling.
     def test_baseline(self):
         def run(port):
             # Two full-length warmups: the first decode request after server
@@ -462,7 +462,7 @@ class TestMiniMaxM25Perf(unittest.TestCase):
                 f"best-of-2 non-stream e2e TPS {tps_ns:.1f} < floor {MIN_NONSTREAM_TPS}",
             )
 
-            # Sampling (flashinfer backend): temperature > 0, top_p < 1.
+            # Sampling (FlashInfer backend): temperature > 0, top_p < 1.
             # Only asserts the path works & produces non-empty output.
             content_samp, tok_samp, _, _ = _chat_nonstream(
                 port,

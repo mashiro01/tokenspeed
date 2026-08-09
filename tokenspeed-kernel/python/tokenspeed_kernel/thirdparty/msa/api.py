@@ -1,11 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 MiniMax
 # SPDX-License-Identifier: MIT
 
-"""FMHA varlen attention API: plan + run for SM100.
+"""Variable-length FMHA planning and execution API for SM100.
 
-fmha_sm100_plan and fmha_sm100.
-
-Doc is REPO/docs/fmha_sm100_api.md
+The public entry points are ``fmha_sm100_plan`` and ``fmha_sm100``. See
+``docs/fmha_sm100_api.md`` in the upstream repository for API details.
 """
 
 import math
@@ -711,7 +710,7 @@ def _fmha_sm100_plan(
             qo_lens, kv_lens, qo_offset_in, page_size, pack_factor
         )
     elif kv_block_num > 0 and page_size <= 0:
-        print("[Error] Sparse mode must be used together with paged kv!")
+        print("[ERROR] Sparse mode requires paged KV")
     else:
         if pack_factor > 1:
             qo_lens = [q * pack_factor for q in qo_lens]
@@ -789,7 +788,8 @@ def _fmha_sm100_plan(
         if not group_iters:
             num_kv_splits = 1
         elif len(group_iters) * num_qo_heads > 4096:
-            # Too many tiles for split-KV smem — fall back to nosplit greedy
+            # Too many tiles for split-KV shared memory; fall back to the
+            # non-split greedy plan.
             num_kv_splits = 1
         else:
             total_iters = sum(group_iters) * num_qo_heads
@@ -1284,7 +1284,7 @@ def fmha_sm100_plan(
 
     The plan is shape-dependent and can be reused across layers or repeated
     calls that share the same sequence lengths, head counts, page size, sparse
-    mode, and output mode.  Planning may run CUDA kernels and allocates
+    mode, and output mode. Planning may run CUDA kernels and allocate
     workspaces, so it should be done outside tight per-layer loops when
     possible.
 
@@ -1304,7 +1304,7 @@ def fmha_sm100_plan(
         ``kv_segment_lens - qo_segment_lens`` for bottom-right causal masking.
         A tensor must have shape ``[batch_size]``.
     split_prefill_decode : bool, optional
-        If True, a mixed batch ordered as decode requests followed by prefill
+        If ``True``, a mixed batch ordered as decode requests followed by prefill
         requests is split into two sub-plans.  The original order must already
         group short decode sequences before long prefill sequences.
     **kwargs
@@ -1599,15 +1599,16 @@ def sparse_topk_select(
         Must be exactly 16.
     num_valid_pages : int or torch.Tensor, optional
         Actual number of KV pages in the page table, i.e. ``ceil(kv_len / page_size)``.
-        ``max_k_tiles`` is round-up-aligned and always >= ``num_valid_pages``.
+        ``max_k_tiles`` is rounded up for alignment and is always greater than
+        or equal to ``num_valid_pages``.
         The kernel may select tile indices in ``[num_valid_pages, max_k_tiles-1]``
         (all-``-inf`` padding tiles). Passing ``num_valid_pages`` replaces those
         out-of-range indices with ``-1`` and sorts them to the tail, matching the
         sparse FMHA kernel's kv_block_indexes contract.
         Tensor form must be CUDA int32/int64 with shape ``[total_qo_len]`` and
         provides a per-query-token page count for mixed-length batches.
-        **Strongly recommended**: omitting this allows OOB page-table accesses in
-        the sparse attention pass.
+        Omitting this value can allow out-of-bounds page-table access in the
+        sparse attention pass, so callers should always provide it.
     force_begin_blocks : int
         Number of KV blocks at the beginning of the sequence (indices 0..N-1) to
         always include in the top-k result, regardless of their scores.  Useful
@@ -1628,7 +1629,7 @@ def sparse_topk_select(
         Shape ``(total_qo_len, num_qo_heads, topk)``, int32.  Without
         ``block_table``, values are logical tile indices in ascending tile order.
         With ``block_table``, values are gathered block-table entries after that
-        logical ascending sort.  Out-of-range entries (if any) are ``-1`` at the tail.
+        ascending logical-index sort. Out-of-range entries, if any, are ``-1`` at the tail.
     """
 
     assert (
@@ -1750,10 +1751,11 @@ def sparse_topk_select(
     module = get_sparse_topk_module()
     # MQA dense pass: num_kv_heads_dense=1, so h_r=num_qo_heads.
     # The kernel only uses num_qo_heads = h_r * num_kv_heads as a product;
-    # passing num_kv_heads=1 is equivalent to any other valid factorisation.
+    # passing num_kv_heads=1 is equivalent to any other valid factorization.
     #
     # v2.5_oob_clamp_in_kernel: OOB clamp is folded into the kernel — the prior
-    # post-process torch.where + sort + torch.where chain (~84-101 us / call)
+    # post-processing torch.where + sort + torch.where chain (approximately
+    # 84–101 microseconds per call)
     # is replaced by passing num_valid_pages directly to the kernel.
     module.sparse_topk_select(
         max_score,

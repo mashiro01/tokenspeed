@@ -174,7 +174,7 @@ def fp8_quantize(
     block_n = max(1, triton.next_power_of_2(N))
     even_n = block_n == N
 
-    # ``launch_pdl`` is a NVIDIA-only Triton runtime kwarg (Hopper+ Programmatic
+    # ``launch_pdl`` is an NVIDIA-only Triton runtime kwarg (Hopper+ Programmatic
     # Dependent Launch). The HIP backend rejects unknown kwargs, so only forward
     # it when PDL is actually requested.
     extra_kwargs = {"launch_pdl": True} if enable_pdl else {}
@@ -530,14 +530,14 @@ def triton_quantize_mxfp4(
     enable_pdl: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if global_scale is not None:
-        raise ValueError("triton MXFP4 quantization does not support global_scale")
+        raise ValueError("Triton MXFP4 quantization does not support global_scale")
     if scale_size != 32:
         raise ValueError(
-            f"triton MXFP4 quantization requires scale_size=32, got {scale_size}"
+            f"Triton MXFP4 quantization requires scale_size=32, got {scale_size}"
         )
     if scale_layout != "linear":
         raise ValueError(
-            "triton MXFP4 quantization requires scale_layout='linear', "
+            "Triton MXFP4 quantization requires scale_layout='linear', "
             f"got {scale_layout!r}"
         )
     return mxfp4_quantize(x)

@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""TRT-LLM GEMM kernels exposed via the numerics registry.
+"""TensorRT-LLM GEMM kernels exposed via the numerics registry.
 
 - ``cublaslt_mm_nvfp4`` wraps the cuBLASLt NVFP4 GEMM runner (heuristic algo 0).
 """

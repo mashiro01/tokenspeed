@@ -51,7 +51,7 @@ def set_total_chunks_hint_uniform(
     chunk_sizes: tuple[int, ...] = (16, 64),
 ) -> None:
     """Fast path for spec verify / draft-extend where every sequence has the
-    same length (tokens_per_seq). Avoids allocating a per-seq numpy array."""
+    same length (tokens_per_seq). Avoids allocating a NumPy array per sequence."""
     key_id = id(cu_seqlens)
     _total_chunks_hint.clear()
     for cs in chunk_sizes:

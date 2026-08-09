@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Layer Compiler: analyses ModuleSpec annotations and inserts CommOps.
+"""Layer Compiler: analyzes ModuleSpec annotations and inserts CommOps.
 
 The compiler inspects each decoder layer's sub-modules (in the order declared
 by ``resolve_exec_plan``), examines adjacent Placement pairs, and inserts the
@@ -182,7 +182,7 @@ def compile_decoder_layer(
     prev_layer_output_group: ParallelGroup | None = None,
     next_layer_input_group: ParallelGroup | None = None,
 ) -> CompiledDecoderLayer:
-    """Analyse a decoder layer execution plan and produce a CompiledDecoderLayer."""
+    """Analyze a decoder layer execution plan and produce a CompiledDecoderLayer."""
 
     last_compute_idx = _find_last_compute_index(exec_plan)
 

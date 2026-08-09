@@ -99,9 +99,9 @@ void trtllm_custom_all_reduce(TensorView in, TensorView out, int64_t tp_size, in
   cudaSetDevice(in.device().device_id);
   auto stream = get_stream(in.device());
 
-  // TODO(zihao): review dispatch type - support fp16, bf16 only
+  // TODO(zihao): Restrict the dispatch types to FP16 and BF16.
   DISPATCH_FLOATING_TYPES_FOR_ALLREDUCE(in.dtype(), c_type, [&] {
-    // TODO(yingyi): remove type template here (used to check if lamport is supported)
+    // TODO(yingyi): Remove the type template used to check Lamport support.
     int64_t message_size = in.numel();
     int64_t hidden_size = in.numel() / token_num;
 

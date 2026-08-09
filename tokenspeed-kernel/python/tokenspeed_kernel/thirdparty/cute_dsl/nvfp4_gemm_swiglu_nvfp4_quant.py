@@ -31,52 +31,63 @@ from cutlass.cute.nvgpu import cpasync, tcgen05
 from flashinfer.fused_moe.cute_dsl.blackwell.utils import fmin, silu_f32
 
 """
-This example provides an experimental implementation of the SM100 batched dense blockscaled
-GEMM kernel, please note that the APIs and implementation details related to this kernel
-may change in future releases.
+This example provides an experimental implementation of an SM100 batched,
+dense, block-scaled GEMM kernel. The APIs and implementation details may
+change in future releases.
 
 A high-performance persistent batched dense blockscaled GEMM example for the NVIDIA Blackwell
-SM100 architecture using CUTE DSL.
-- Matrix A is MxKxL, L is batch dimension, A can be row-major("K") or column-major("M")
-  for MXF8 input type and can only be row-major("K") for MXF4/NVF4 input type
-- Matrix B is NxKxL, L is batch dimension, B can be row-major("N") or column-major("K")
-  for MXF8 input type and can only be row-major("K") for MXF4/NVF4 input type
-- Matrix C is MxNxL, L is batch dimension, C can be row-major("N") or column-major("M")
-- Matrix SFA layout is filled internally according to A shape and BlockScaledBasicChunk,
-  which has M×ceil_div(K, sf_vec_size)×L elements respectively
-- Matrix SFB layout is filled internally according to B shape and BlockScaledBasicChunk,
-  which has N×ceil_div(K, sf_vec_size)×L elements respectively
+SM100 architecture using CuTe DSL.
+- Matrix A is M×K×L, where L is the batch dimension. A can be row-major ("K")
+  or column-major ("M") for MXF8 inputs, but only row-major ("K") for MXF4
+  and NVF4 inputs.
+- Matrix B is N×K×L, where L is the batch dimension. B can be row-major ("N")
+  or column-major ("K") for MXF8 inputs, but only row-major ("K") for MXF4
+  and NVF4 inputs.
+- Matrix C is M×N×L, where L is the batch dimension. C can be row-major ("N")
+  or column-major ("M").
+- The SFA matrix layout is populated internally according to the shape of A
+  and BlockScaledBasicChunk. It has M×ceil_div(K, sf_vec_size)×L elements.
+- The SFB matrix layout is populated internally according to the shape of B
+  and BlockScaledBasicChunk. It has N×ceil_div(K, sf_vec_size)×L elements.
 
 This GEMM kernel supports the following features:
-    - Utilizes Tensor Memory Access (TMA) for efficient memory operations
-    - Utilizes Blackwell's tcgen05.mma for matrix multiply-accumulate (MMA) operations (including 2cta mma instructions)
-    - Implements TMA multicast with cluster to reduce L2 memory traffic
-    - Support persistent tile scheduling to better overlap memory load/store with mma between tiles
-    - Support warp specialization to avoid explicit pipelining between mainloop load and mma
+    - Uses Tensor Memory Access (TMA) for efficient memory operations.
+    - Uses Blackwell's tcgen05.mma for matrix multiply-accumulate (MMA)
+      operations, including two-CTA MMA instructions.
+    - Implements TMA multicast within a cluster to reduce L2 memory traffic.
+    - Supports persistent tile scheduling to better overlap memory operations
+      and MMA operations across tiles.
+    - Supports warp specialization to avoid explicit pipelining between the
+      mainloop load and MMA operations.
 
 This GEMM works as follows:
-1. DMA warp: Load A and B matrices from global memory (GMEM) to shared memory (SMEM) using TMA operations.
+1. DMA warp: Loads matrices A and B from global memory (GMEM) into shared
+   memory (SMEM) using TMA operations.
 2. MMA warp:
-    - Load scale factor A/B from shared memory (SMEM) to tensor memory (TMEM) using tcgen05.cp instruction.
-    - Perform matrix multiply-accumulate (MMA) operations using tcgen05.mma instruction.
+    - Loads the scale factors for A and B from shared memory (SMEM) into tensor
+      memory (TMEM) using tcgen05.cp instructions.
+    - Performs matrix multiply-accumulate (MMA) operations using tcgen05.mma
+      instructions.
 3. EPILOGUE warp:
-    - Load completed accumulator from tensor memory (TMEM) to registers (RMEM) using tcgen05.ld.
-    - Type convert C matrix to output type.
-    - Optionally store C matrix from registers (RMEM) to shared memory (SMEM) to global
-      memory (GMEM) with TMA operations, or directly store C matrix from registers (RMEM)
-      to global memory (GMEM) without TMA operations.
-    - Optionally accept an elementwise lambda function epilogue_op to apply to the output tensor:
-      e.g., relu can set epilogue_op = lambda x: cute.where(x > 0, x, cute.full_like(x, 0))
+    - Loads the completed accumulator from tensor memory (TMEM) into registers
+      (RMEM) using tcgen05.ld.
+    - Converts matrix C to the output type.
+    - Optionally stores matrix C from registers (RMEM) through shared memory
+      (SMEM) to global memory (GMEM) with TMA operations, or stores it directly
+      from registers to global memory without TMA operations.
+    - Optionally accepts an element-wise ``epilogue_op`` lambda to apply to the
+      output tensor. For example, ReLU can use
+      ``lambda x: cute.where(x > 0, x, cute.full_like(x, 0))``.
 
 SM100 tcgen05.mma.kind.block_scale instructions operate as follows:
-- Read matrix A from SMEM
-- Read matrix B from SMEM
-- Read scalefactor A from TMEM
-- Read scalefactor B from TMEM
-- Write accumulator to TMEM
+- Read matrix A from SMEM.
+- Read matrix B from SMEM.
+- Read the scale factor for A from TMEM.
+- Read the scale factor for B from TMEM.
+- Write the accumulator to TMEM.
 The accumulator in TMEM must then be loaded to registers before writing back to GMEM.
 
-Input arguments to this example is shown below:
+The following command shows the input arguments for this example:
 
 .. code-block:: bash
 
@@ -86,7 +97,7 @@ Input arguments to this example is shown below:
       --mma_tiler_mn 256,128 --cluster_shape_mn 2,1                            \
       --mnkl 8192,8192,1024,1
 
-To collect performance with NCU profiler:
+To collect performance data with the Nsight Compute profiler:
 
 .. code-block:: bash
 
@@ -99,33 +110,41 @@ To collect performance with NCU profiler:
 
 
 Constraints:
-* Supported input data types: mxf8, mxf4, nvf4
-  see detailed valid dtype combinations in below Sm100BlockScaledPersistentDenseGemmKernel class documentation
-* A/B tensor must have the same data type, mixed data type is not supported (e.g., mxf8 x mxf4)
-* Mma tiler M must be 128 or 256(use_2cta_instrs)
-* Mma tiler N must be 128 or 256
-* Cluster shape M/N must be positive and power of 2, total cluster size <= 16
-* Cluster shape M must be multiple of 2 if Mma tiler M is 256(use_2cta_instrs)
+* Supported input data types are MXF8, MXF4, and NVF4. See the
+  ``Sm100BlockScaledPersistentDenseGemmKernel`` documentation below for valid
+  data-type combinations.
+* Tensors A and B must have the same data type; mixed data types are not
+  supported (for example, MXF8 × MXF4).
+* The M dimension of the MMA tiler must be 128 or 256 (``use_2cta_instrs``).
+* The N dimension of the MMA tiler must be 128 or 256.
+* The M and N cluster-shape dimensions must be positive powers of two, and the
+  total cluster size must not exceed 16.
+* The M cluster-shape dimension must be a multiple of two when the M dimension
+  of the MMA tiler is 256 (``use_2cta_instrs``).
 * The contiguous dimension of A/B/C tensors must be at least 16 bytes aligned,
-  i.e, number of elements is a multiple of 16 and 32 for Float8 and Float4, respectively.
+  meaning that the number of elements must be a multiple of 16 for Float8 or
+  32 for Float4.
 """
 
 
 class Sm100BlockScaledPersistentDenseGemmKernel:
-    """This class implements batched matrix multiplication (C = A x SFA x B x SFB) with support for various data types
-    and architectural features specific to Blackwell GPUs with persistent tile scheduling and warp specialization.
+    """Implement batched matrix multiplication (C = A × SFA × B × SFB).
+
+    Supports multiple data types and Blackwell GPU architectural features,
+    including persistent tile scheduling and warp specialization.
 
     :param sf_vec_size: Scalefactor vector size.
     :type sf_vec_size: int
-    :param mma_tiler_mn: Shape of the Matrix Multiply-Accumulate (MMA) tile (M,N)
+    :param mma_tiler_mn: Shape of the matrix multiply-accumulate (MMA) tile (M, N).
     :type mma_tiler_mn: Tuple[int, int]
-    :param cluster_shape_mn: Cluster dimensions (M,N) for parallel processing
+    :param cluster_shape_mn: Cluster dimensions (M, N) for parallel processing.
     :type cluster_shape_mn: Tuple[int, int]
 
-    :note: In current version, A and B tensor must have the same data type
-        - i.e., Float8E4M3FN for A and Float8E5M2 for B is not supported
+    :note: In the current version, tensors A and B must have the same data type.
+        For example, Float8E4M3FN for A and Float8E5M2 for B is unsupported.
 
-    :note: Supported combinations of A/B data types, SF data typs and SF vector size:
+    :note: Supported combinations of A/B data types, scale-factor data types,
+        and scale-factor vector sizes:
         - MXF8: A/B: Float8E5M2/Float8E4M3FN + SF: Float8E8M0FNU + sf_vec_size: 32
         - MXF4: A/B: Float4E2M1FN + SF: Float8E8M0FNU + sf_vec_size: 32
         - NVF4: A/B: Float4E2M1FN + SF: Float8E8M0FNU/Float8E4M3FN + sf_vec_size: 16
@@ -137,17 +156,21 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         - Float32
         - Float16/BFloat16
         - Float8E4M3FN/Float8E5M2
-        # Note: We don't have SFD generation support in this example for now,
-        # so Float4E2M1FN output is only for internal testing and will not be released.
+        # Note: This example does not yet support SFD generation, so the
+        # Float4E2M1FN output is for internal testing only and will not be released.
         - Float4E2M1FN
 
     :note: Constraints:
-        - MMA tiler M must be 128 or 256 (use_2cta_instrs)
-        # TODO: Add 64 and 192 support
-        - MMA tiler N must be 128/256
-        - Cluster shape M must be multiple of 2 if Mma tiler M is 256
-        - Cluster shape M/N must be positive and power of 2, total cluster size <= 16
-        - Also, Cluster shape M/N must be <= 4 for scale factor multicasts due to limited size of scale factors
+        - The M dimension of the MMA tiler must be 128 or 256
+          (``use_2cta_instrs``).
+        # TODO: Add support for 64 and 192.
+        - The N dimension of the MMA tiler must be 128 or 256.
+        - The M cluster-shape dimension must be a multiple of two when the M
+          dimension of the MMA tiler is 256.
+        - The M and N cluster-shape dimensions must be positive powers of two,
+          and the total cluster size must not exceed 16.
+        - The M and N cluster-shape dimensions must not exceed four for
+          scale-factor multicasts because scale-factor storage is limited.
 
     Example:
         >>> gemm = Sm100BlockScaledPersistentDenseGemmKernel(
@@ -165,24 +188,24 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         prefetch_dist: int = 3,
         vectorized_f32: bool = True,
     ):
-        """Initializes the configuration for a Blackwell dense GEMM kernel with SwiGLU fusion.
+        """Initialize a Blackwell dense GEMM kernel with SwiGLU fusion.
 
         This configuration includes several key aspects:
 
-        1.  MMA Instruction Settings (tcgen05):
-            - acc_dtype: Data types for MMA accumulator, always set to Float32
-            - sf_vec_size: Scalefactor A/B vector size.
+        1.  MMA instruction settings (tcgen05):
+            - acc_dtype: Data type for the MMA accumulator; always Float32.
+            - sf_vec_size: Scale-factor vector size for A and B.
             - mma_tiler_mn: The (M, N) shape of the MMA instruction tiler.
 
-        2.  Cluster Shape:
+        2.  Cluster shape:
             - cluster_shape_mn: The (ClusterM, ClusterN) shape of the CTA cluster.
 
         3.  SwiGLU Fusion:
-            - The kernel computes C = up * silu(gate) where up and gate come from
-              interleaved weight matrix B (granularity=64)
-            - Output N dimension is N/2 due to SwiGLU fusion
+            - The kernel computes C = up * silu(gate), where up and gate come
+              from interleaved weight matrix B (granularity = 64).
+            - The N output dimension is N/2 because of SwiGLU fusion.
 
-        :param sf_vec_size: Scalefactor vector size.
+        :param sf_vec_size: Scale-factor vector size.
         :type sf_vec_size: int
         :param mma_tiler_mn: Tuple (M, N) shape of the MMA instruction.
         :type mma_tiler_mn: Tuple[int, int]
@@ -192,7 +215,8 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         :type use_prefetch: bool
         :param prefetch_dist: Prefetch distance for TMA operations (default: 3).
         :type prefetch_dist: int
-        :param vectorized_f32: Enable vectorized f32x2 operations for better performance (default: True).
+        :param vectorized_f32: Enable vectorized f32x2 operations for better
+            performance (default: True).
         :type vectorized_f32: bool
         """
 
@@ -208,7 +232,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         )
 
         self.occupancy = 1
-        # Set specialized warp ids
+        # Set specialized warp IDs.
         self.epilog_warp_id = (
             0,
             1,
@@ -220,7 +244,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         self.threads_per_cta = 32 * len(
             (self.mma_warp_id, self.tma_warp_id, *self.epilog_warp_id)
         )
-        # Set barrier id for cta sync, epilogue sync and tmem ptr sync
+        # Set barrier IDs for CTA, epilogue, and TMEM-pointer synchronization.
         self.cta_sync_barrier = pipeline.NamedBarrier(
             barrier_id=1,
             num_threads=self.threads_per_cta,
@@ -242,26 +266,26 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         self.vectorized_f32 = vectorized_f32
 
     def _setup_attributes(self):
-        """Set up configurations that are dependent on GEMM inputs
+        """Set up configuration that depends on the GEMM inputs.
 
-        This method configures various attributes based on the input tensor properties
-        (data types, leading dimensions) and kernel settings:
-        - Configuring tiled MMA
-        - Computing MMA/cluster/tile shapes
-        - Computing cluster layout
-        - Computing multicast CTAs for A/B/SFA/SFB
-        - Computing epilogue subtile
-        - Setting up A/B/SFA/SFB/C stage counts in shared memory
-        - Computing A/B/SFA/SFB/C shared memory layout
+        This method configures attributes based on the input tensor properties
+        (data types and leading dimensions) and kernel settings:
+        - Configure tiled MMA.
+        - Compute MMA, cluster, and tile shapes.
+        - Compute the cluster layout.
+        - Compute multicast CTAs for A, B, SFA, and SFB.
+        - Compute the epilogue subtile.
+        - Set up stage counts for A, B, SFA, SFB, and C in shared memory.
+        - Compute shared-memory layouts for A, B, SFA, SFB, and C.
         """
-        # Compute mma instruction shapes
+        # Compute MMA instruction shapes.
         # (MMA_Tile_Shape_M, MMA_Tile_Shape_N, MMA_Inst_Shape_K)
         self.mma_inst_shape_mn = (
             self.mma_tiler[0],
             self.mma_tiler[1],
         )
         # (CTA_Tile_Shape_M, Round_Up(MMA_Tile_Shape_N, 128), MMA_Inst_Shape_K)
-        # TODO: round up to 128, it is prepared for supporting N=64 or 192.
+        # TODO: Round up to 128 in preparation for supporting N = 64 or 192.
         self.mma_inst_shape_mn_sfb = (
             self.mma_inst_shape_mn[0] // (2 if self.use_2cta_instrs else 1),
             cute.round_up(self.mma_inst_shape_mn[1], 128),
@@ -287,7 +311,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
             self.mma_inst_shape_mn_sfb,
         )
 
-        # Compute mma/cluster/tile shapes
+        # Compute MMA, cluster, and tile shapes.
         mma_inst_shape_k = cute.size(tiled_mma.shape_mnk, mode=[2])
         mma_inst_tile_k = 4
         self.mma_tiler = (
@@ -318,7 +342,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
             self.mma_tiler_c[2],
         )
 
-        # Compute cluster layout
+        # Compute the cluster layout.
         self.cluster_layout_vmnk = cute.tiled_divide(
             cute.make_layout((*self.cluster_shape_mn, 1)),
             (tiled_mma.thr_id.shape,),
@@ -328,7 +352,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
             (tiled_mma_sfb.thr_id.shape,),
         )
 
-        # Compute number of multicast CTAs for A/B
+        # Compute the number of multicast CTAs for A and B.
         self.num_mcast_ctas_a = cute.size(self.cluster_layout_vmnk.shape[2])
         self.num_mcast_ctas_b = cute.size(self.cluster_layout_vmnk.shape[1])
         self.num_mcast_ctas_sfb = cute.size(self.cluster_layout_sfb_vmnk.shape[1])
@@ -336,7 +360,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         self.is_b_mcast = self.num_mcast_ctas_b > 1
         self.is_sfb_mcast = self.num_mcast_ctas_sfb > 1
 
-        # Compute epilogue subtile
+        # Compute the epilogue subtile.
         # self.epi_tile = sm100_utils.compute_epilogue_tile_shape(
         #     self.cta_tile_shape_mnk,
         #     self.use_2cta_instrs,
@@ -385,7 +409,8 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         )
 
         self.epi_tile_n_required = 2 * cute.size(self.epi_tile[1])
-        # Only when overlapping_accum is enabled, we need to release accumulator buffer early in epilogue
+        # Release the accumulator buffer early in the epilogue only when
+        # overlapping_accum is enabled.
         self.iter_acc_early_release_in_epilogue = (
             self.num_sf_tmem_cols // self.epi_tile_n_required
         )
@@ -507,7 +532,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         )
         sfb_tensor = cute.make_tensor(sfb_tensor.iterator, sfb_layout)
 
-        # Determine if we need to generate scale factor C for quantization
+        # Determine whether quantization requires scale factor C.
         self.generate_sfc = sfc_tensor is not None and norm_const_tensor is not None
         if cutlass.const_expr(self.generate_sfc):
             sfc_layout = blockscaled_utils.tile_atom_to_shape_SF(
@@ -525,7 +550,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
             self.mma_inst_shape_mn,
         )
 
-        # For 2CTA blockscaled kernels, SFB needs to be replicated across peer CTAs.
+        # Replicate SFB across peer CTAs for two-CTA block-scaled kernels.
         tiled_mma_sfb = sm100_utils.make_blockscaled_trivial_tiled_mma(
             self.a_dtype,
             self.a_major_mode,
@@ -2327,7 +2352,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
 
         if ab_dtype is cutlass.Float4E2M1FN and not (a_major == "k" and b_major == "k"):
             is_valid = False
-        # TODO: Currently we don't support m major output for Float4E2M1FN
+        # TODO: Add M-major Float4E2M1FN output support.
         if c_dtype is cutlass.Float4E2M1FN and c_major == "m":
             is_valid = False
 
@@ -2369,7 +2394,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
             or cluster_shape_mn[0] <= 0
             or cluster_shape_mn[1] <= 0
             # Special cluster shape check for scale factor multicasts.
-            # Due to limited size of scale factors, we can't multicast among more than 4 CTAs.
+            # The scale-factor capacity limits multicasting to four CTAs.
             or cluster_shape_mn[0] > 4
             or cluster_shape_mn[1] > 4
             or not is_power_of_2(cluster_shape_mn[0])

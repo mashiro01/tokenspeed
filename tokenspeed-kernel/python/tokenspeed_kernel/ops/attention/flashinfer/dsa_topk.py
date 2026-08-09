@@ -18,14 +18,14 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Deterministic DSA decode indexer top-k via flashinfer.
+"""Deterministic DSA decode indexer top-k through FlashInfer.
 
 The trtllm ``indexer_topk_decode`` kernel breaks ties (equal logits competing for
 the last selected slot) non-deterministically: repeated runs select *different*
 index sets, which makes long-context greedy decode irreproducible and breaks
-eager-vs-CUDA-graph parity. flashinfer's radix top-k exposes a stable,
+eager-vs-CUDA graph parity. FlashInfer's radix top-k exposes a stable,
 index-ordered tie-break plus a graph-safe path, so the selection is identical
-across eager, repeated runs, and CUDA-graph replay -- with zero accuracy loss
+across eager, repeated runs, and CUDA graph replay -- with zero accuracy loss
 (it still selects the mathematically-correct top-k set, only the tie-break and
 output order become deterministic).
 """
@@ -48,7 +48,7 @@ if platform.is_nvidia:
 
 
 def has_deterministic_decode_topk() -> bool:
-    """Whether the flashinfer deterministic top-k fallback is importable."""
+    """Return whether the FlashInfer deterministic top-k fallback is importable."""
     return top_k is not None and TopKTieBreak is not None
 
 
@@ -57,7 +57,7 @@ def deterministic_decode_topk(
     out: torch.Tensor,
     topk: int,
 ) -> None:
-    """Select per-row top-``topk`` local offsets deterministically via flashinfer.
+    """Select per-row top-``topk`` local offsets deterministically through FlashInfer.
 
     ``logits`` rows must already be pre-masked with ``-inf`` beyond each request's
     valid length; the fallback uses a stable ``tie_break=SMALL`` plus

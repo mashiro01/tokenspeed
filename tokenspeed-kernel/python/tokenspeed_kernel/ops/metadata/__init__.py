@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Generic CUDA-graph replay metadata prep (the "prep tape")."""
+"""Generic CUDA graph replay metadata prep (the "prep tape")."""
 
 from tokenspeed_kernel.ops.metadata.prep_tape import PrepTape, Reg
 

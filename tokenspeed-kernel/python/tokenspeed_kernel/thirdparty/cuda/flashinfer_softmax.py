@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Vendored flashinfer softmax with bf16/fp16/fp32 input, fp32 output."""
+"""Vendored FlashInfer softmax with BF16/FP16/FP32 input and FP32 output."""
 
 from __future__ import annotations
 

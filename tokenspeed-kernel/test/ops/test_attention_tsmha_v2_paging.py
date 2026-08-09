@@ -22,7 +22,7 @@
 
 ``rel_mha_decode_tsmha_v2`` consumes the page table at its native
 granularity (64/128/256-token pages; no expansion prepass). Each case is
-pinned against the torch reference with EXACT sliding-window semantics.
+pinned against the PyTorch reference with EXACT sliding-window semantics.
 The serving-geometry cases (SWA at 128-token pages, full attention at
 256-token hetero slots) are additionally cross-checked against the v1
 route on identical inputs. Hole-punched (``-1``) tables must match the
@@ -57,7 +57,7 @@ def _skip_unless_supported() -> None:
 
 
 def _ref_decode(q, k, v, rel_logits, rel_extent, window_left):
-    """Single-request torch reference. q [H,D], k/v [Sk,KV,D], rel [H,E]."""
+    """Single-request PyTorch reference. q [H,D], k/v [Sk,KV,D], rel [H,E]."""
     Sk = k.shape[0]
     H = q.shape[0]
     k = k.repeat_interleave(H // NUM_KV_HEADS, dim=1)

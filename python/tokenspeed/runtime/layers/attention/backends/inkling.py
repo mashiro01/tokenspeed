@@ -164,7 +164,7 @@ class InklingConvStatePool:
 class InklingAttnBackend(AttentionBackend):
     """Thin wrapper over the dense MHA backend adding conv metadata.
 
-    All attention forwards and CUDA-graph hooks delegate to the wrapped
+    All attention forwards and CUDA graph hooks delegate to the wrapped
     backend; this class only derives ``InklingConvMetadata`` from the same
     arguments the dense path already receives, so the scheduler and executor
     are unaware anything beyond dense attention exists.
@@ -195,9 +195,9 @@ class InklingAttnBackend(AttentionBackend):
         # Persistent spec conv metadata buffers for CUDA graphs; sized in init_cuda_graph_state.
         self._graph_spec_qsl: torch.Tensor | None = None
         self._graph_spec_seq_idx: torch.Tensor | None = None
-        # Persistent decode qsl (arange) keeps metadata CUDA-graph-capturable; grown to largest bs.
+        # Persistent decode qsl (arange) keeps metadata CUDA graph-capturable; grown to largest bs.
         self._decode_qsl: torch.Tensor | None = None
-        # Persistent CUDA-graph conv metadata buffers; sized in init_cuda_graph_state.
+        # Persistent CUDA graph conv metadata buffers; sized in init_cuda_graph_state.
         self._graph_cache_indices: torch.Tensor | None = None
         self._graph_has_initial_state: torch.Tensor | None = None
         # Breakable-prefill-graph static conv metadata; None keeps the plain per-step path.
@@ -658,7 +658,7 @@ class InklingAttnBackend(AttentionBackend):
         return self.conv_pool.conv_state.nbytes
 
     def _spec_conv_metadata(self, bs: int) -> InklingConvMetadata:
-        """Multi-token decode conv metadata over the persistent CUDA-graph
+        """Multi-token decode conv metadata over the persistent CUDA graph
         buffers (target verify / draft catch-up)."""
         k = self.conv_spec_num_tokens
         paged = getattr(self, "conv_columns", None) is not None
@@ -678,7 +678,7 @@ class InklingAttnBackend(AttentionBackend):
         )
 
     def _graph_decode_conv_metadata(self, bs: int) -> InklingConvMetadata:
-        """Single-token decode conv metadata over the persistent CUDA-graph
+        """Single-token decode conv metadata over the persistent CUDA graph
         buffers (shared by graph capture and replay)."""
         paged = getattr(self, "conv_columns", None) is not None
         return InklingConvMetadata(

@@ -182,7 +182,7 @@ class MultimodalDataItem(msgspec.Struct, eq=False, kw_only=True, array_like=True
 
     def __post_init__(self) -> None:
         # Compatibility shim for callers that predate the feature/feature_shm
-        # split and pass a SHM handle via ``feature``: re-slot it so the
+        # split and pass an SHM handle via ``feature``: re-slot it so the
         # transport fields stay single-typed.
         if isinstance(self.feature, ShmTensorHandle):
             self.feature_shm = self.feature
@@ -206,7 +206,7 @@ class MultimodalDataItem(msgspec.Struct, eq=False, kw_only=True, array_like=True
         """Resolve ``self.hash`` to a concrete content id, lazily.
 
         The hash is resolved on demand rather than at construction because it
-        is usually supplied by the caller, a SHM-backed feature cannot be
+        is usually supplied by the caller, an SHM-backed feature cannot be
         hashed here without reading shared memory, and hashing inline bytes is
         only worth doing once the value is actually needed.
 

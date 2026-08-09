@@ -76,8 +76,8 @@ def _dequant_mxfp4_tile(
         offsets=scale_offsets.to(gl.int32),
     )
     # gfx950 has a native packed FP4 -> BF16 conversion that applies the
-    # UE8M0 block scale at the same time.  Keeping the packed and expanded
-    # layouts related along K lets Gluon lower this to
+    # UE8M0 block scale at the same time. Keeping the packed and expanded
+    # layouts aligned along K lets Gluon lower this to
     # v_cvt_scalef32_pk_bf16_fp4 instead of dozens of integer/FP operations.
     return gl.amd.cdna4.scaled_upcast(
         packed,

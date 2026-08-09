@@ -89,7 +89,9 @@ def l2norm_fwd(
     MAX_FUSED_SIZE = 65536 // x.element_size()
     BD = min(MAX_FUSED_SIZE, triton.next_power_of_2(D))
     if D > BD:
-        raise RuntimeError("This layer doesn't support feature dim >= 64KB.")
+        raise RuntimeError(
+            "This layer does not support feature dimensions of 64 KB or larger."
+        )
 
     if D <= 512:
         NB = triton.cdiv(T, 2048)

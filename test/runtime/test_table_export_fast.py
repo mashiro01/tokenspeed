@@ -30,7 +30,7 @@ class ExportFastPathTest(unittest.TestCase):
                 block_tables_from_forward_op,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + runtime deps: {exc}")
+            self.skipTest(f"requires PyTorch runtime dependencies: {exc}")
         self.np = np
         self.torch = torch
         self.bridge = block_tables_from_forward_op

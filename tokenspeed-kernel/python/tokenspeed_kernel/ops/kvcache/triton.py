@@ -255,7 +255,7 @@ def _sf_interleaved_offset(slot, page_tokens, sf_page_stride):
 
 @triton.jit
 def _mxfp8_quantize_row(x, HEAD_DIM: tl.constexpr):
-    """Quantize one [HEAD_DIM] row to MXFP8 (flashinfer bit-parity).
+    """Quantize one [HEAD_DIM] row to MXFP8 with FlashInfer bit parity.
 
     Per 32-element group: amax -> ``e8m0 = clamp(ceil(log2(amax / 448)),
     -127, 127) + 127`` and ``fp8 = rn(x * 2^-exp)`` (zero groups quantize
@@ -264,7 +264,7 @@ def _mxfp8_quantize_row(x, HEAD_DIM: tl.constexpr):
     one u32.
     """
     xf = x.to(tl.float32)
-    # Per-32 groups: amax -> e8m0 exponent (flashinfer rounding).
+    # Per-32 groups: amax -> E8M0 exponent (FlashInfer rounding).
     g = tl.reshape(tl.abs(xf), (HEAD_DIM // 32, 32))
     amax = tl.max(g, axis=1)
     exp = tl.ceil(tl.log2(amax / 448.0))
@@ -1473,7 +1473,7 @@ def _quantize_store_kv_mxfp8_kernel(
 
     Replaces the five-launch sequence (k/v quantize_mxfp8, store_kv_cache,
     2x store_sf_interleaved) with one launch. Bit-parity contract with
-    flashinfer's mxfp8_quantize: per 32-element group,
+    FlashInfer's mxfp8_quantize: per 32-element group,
     ``e8m0 = clamp(ceil(log2(amax / 448)), -127, 127) + 127`` and
     ``fp8 = rn(x * 2^-exp)`` (zero rows quantize to exponent -127, data 0).
     SF layout matches _store_sf_interleaved_kernel: page-major, per-head
@@ -1591,8 +1591,10 @@ def _quantize_mxfp8_rows_kernel(
     R,
     ENABLE_PDL: tl.constexpr,
 ):
-    """Per-row MXFP8 quantize (bit-parity with flashinfer mxfp8_quantize),
-    PDL-capable so it keeps the qk_rmsnorm -> shear -> fwd chain intact."""
+    """Quantize each row to MXFP8 with ``mxfp8_quantize`` bit parity.
+
+    PDL support keeps the qk_rmsnorm -> shear -> fwd chain intact.
+    """
     pid = tl.program_id(0)
     if ENABLE_PDL:
         tl.extra.cuda.gdc_wait()
@@ -1615,7 +1617,7 @@ def quantize_mxfp8_rows(
     """MXFP8-quantize [R, 128] rows: (fp8-e4m3 [R, 128], e8m0 [R, 4]).
 
     PDL-capable row quantizer intended for the decode-Q fusion follow-up
-    (inkling_mxfp8_attn.md); parity-tested against flashinfer's
+    (inkling_mxfp8_attn.md); parity-tested against FlashInfer's
     mxfp8_quantize, no runtime caller yet.
     """
     r, d = x.shape

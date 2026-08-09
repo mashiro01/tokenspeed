@@ -314,7 +314,7 @@ def _load_evalscope_score(work_dir: str, output: str) -> float:
     if score is not None:
         return score
 
-    raise RuntimeError(f"Unable to parse evalscope score from {work_dir}")
+    raise RuntimeError(f"Unable to parse EvalScope score from {work_dir}")
 
 
 def run_evalscope(

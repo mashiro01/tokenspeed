@@ -128,7 +128,7 @@ def test_expansion_floors_at_the_block_width() -> None:
 
 
 # --------------------------------------------------------------------------
-# CUDA-graph buffers (shape/bookkeeping only; no device needed)
+# CUDA graph buffers (shape/bookkeeping only; no device needed)
 # --------------------------------------------------------------------------
 
 

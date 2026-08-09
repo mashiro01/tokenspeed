@@ -1,10 +1,10 @@
-"""Inkling per-layer ACTIVATION parity: real kernel stack vs torch reference.
+"""Inkling per-layer ACTIVATION parity: real kernel stack vs PyTorch reference.
 
 Runs the Inkling model in-process through the real backends (FA4 score_mod
 attention over the paged KV cache, ops/conv sconv kernels, Triton
 silu_and_mul) with hand-built forward metadata, and compares the hidden
 states after EVERY decoder layer — prefill and rolling decode steps —
-against the independent pure-torch reference on identical dummy weights.
+against the independent pure-PyTorch reference on identical dummy weights.
 
 Unlike the end-to-end logprob parity test, this localizes any numerical
 divergence to the exact layer and phase where it first appears, and leaves

@@ -288,7 +288,7 @@ def _create_attn_config(
 ) -> BaseAttnConfig:
     arch = model_config.attention_arch
     if arch not in _CONFIG_CLS:
-        raise NotImplementedError(f"Not supported Attention Arch: {arch!r}")
+        raise NotImplementedError(f"Unsupported attention arch: {arch!r}")
     return _CONFIG_CLS[arch].generate(server_args, model_config, is_draft)
 
 
@@ -361,7 +361,7 @@ def _resolve_hybrid_full_backend_name(
     name = _BACKEND_ALIASES.get(requested_name, requested_name)
     if name == "hybrid_linear_attn":
         name = None
-    # NVIDIA K3 defaults to its CuteDSL history consumer. AMD keeps the
+    # NVIDIA K3 defaults to its CuTe DSL history consumer. AMD keeps the
     # generic MLA backend; explicit user choices remain authoritative.
     if has_cache_plan and is_kda and name is None and not current_platform().is_amd:
         return "tokenspeed_mla"
@@ -988,7 +988,7 @@ def create_attn_components(
         is_inkling=any(a in _INKLING_ARCHITECTURES for a in draft_architectures),
     )
 
-    # A cache-group contract backend needs the contract marked before CUDA-graph
+    # A cache-group contract backend needs the contract marked before CUDA graph
     # state allocation (mark_cache_contract sizes the per-group write-location
     # buffer). Composite/wrapper backends without the hook are a no-op.
     for side_backend, side_pool in ((backend, pool), (draft_attn_backend, draft_pool)):

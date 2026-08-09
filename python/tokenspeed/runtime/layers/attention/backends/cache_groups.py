@@ -24,8 +24,8 @@ A group-aware backend (``uses_cache_groups = True``) receives one page
 table per cache group (``block_tables: dict[group_id, [bs, max_pages]]``)
 and must route every cache read and write through the layer's own group. This
 mixin holds the group-selection,
-write-location, and CUDA-graph per-group buffer machinery shared by the MHA
-and TRT-LLM backends; model/kernel-specific constraints (spec decode, DFLASH)
+write-location, and CUDA graph per-group buffer machinery shared by the MHA
+and TensorRT-LLM backends; model/kernel-specific constraints (spec decode, DFLASH)
 stay in the backends.
 
 Table contract (canonical): rows are requests (padded rows carry the
@@ -58,7 +58,7 @@ logger = get_colorful_logger(__name__)
 
 
 class CacheGroupsMixin:
-    """Per-group table/write-loc selection + CUDA-graph buffer discipline.
+    """Per-group table/write-loc selection + CUDA graph buffer discipline.
 
     Host class requirements: ``self.device``, ``self.page_size``,
     ``self.max_num_pages``, ``self.forward_decode_metadata`` (with
@@ -80,10 +80,10 @@ class CacheGroupsMixin:
     # loc stack below is sized alongside the main one.
     draft_lookback: int = 0
 
-    # Value for CUDA-graph buffer column tails past this replay's table
+    # Value for CUDA graph buffer column tails past this replay's table
     # width. -1 is a debug tripwire (never read past cache_seqlens by the
     # MHA kernels); backends whose kernels assume a full-width table
-    # (trtllm: row stride derived from max_kv_len) override with 0, the
+    # (``trtllm``: row stride derived from max_kv_len) override with 0, the
     # zero-init dummy page — always safe to dereference.
     table_tail_pad: int = -1
 
@@ -359,7 +359,7 @@ class CacheGroupsMixin:
             ).all(), f"cache write pages escape group {gid!r}'s table"
 
     # ------------------------------------------------------------------
-    # CUDA-graph per-group buffers
+    # CUDA graph per-group buffers
     # ------------------------------------------------------------------
 
     def _init_group_graph_buffers(self, max_bs: int) -> None:
@@ -498,7 +498,7 @@ class CacheGroupsMixin:
                 # get its locs filled. Groups must be declared (via
                 # group_page_sizes) before init_cuda_graph_state.
                 raise RuntimeError(
-                    f"cache group {gid!r} is not in the stacked CUDA-graph "
+                    f"cache group {gid!r} is not in the stacked CUDA graph "
                     f"buffers (stack: {self._graph_group_ids}); declare every "
                     "capture-visible group's page size before graph init."
                 )
@@ -576,7 +576,7 @@ class CacheGroupsMixin:
         name = type(self).__name__
         if not block_tables:
             raise RuntimeError(
-                f"{name} replay: per-group CUDA-graph buffers "
+                f"{name} replay: per-group CUDA graph buffers "
                 f"exist for groups "
                 f"{sorted(self.cuda_graph_page_tables)} "
                 f"but block_tables is missing/empty at bs={bs}; the "

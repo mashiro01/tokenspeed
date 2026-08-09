@@ -230,10 +230,9 @@ class CompressedTensorsConfig(QuantizationConfig):
                 target_scheme_map[target]["input_activations"] = None
                 if is_activation_quantization_format(quant_format):
                     input_activations = quant_config.get("input_activations")
-                    # The only case where we have activation quant supported
-                    # but no input_activations provided in the config
-                    # should be w8a16fp8 w8a16fp8 can also run for cases where
-                    # there is an input_quant but it is ignored
+                    # W8A16 FP8 is the only supported activation-quantization
+                    # scheme that may omit input_activations. It can also run
+                    # when input_quant is present but ignored.
                     if not input_activations:
                         if (
                             target_scheme_map[target]["weights"].type
@@ -349,7 +348,7 @@ class CompressedTensorsConfig(QuantizationConfig):
         self, weight_quant: BaseModel, input_quant: BaseModel
     ) -> CompressedTensorsScheme:
 
-        # Detect If Mixed Precision
+        # Detect mixed precision.
         if self._is_wNa16_group_channel(weight_quant, input_quant):
             if (
                 self.quant_format == CompressionFormat.pack_quantized.value
@@ -363,7 +362,7 @@ class CompressedTensorsConfig(QuantizationConfig):
                 )
             else:
                 raise ImportError(
-                    "Other method (CompressedTensorsW4A16Sparse24) is not supported now"
+                    "CompressedTensorsW4A16Sparse24 is not currently supported"
                 )
 
         if is_activation_quantization_format(self.quant_format):
@@ -400,22 +399,19 @@ class CompressedTensorsConfig(QuantizationConfig):
         self, layer: torch.nn.Module, layer_name: str | None = None
     ) -> CompressedTensorsScheme | None:
         """
-        compressed-tensors supports non uniform in the following way:
+        compressed-tensors supports nonuniform configurations as follows:
 
-        targets of config_groups: There can be N config_groups which each
-            have a quantization scheme. Each config_group has a list of targets
-            which can be a full layer_name, a regex for a layer_name, or
-            an nn.Module name.
+        ``config_groups`` can contain multiple groups, each with a quantization
+        scheme and a list of targets. A target can be a full ``layer_name``, a
+        regular expression for a ``layer_name``, or an ``nn.Module`` name.
 
-        Detect whether a layer_name is found in any target and
-        use the quantization scheme corresponding to the matched target
-        to select the CompressedTensorsScheme used for infernece.
+        Find the target that matches ``layer_name`` and use its quantization
+        scheme to select the ``CompressedTensorsScheme`` for inference.
         """
 
-        # Find the "target" in the compressed-tensors config
-        # that our layer conforms to.
-        # so we do not have to re-write these functions
-        # need to make accelerate optional in ct to do this
+        # Find the target in the compressed-tensors configuration that matches
+        # this layer. Making Accelerate optional in compressed-tensors would
+        # avoid the need to rewrite these functions.
 
         # Will be empty for models with only sparsity
         weight_quant = input_quant = None
@@ -432,7 +428,7 @@ class CompressedTensorsConfig(QuantizationConfig):
             input_quant = scheme_dict.get("input_activations")
 
         # Find the sparsity scheme of the layer
-        # assume that fused layers inerhit first component's sparsity scheme
+        # Assume that fused layers inherit the first component's sparsity scheme.
         sparsity_targets = self.sparsity_scheme_map.keys() - set(
             self.sparsity_ignore_list
         )
@@ -451,7 +447,7 @@ class CompressedTensorsConfig(QuantizationConfig):
             input_quant=input_quant,
             sparsity_scheme=sparsity_scheme,
         ):
-            raise ImportError("CompressedTensors24 is not supported now")
+            raise ImportError("CompressedTensors24 is not currently supported")
         elif weight_quant is None:
             logger.warning(
                 "Acceleration for non-quantized schemes is "
@@ -467,20 +463,20 @@ class CompressedTensorsConfig(QuantizationConfig):
                 input_quant=input_quant,
             )
 
-        # Raise error if device does not support the scheme
-        # (e.g. fp8 needs ada lovelace)
+        # Raise an error if the device does not support the scheme
+        # (for example, FP8 requires Ada Lovelace or later).
         self._check_scheme_supported(scheme.get_min_capability())
         logger.debug("Using scheme: %s for %s", scheme.__class__.__name__, layer_name)
         return scheme
 
     def get_cache_scale(self, name: str) -> str | None:
         """
-        Check whether the param name matches the format for k/v cache scales
+        Check whether the parameter name matches the format for K/V cache scales
         in compressed-tensors. If this is the case, return its equivalent
         param name expected by TokenSpeed
 
-        :param name: param name
-        :return: matching param name for KV cache scale in TokenSpeed
+        :param name: Parameter name.
+        :return: Matching parameter name for a KV cache scale in TokenSpeed.
         """
         if name.endswith(".output_scale") and ".k_proj" in name:
             return name.replace(".k_proj.output_scale", ".attn.k_scale")

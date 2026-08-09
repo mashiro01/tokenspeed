@@ -71,7 +71,7 @@ def _resolve_backend() -> str:
 
 
 def _to_cute(src: torch.Tensor, dtype):
-    """Convert a torch tensor to cute tensor with TVM-FFI support."""
+    """Convert a PyTorch tensor to a CuTe tensor with TVM FFI support."""
     ct = from_dlpack(src.detach(), assumed_align=16, enable_tvm_ffi=True)
     ct.element_type = dtype
     return ct
@@ -79,7 +79,7 @@ def _to_cute(src: torch.Tensor, dtype):
 
 def _to_cute_1d(t: torch.Tensor):
     """Convert a 1D int32 tensor (cum_seqlen) to cute with TVM-FFI.
-    Returns (cute_tensor, torch_tensor) to keep backing storage alive."""
+    Returns (cute_tensor, torch_tensor) to keep the backing storage alive."""
     t = t.to(torch.int32) if t.dtype != torch.int32 else t
     if not t.is_cuda:
         t = t.cuda()
@@ -151,7 +151,7 @@ def _compile_prefill_kernel(
     window_right = Int32(0) if is_causal else None
 
     logger.info(
-        f"Compiling CuteDSL FMHA prefill kernel: "
+        f"Compiling CuTe DSL FMHA prefill kernel: "
         f"head_dim=({head_dim_qk},{head_dim_v}), causal={is_causal}, lse={return_lse}"
     )
 
@@ -266,7 +266,7 @@ def warmup_compile_prefill(
             if config in _compiled_kernels:
                 continue
             logger.info(
-                f"Pre-compiling CuteDSL FMHA prefill kernel: "
+                f"Precompiling CuTe DSL FMHA prefill kernel: "
                 f"head_dim=({d_qk},{d_v}), causal={is_causal}, lse={return_lse} "
                 f"use_pdl={enable_pdl}, ex2_emulation={enable_ex2_emulation} "
                 f"(warmup, no serving traffic yet)"
@@ -372,7 +372,7 @@ def tokenspeed_mla_prefill(
     cum_k_ct, _cum_k_backing = _to_cute_1d(cum_seq_lens_kv)
 
     if _resolve_backend() == "binary":
-        # Binary backend: LSE layout is (1, h_k, h_r, total_q) — differs from CuteDSL's
+        # Binary backend: LSE layout is (1, h_k, h_r, total_q) — differs from CuTe DSL's
         # (total_q, h_q). The binary SO was AOT-compiled with that layout.
         if return_lse:
             lse_binary = torch.empty(
@@ -408,7 +408,7 @@ def tokenspeed_mla_prefill(
         )
 
         if return_lse:
-            # Reshape (1, h_k, h_r, total_q) → (total_q, h_q) to match CuteDSL output.
+            # Reshape (1, h_k, h_r, total_q) → (total_q, h_q) to match CuTe DSL output.
             lse_torch = (
                 lse_binary.squeeze(0)
                 .permute(2, 0, 1)
@@ -418,7 +418,7 @@ def tokenspeed_mla_prefill(
             return o_torch, lse_torch
         return o_torch
 
-    # CuteDSL backend (default): JIT-compile kernel on first use, cache thereafter.
+    # CuTe DSL backend (default): JIT-compile kernel on first use, cache thereafter.
     if return_lse:
         lse_torch = torch.empty(
             (total_q_tokens, h_q),

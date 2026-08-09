@@ -20,7 +20,7 @@
 
 """Multi-query (uniform q_len > 1, MTP-verify shape) rel decode coverage.
 
-Answered against the torch reference:
+Answered against the PyTorch reference:
 
 1. The route MTP verify actually takes — v2's NATIVE prediction dimension
    (unexpanded [B] seqlens / [B, W] table) — through the public dispatch
@@ -324,18 +324,22 @@ def test_v1_native_prediction_tile_boundary() -> None:
 
 @pytest.mark.parametrize("window_left", [511, -1])
 @pytest.mark.xfail(
-    reason="v1 mxfp8 native-prediction pack path: the Q scale-factor tensor "
-    "(mSFQ) is built rank-4 for the batch-mode (prediction>1) Q view, but the "
-    "fwd kernel expects the rank-6 packed-SF layout — 'Mismatched Tensor on "
-    "argument #8 ... expected ndim=6'. Distinct from the local-window mask bug "
-    "(now fixed); this is the remaining blocker for v1 mxfp8 multi-q. NOTE: the "
-    "flashinfer quantize_mxfp8 JIT also needs an nvcc whose version matches the "
-    "CUDA runtime headers (else CCCL's CTK compat guard errors at build).",
+    reason="v1 MXFP8 native-prediction packing: the Q scale-factor tensor "
+    "(mSFQ) is rank 4 for the batch-mode (`prediction > 1`) Q view, but the "
+    "forward kernel expects the rank-6 packed-SF layout: 'Mismatched Tensor on "
+    "argument #8 ... expected ndim=6'. This limitation is distinct from the "
+    "local-window mask bug, which is fixed, and remains the blocker for v1 "
+    "MXFP8 multi-query attention. In addition, the "
+    "FlashInfer quantize_mxfp8 JIT also requires an NVCC version that matches the "
+    "CUDA runtime headers; otherwise, CCCL's CUDA Toolkit compatibility guard "
+    "fails the build.",
     strict=False,
 )
 def test_v1_native_prediction_mxfp8(window_left) -> None:
-    """MXFP8 blockscaled v1 with native prediction matches the bf16 v1 run
-    on the dequantized cache (fp8 quantization is the only error source)."""
+    """Compare block-scaled MXFP8 v1 native prediction with the BF16 v1 run.
+
+    The cache is dequantized, so FP8 quantization is the only error source.
+    """
     _skip_unless_supported()
     import math as _math
 

@@ -6,7 +6,7 @@
 # the next task tries to load a large model (e.g. openai/gpt-oss-120b).
 #
 # Best-effort: never aborts; never propagates non-zero status. Stale procs
-# living in another PID namespace cannot be signalled from this pod and
+# living in another PID namespace cannot be signaled from this pod and
 # are reported as a WARNING for the cluster admin to handle.
 set +e
 
@@ -135,7 +135,7 @@ else
         echo "  states: Z=zombie, D=uninterruptible sleep, R/S=running/sleep."
         echo "  Zombie or D-state means the kernel cannot reap them right"
         echo "  now (likely waiting on GPU driver). Cross-PID-namespace"
-        echo "  processes (other pods on the same node) cannot be signalled"
+        echo "  processes (other pods on the same node) cannot be signaled"
         echo "  from inside this pod at all. If VRAM stays held, please"
         echo "  notify the cluster admin to drain the node."
     fi

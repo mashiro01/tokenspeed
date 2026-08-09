@@ -68,7 +68,7 @@ def _compute_default_rope_parameters(
         seq_len (`int`, *optional*):
             The current sequence length. Unused for this type of RoPE.
         rope_kwargs (`Dict`, *optional*):
-            BC compatibility with the previous RoPE class instantiation, will be removed in v4.45.
+            Backward compatibility with the previous RoPE class instantiation; scheduled for removal in v4.45.
     Returns:
         Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
         post-processing scaling factor applied to the computed cos/sin (unused in this type of RoPE).
@@ -124,7 +124,7 @@ def _compute_linear_scaling_rope_parameters(
         seq_len (`int`, *optional*):
             The current sequence length. Unused for this type of RoPE.
         rope_kwargs (`Dict`, *optional*):
-            BC compatibility with the previous RoPE class instantiation, will be removed in v4.45.
+            Backward compatibility with the previous RoPE class instantiation; scheduled for removal in v4.45.
     Returns:
         Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
         post-processing scaling factor applied to the computed cos/sin (unused in this type of RoPE).
@@ -167,7 +167,7 @@ def _compute_dynamic_ntk_parameters(
         seq_len (`int`, *optional*):
             The current sequence length, used to update the dynamic RoPE at inference time.
         rope_kwargs (`Dict`, *optional*):
-            BC compatibility with the previous RoPE class instantiation, will be removed in v4.45.
+            Backward compatibility with the previous RoPE class instantiation; scheduled for removal in v4.45.
     Returns:
         Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
         post-processing scaling factor applied to the computed cos/sin (unused in this type of RoPE).
@@ -238,12 +238,13 @@ def _compute_yarn_parameters(
         seq_len (`int`, *optional*):
             The current sequence length. Unused for this type of RoPE.
         rope_kwargs (`Dict`, *optional*):
-            BC compatibility with the previous RoPE class instantiation, will be removed in v4.45.
+            Backward compatibility with the previous RoPE class instantiation; scheduled for removal in v4.45.
     Returns:
         Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
         post-processing scaling factor applied to the computed cos/sin.
     """
-    # No need to keep BC with yarn, unreleased when this new pattern was created.
+    # YaRN did not require backward compatibility because it was unreleased
+    # when this pattern was introduced.
     if rope_kwargs:
         raise ValueError(
             f"Unexpected arguments: `**rope_kwargs` should be unset in `_compute_yarn_parameters`, got {rope_kwargs}"
@@ -359,12 +360,13 @@ def _compute_longrope_parameters(
         seq_len (`int`, *optional*):
             The current sequence length.
         rope_kwargs (`Dict`, *optional*):
-            BC compatibility with the previous RoPE class instantiation, will be removed in v4.45.
+            Backward compatibility with the previous RoPE class instantiation; scheduled for removal in v4.45.
     Returns:
         Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
         post-processing scaling factor applied to the computed cos/sin.
     """
-    # No need to keep BC with longrope, unreleased when this new pattern was created.
+    # LongRoPE did not require backward compatibility because it was unreleased
+    # when this pattern was introduced.
     if rope_kwargs:
         raise ValueError(
             "Unexpected arguments: `**rope_kwargs` should be unset in `_compute_longrope_parameters`, got "
@@ -436,7 +438,7 @@ def _compute_llama3_parameters(
         seq_len (`int`, *optional*):
             The current sequence length. Unused for this type of RoPE.
         rope_kwargs (`Dict`, *optional*):
-            BC compatibility with the previous RoPE class instantiation, will be removed in v4.45.
+            Backward compatibility with the previous RoPE class instantiation; scheduled for removal in v4.45.
     Returns:
         Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
         post-processing scaling factor applied to the computed cos/sin.
@@ -479,9 +481,9 @@ def _compute_llama3_parameters(
     return inv_freq_llama, attention_factor
 
 
-# This maps the "rope_type" string field in rope config to the corresponding function to compute the RoPE parameters
-# from the model config. You can append new {'rope_type': callable} pairs to this dictionary to enable custom RoPE
-# parameterizations, as long as the callable has the same signature.
+# Map each ``rope_type`` value to the function that computes its RoPE parameters
+# from the model configuration. Add ``{"rope_type": callable}`` entries to enable
+# custom RoPE parameterizations whose callables use the same signature.
 ROPE_INIT_FUNCTIONS = {
     "default": _compute_default_rope_parameters,
     "linear": _compute_linear_scaling_rope_parameters,
@@ -500,12 +502,12 @@ def _check_received_keys(
     ignore_keys: set | None = None,
 ):
     """Compare the received keys in `config.rope_scaling` against the expected and optional keys"""
-    # BC: "rope_type" was originally "type" -- let's check for "rope_type" when "type" is present
+    # Backward compatibility: replace the legacy ``type`` key with ``rope_type``.
     if "type" in received_keys:
         received_keys -= {"type"}
         required_keys.add("rope_type")
 
-    # Some models need to store model-specific keys, and we don't want to throw warning at them
+    # Ignore model-specific keys that should not trigger warnings.
     if ignore_keys is not None:
         received_keys -= ignore_keys
 
@@ -533,7 +535,7 @@ def _validate_default_rope_parameters(
     rope_scaling = config.rope_scaling
     rope_type = rope_scaling.get(
         "rope_type", rope_scaling.get("type", None)
-    )  # BC: "rope_type" was originally "type"
+    )  # Backward compatibility: ``rope_type`` was formerly ``type``.
     required_keys = {"rope_type"}
     received_keys = set(rope_scaling.keys())
     _check_received_keys(
@@ -547,7 +549,7 @@ def _validate_linear_scaling_rope_parameters(
     rope_scaling = config.rope_scaling
     rope_type = rope_scaling.get(
         "rope_type", rope_scaling.get("type", None)
-    )  # BC: "rope_type" was originally "type"
+    )  # Backward compatibility: ``rope_type`` was formerly ``type``.
     required_keys = {"rope_type", "factor"}
     received_keys = set(rope_scaling.keys())
     _check_received_keys(
@@ -567,7 +569,7 @@ def _validate_dynamic_scaling_rope_parameters(
     rope_scaling = config.rope_scaling
     rope_type = rope_scaling.get(
         "rope_type", rope_scaling.get("type", None)
-    )  # BC: "rope_type" was originally "type"
+    )  # Backward compatibility: ``rope_type`` was formerly ``type``.
     required_keys = {"rope_type", "factor"}
     optional_keys = {"original_max_position_embeddings"}
     received_keys = set(rope_scaling.keys())
@@ -586,7 +588,7 @@ def _validate_yarn_parameters(config: PretrainedConfig, ignore_keys: set | None 
     rope_scaling = config.rope_scaling
     rope_type = rope_scaling.get(
         "rope_type", rope_scaling.get("type", None)
-    )  # BC: "rope_type" was originally "type"
+    )  # Backward compatibility: ``rope_type`` was formerly ``type``.
     required_keys = {"rope_type", "factor"}
     optional_keys = {
         "attention_factor",
@@ -640,7 +642,7 @@ def _validate_longrope_parameters(
     rope_scaling = config.rope_scaling
     rope_type = rope_scaling.get(
         "rope_type", rope_scaling.get("type", None)
-    )  # BC: "rope_type" was originally "type"
+    )  # Backward compatibility: ``rope_type`` was formerly ``type``.
     required_keys = {"rope_type", "short_factor", "long_factor"}
     optional_keys = {"attention_factor", "factor", "original_max_position_embeddings"}
     received_keys = set(rope_scaling.keys())
@@ -722,7 +724,7 @@ def _validate_llama3_parameters(
     rope_scaling = config.rope_scaling
     rope_type = rope_scaling.get(
         "rope_type", rope_scaling.get("type", None)
-    )  # BC: "rope_type" was originally "type"
+    )  # Backward compatibility: ``rope_type`` was formerly ``type``.
     required_keys = {
         "rope_type",
         "factor",
@@ -797,7 +799,7 @@ def rope_config_validation(config: PretrainedConfig, ignore_keys: set | None = N
     if rope_scaling is None:
         return
 
-    # BC: "rope_type" was originally "type"
+    # Backward compatibility: ``rope_type`` was formerly ``type``.
     rope_type = rope_scaling.get("rope_type", rope_scaling.get("type", "default"))
     validation_fn = ROPE_VALIDATION_FUNCTIONS.get(rope_type)
     if validation_fn is not None:

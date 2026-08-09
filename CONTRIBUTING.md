@@ -2,8 +2,9 @@
 
 TokenSpeed is intentionally built as a lean, engineering-focused infrastructure project.
 
-In spirit, our development style is closer to projects like OpenAI Triton:
-a lean and small core team, move fast, high technical ownership, and an extremely high quality bar.
+Our development style is similar to that of projects such as OpenAI Triton: a
+small, focused core team that moves quickly, maintains strong technical
+ownership, and upholds an exceptionally high quality bar.
 
 As a result, we are intentionally selective about external contributions — not because we do not value community involvement, but because maintaining long-term simplicity, performance, and reliability matters deeply for infrastructure software.
 
@@ -16,11 +17,12 @@ We believe the future of AI should be transparent, collaborative, and inclusive.
 We especially welcome:
 
 - obvious bug fixes
-- small and verifiable production-needed features
+- small, verifiable features needed in production
 - performance optimizations that fit the existing codebase style and do not introduce unnecessary complexity
 - documentation, tooling, and benchmarking improvements
 
-For larger features or architectural changes, we generally recommend starting with an RFC or design discussion first before implementation.
+For larger features or architectural changes, we generally recommend starting
+with an RFC or design discussion before implementation.
 
 ## Engineering Principles
 
@@ -33,6 +35,7 @@ We value:
 
 We believe open-source infrastructure advances through open collaboration, healthy technical discussion, and shared engineering progress.
 
-Thanks to everyone contributing code, ideas, reviews, benchmarks, and feedback.
+Thank you to everyone who contributes code, ideas, reviews, benchmarks, and
+feedback.
 
 — TokenSpeed Team

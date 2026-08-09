@@ -20,7 +20,7 @@
 
 """The DeepEP normal-mode expert compute: permute, two contiguous grouped
 GEMMs, unpermute. Runs the same tensor layouts the DeepEP FP8 apply kernel
-builds, minus the all-to-all legs, against a dequantized torch reference.
+builds, excluding the all-to-all stages, against a dequantized PyTorch reference.
 
 Scales are rounded to UE8M0 (powers of two) because that is the only 1D1D scale
 format DeepGEMM accepts on Blackwell; on Hopper it merely costs a little

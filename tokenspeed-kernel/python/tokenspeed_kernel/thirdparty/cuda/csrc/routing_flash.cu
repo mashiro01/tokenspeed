@@ -66,7 +66,7 @@ void softmax_topk_flash(TensorView input, TensorView correction_bias, TensorView
       constexpr static int NUM_EXPERTS = 896;                                                 \
       return __VA_ARGS__();                                                                   \
     } else {                                                                                  \
-      throw std::runtime_error("Not supported num experts: " + std::to_string(NUM_EXPERTS_)); \
+      throw std::runtime_error("Unsupported number of experts: " + std::to_string(NUM_EXPERTS_)); \
     }                                                                                         \
   }()
 
@@ -162,7 +162,7 @@ __device__ __forceinline__ float softplus_sqrt(float value) {
 
 // ---------------------------------------------------------------------------
 // Warp-level top-k via packed value+index reduction.
-// Ported from TRT-LLM moeTopKFuncs.cuh (Apache-2.0).
+// Ported from TensorRT-LLM moeTopKFuncs.cuh (Apache-2.0).
 // ---------------------------------------------------------------------------
 namespace warp_topk {
 namespace cg = cooperative_groups;
@@ -225,7 +225,7 @@ __device__ void reduce_topk(
 
 // ---------------------------------------------------------------------------
 // gate_forward_kernel: warp-level fused softplus-sqrt + top-k.
-// Ported from TRT-LLM customMoeRoutingKernels.cu (Apache-2.0).
+// Ported from TensorRT-LLM customMoeRoutingKernels.cu (Apache-2.0).
 // Supports any nExperts (256, 384, etc.) via template parameter.
 // ---------------------------------------------------------------------------
 template <int nExperts, int topK, bool hash, typename TokenIdT = int>

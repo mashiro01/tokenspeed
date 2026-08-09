@@ -240,7 +240,7 @@ def moe_plan(
     _validate_deepep_mode(a2a_backend, deepep_mode)
     # DeepEP does not pin a solution: the ``supports_all_to_all_ep`` trait plus
     # ``weight_dtype`` already narrow the candidates to the apply kernels that
-    # own the dispatch/combine legs (nvfp4 cutedsl, block-scale fp8 DeepGEMM).
+    # own the dispatch/combine legs (NVFP4 CuTe DSL, block-scaled FP8 DeepGEMM).
     # Callers may still force one explicitly through ``solution``.
 
     traits = _build_traits(

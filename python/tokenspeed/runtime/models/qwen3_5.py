@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Inference-only Qwen3.5 model and Qwen3.5 MoE model compatible with HuggingFace weights."""
+"""Inference-only Qwen3.5 model and Qwen3.5 MoE model compatible with Hugging Face weights."""
 
 from __future__ import annotations
 
@@ -1299,7 +1299,7 @@ class Qwen3_5ForConditionalGeneration(BaseCausalLM):
             )
             self.deepstack_visual_indexes = self.visual.deepstack_visual_indexes
             self.num_deepstack_embeddings = len(self.deepstack_visual_indexes)
-            # Encoder callables may be swapped to cudagraph wrappers during
+            # Encoder callables may be replaced with CUDA graph wrappers during
             # runtime startup.
             self.vision_embedder = VisionEmbedder(encoder_mapping=mapping.vision)
             self.image_encoder = self.get_image_feature
@@ -1321,7 +1321,7 @@ class Qwen3_5ForConditionalGeneration(BaseCausalLM):
 
     def get_image_feature(self, items: list[MultimodalDataItem]) -> torch.Tensor:
         """Eager image encode via the ``pre_encode`` / ``forward_blocks`` /
-        ``post_encode`` decomposition the cudagraph wrapper uses, so eager
+        ``post_encode`` decomposition that the CUDA graph wrapper uses, so eager
         and captured paths share a single source of truth."""
         tokens, grid = self.pre_encode(items)
         metadata = self.visual.prepare_metadata(grid)
@@ -1329,7 +1329,7 @@ class Qwen3_5ForConditionalGeneration(BaseCausalLM):
         return self.post_encode([encoded], grid)
 
     def get_video_feature(self, items: list[MultimodalDataItem]) -> torch.Tensor:
-        """Eager video encode; the cudagraph path uses the same pre/post hooks."""
+        """Encode video eagerly; the CUDA graph path uses the same pre/post hooks."""
         tokens, grid = self.pre_encode(items)
         metadata = self.visual.prepare_metadata(grid)
         encoded = self.visual.forward_blocks(tokens, metadata)
@@ -1358,7 +1358,7 @@ class Qwen3_5ForConditionalGeneration(BaseCausalLM):
         """Eager patch-embed before the captured region; returns ``(tokens, grid)``.
 
         The grid field is selected per item by modality (``video_grid_thw`` for
-        video, ``image_grid_thw`` otherwise) so a single shared encoder cudagraph
+        video, ``image_grid_thw`` otherwise) so a single shared encoder CUDA graph
         wrapper can serve both image and video batches.
         """
         device = self.visual.device

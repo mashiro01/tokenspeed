@@ -160,7 +160,7 @@ class DisaggBootstrapServerBase:
             dp_group = engine_rank // tp_size_per_dp_rank
             tp_rank_in_dp_group = engine_rank % tp_size_per_dp_rank
 
-            # Add lock to make sure thread-safe
+            # Hold the lock to keep this section thread-safe.
             async with self.lock:
                 if dp_group not in self.prefill_port_table:
                     self.prefill_port_table[dp_group] = {}

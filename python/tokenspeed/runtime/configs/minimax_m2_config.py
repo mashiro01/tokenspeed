@@ -30,9 +30,8 @@ logger = logging.get_logger(__name__)
 
 class MiniMaxM2Config(PretrainedConfig):
     r"""
-    This is the configuration class to store the configuration of a [`MiniMaxM2Model`].
-    It is used to instantiate MiniMax-M2 family models according to the specified arguments,
-    defining the model architecture.
+    Configuration class for [`MiniMaxM2Model`]. The supplied arguments define the
+    architecture of the MiniMax-M2 family model that is instantiated.
 
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs.
     """

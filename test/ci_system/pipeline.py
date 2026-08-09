@@ -347,7 +347,7 @@ def build_matrix(
             include.append(entry)
     # Stable sort: tasks at the same priority keep their file-path / label
     # order, so tasks that omit `priority` see no change from the previous
-    # behaviour.
+    # behavior.
     include.sort(key=lambda entry: _PRIORITY_ORDER[entry["priority"]])
     return {"include": include}
 
@@ -418,7 +418,7 @@ def get_runner_specific_env(task: Dict[str, Any], runner: str) -> Dict[str, str]
 
 def create_ci_venv_name(runner_name: str | None = None) -> str:
     if runner_name:
-        # Fixed path per runner so flashinfer JIT cache (which embeds the
+        # Fixed path per runner so the FlashInfer JIT cache (which embeds the
         # venv path in build.ninja) stays valid across CI runs.
         safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", runner_name)
         return f"/tmp/ci-env-{safe_name}"
@@ -584,7 +584,7 @@ def setup_runner(
 
         venv_path = create_ci_venv_name(runner_name=pgm.runner_id)
 
-        # Per-runner HOME isolates flashinfer JIT cache between runners
+        # A separate HOME for each runner isolates the FlashInfer JIT cache.
         runner_home = f"/mnt/workspace/ts-ci-homes/{pgm.runner_id}"
         Path(runner_home).mkdir(parents=True, exist_ok=True)
         local_env["HOME"] = runner_home
@@ -1016,9 +1016,9 @@ def check_eval_score_threshold(
         if "evalscope_score" in result
     ]
     if not scores:
-        print("[eval-score] no evalscope score found in command output", flush=True)
+        print("[eval-score] no EvalScope score found in command output", flush=True)
         raise ValueError(
-            "eval.score_threshold is configured but no evalscope score was found"
+            "eval.score_threshold is configured but no EvalScope score was found"
         )
 
     score = scores[-1]
@@ -1315,11 +1315,11 @@ def build_step_summary_lines(result: Dict[str, Any]) -> List[str]:
             if item.get("failed_files"):
                 lines.append(f"  failed files: `{', '.join(item['failed_files'])}`")
             if "evalscope_score" in item:
-                lines.append(f"  evalscope score: `{item['evalscope_score']:g}`")
+                lines.append(f"  EvalScope score: `{item['evalscope_score']:g}`")
             if item.get("evalscope_report_table"):
                 lines.extend(
                     [
-                        "  evalscope overall report:",
+                        "  EvalScope overall report:",
                         "  ```text",
                         *[
                             f"  {line}"
@@ -1331,7 +1331,7 @@ def build_step_summary_lines(result: Dict[str, Any]) -> List[str]:
             if item.get("evalscope_perf_table"):
                 lines.extend(
                     [
-                        "  evalscope overall perf:",
+                        "  EvalScope overall performance:",
                         "  ```text",
                         *[
                             f"  {line}"

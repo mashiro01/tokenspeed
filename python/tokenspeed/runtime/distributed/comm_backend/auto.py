@@ -98,7 +98,7 @@ class AutoBackend(CommBackend):
 
     def all_reduce(self, tensor: torch.Tensor, group: Group, op=None) -> torch.Tensor:
         # AR backend dispatch -- first match wins. This is Tier 1 (which
-        # backend); the trtllm backend then runs Tier 2 (mnnvl vs IPC, by
+        # backend); the ``trtllm`` backend then runs Tier 2 (MNNVL vs. IPC, by
         # payload bytes) inside _ar_fusion_workspace.
         #   1. force_deterministic_rsag ............ NCCL
         #   2. trtllm_ar armed for this group ...... trtllm_ar   (mnnvl / IPC fusion)

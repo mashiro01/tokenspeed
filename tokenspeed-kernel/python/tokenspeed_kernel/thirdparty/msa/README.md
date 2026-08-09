@@ -1,10 +1,10 @@
-# MSA (MiniMax Sparse Attention CuTe-DSL kernels)
+# MSA (MiniMax Sparse Attention CuTe DSL kernels)
 
 Vendored copy of the MiniMax MSA sparse-attention Python package (named
 `fmha_sm100` upstream; the directory is `msa` here to match the registered
-kernel solution). Code is upstream-identical except formatting: the repo's
-pre-commit hooks (black/isort) reformat on commit, per the convention used
-for every tracked `thirdparty/` tree.
+kernel solution). The implementation remains equivalent to upstream, but the
+repository's pre-commit hooks (black/isort) apply local formatting and some
+prose-only comments differ, as in every tracked `thirdparty/` tree.
 
 - Upstream: https://github.com/vllm-project/MSA (maintained fork of
   https://github.com/MiniMax-AI/MSA)
@@ -15,7 +15,7 @@ for every tracked `thirdparty/` tree.
 
 ## What is vendored
 
-The CuTe-DSL sparse-attention stack for the block-sparse prefill attend,
+The CuTe DSL sparse-attention stack for block-sparse prefill attention,
 plus the nvcc-JIT dense FMHA used in score-only mode by the prefill indexer:
 
 - `__init__.py`, `sparse.py` — the public import surface
@@ -29,12 +29,12 @@ plus the nvcc-JIT dense FMHA used in score-only mode by the prefill indexer:
   `tokenspeed_kernel/ops/attention/msa_score.py` for the prefill indexer's
   OnlyScore scoring + top-k.
 
-NOT vendored: `cutlass/` — upstream pins the full NVIDIA/CUTLASS repo
+Not vendored: `cutlass/`—upstream pins the full NVIDIA CUTLASS repository
 (`eb61c911`, CUTLASS 4.3.4) as a submodule purely for headers. `jit.py`
 carries a local patch (`_find_cutlass_dir`, marked `TokenSpeed patch`)
 that resolves headers from `TOKENSPEED_MSA_CUTLASS_DIR`, a package-local
-`cutlass/` checkout, or the flashinfer wheel's bundled CUTLASS tree, in
-that order. The csrc tree compiles cleanly against flashinfer's CUTLASS
+`cutlass/` checkout, or the FlashInfer wheel's bundled CUTLASS tree, in
+that order. The csrc tree compiles cleanly against FlashInfer's CUTLASS
 4.5.0 (validated bitwise against the Triton scorer on SM100).
 
 ## Runtime requirements and behavior
@@ -51,14 +51,14 @@ that order. The csrc tree compiles cleanly against flashinfer's CUTLASS
   `torch.utils.cpp_extension.load` on first import (needs nvcc; cached in
   `~/.cache/torch_extensions/`). The CuTe kernels JIT-compile per variant
   on first call (cutlass-dsl).
-- The dense FMHA path (`api.py`/`jit.py`) nvcc-JIT-compiles per kernel
+- The dense FMHA path (`api.py`/`jit.py`) uses nvcc to JIT-compile each kernel
   variant (~45 s each) into `~/.cache/minfer/fmha_sm100/`
   (`MINFER_FMHA_CACHE_DIR` overrides), loaded through `apache-tvm-ffi`;
   needs `nvcc`, `ninja`, and `jinja2`. `ops/attention/msa_score.py`
   compiles its variants on a background thread and keeps the Triton
   scorer selected until they are ready, so serving never blocks on nvcc.
-- FP8 support is identity-scale only: BF16 Q with FP8-E4M3 K/V stages to
-  BF16 in-kernel; there are no k/v descale parameters.
+- FP8 support uses identity scales only: the kernel stages BF16 Q and FP8 E4M3
+  K/V as BF16; no K/V descale parameters are available.
 
 ## Updating
 

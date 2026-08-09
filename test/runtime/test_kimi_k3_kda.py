@@ -13,7 +13,7 @@ Coverage:
   naive fp32 recurrence AND the FLA one-shot oracle: initial zero state,
   same-page evolution, boundary crossing, prefix resume, copy-on-write, and
   isolation between requests;
-- the KDA multi-group CUDA-graph state buffer capture/replay logic (the MLA
+- the KDA multi-group CUDA graph state buffer capture/replay logic (the MLA
   half lives in ``test_kimi_k3_cudagraph.py``).
 """
 

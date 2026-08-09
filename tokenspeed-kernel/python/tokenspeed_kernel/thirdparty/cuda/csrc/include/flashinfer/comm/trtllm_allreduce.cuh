@@ -1492,7 +1492,7 @@ std::tuple<int, int> kernelLaunchConfig(AllReduceStrategyType algo, AllReducePar
 
       threads_per_block = total_threads / blocks_per_grid;
 
-      // NOTE: need to adjust here
+      // Adjust the grid when it exceeds the all-reduce block limit.
       if (blocks_per_grid > MAX_ALL_REDUCE_BLOCKS) {
         size_t iter_factor = 1;
         while (blocks_per_grid / iter_factor > MAX_ALL_REDUCE_BLOCKS ||

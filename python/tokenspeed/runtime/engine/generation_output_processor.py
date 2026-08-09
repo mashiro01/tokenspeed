@@ -435,7 +435,7 @@ class OutputProcesser:
         in ``post_process_forward_op`` never fires (``.finished`` is
         ``finished_reason is not None``), so the scheduler keeps
         running the request until natural ``max_tokens``/EOS — the
-        cancelled request burns up to ``max_tokens`` forward steps and
+        canceled request burns up to ``max_tokens`` forward steps and
         latches a ``--max-num-seqs`` slot in the meantime.
 
         ``notify_client`` streams a terminating finish to the client (for

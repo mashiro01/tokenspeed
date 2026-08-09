@@ -37,7 +37,7 @@ def direct_register_custom_op(
     fake_impl: Callable | None = None,
     target_lib: Library | None = None,
 ) -> None:
-    """Register a low-overhead torch custom op in the TokenSpeed namespace."""
+    """Register a low-overhead PyTorch custom op in the TokenSpeed namespace."""
 
     target = target_lib or tokenspeed_lib
     lib_name = getattr(getattr(target, "m", None), "name", "tokenspeed")

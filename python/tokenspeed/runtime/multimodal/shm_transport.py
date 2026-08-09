@@ -280,7 +280,7 @@ class ShmTensorHandle(msgspec.Struct, eq=False, dict=True):
             pass
 
     def release(self) -> None:
-        """Close and unlink a SHM segment without materializing the tensor."""
+        """Close and unlink an SHM segment without materializing the tensor."""
         started = time.perf_counter() if LOG_MM_TIMING else None
         self._close_and_unlink()
         if LOG_MM_TIMING and started is not None:

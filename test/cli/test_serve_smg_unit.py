@@ -198,7 +198,7 @@ def test_gateway_args_default_prometheus_port_is_free_port():
     gateway_args = _gateway_args_with_default_prometheus_port(["--model", "/tmp/x"])
 
     # A fresh free port is allocated per launch (not a fixed default) so repeated
-    # ``ts serve`` launches -- e.g. as an sglang/slime RL rollout backend -- do
+    # ``ts serve`` launches -- e.g. as an SGLang/slime RL rollout backend -- do
     # not collide on a port left in TIME_WAIT by the previous run.
     assert gateway_args[:3] == ["--model", "/tmp/x", "--prometheus-port"]
     assert gateway_args[3].isdigit()

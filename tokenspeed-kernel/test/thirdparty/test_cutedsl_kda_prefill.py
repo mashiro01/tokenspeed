@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""CuteDSL KDA prefill drop-in vs the portable FLA scan.
+"""Compare CuTe DSL KDA prefill with the portable FLA scan.
 
 ``cutedsl_kda_chunk_prefill`` mirrors ``triton.linear.kda.kda_chunk_prefill``
 (same signature, same FLA-native state convention), so every case runs both
@@ -134,8 +134,8 @@ def test_cutedsl_kda_repeated_token_content_stays_bounded() -> None:
     alternating-sign cancellation; a low-precision inverse blows the state
     up geometrically (we have seen 1e2-scale outputs from kernels with this
     bug on ~1k tokens of repeated words — common agentic traffic, and an
-    earlier CuteDSL KDA drop failed exactly here). Guard that the packaged build
-    tracks the portable scan on exactly that profile. The
+    earlier CuTe DSL KDA build failed here). Verify that the packaged build
+    tracks the portable scan on that profile. The
     bounds are blow-up guards, not ulp bounds: on this extreme profile two
     bounded chunked implementations legitimately drift a few 1e-2 apart
     (state magnitude ~9e-2) while a broken inverse lands at 1e+2.

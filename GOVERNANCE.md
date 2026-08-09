@@ -21,7 +21,7 @@ releases, and long-term maintenance.
 ## Decisions
 
 Most decisions are made through GitHub issues, pull requests, and review
-discussion. Maintainers should seek consensus when possible.
+discussions. Maintainers should seek consensus when possible.
 
 Major project decisions, including maintainer membership, release policy,
 project scope, and changes to this document, require approval from more than
@@ -33,8 +33,8 @@ A contributor may be nominated as a core maintainer after making significant
 contributions to TokenSpeed and helping maintain the project for at least three
 months.
 
-A nomination must be made by an existing core maintainer and passes when more
-than half of the active core maintainers approve it.
+A nomination must be made by an existing core maintainer and is approved when
+more than half of the active core maintainers vote in favor.
 
 ## Governance Changes
 

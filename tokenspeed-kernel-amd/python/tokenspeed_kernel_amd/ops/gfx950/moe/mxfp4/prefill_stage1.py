@@ -526,7 +526,7 @@ def gluon_mxfp4_moe_stage1_kernel(
     ) % N
     if B_GDOT128:
         n_tiles: gl.constexpr = (2 * I_r) // 128
-        # Tokenspeed stores gate/up rows interleaved (g0,u0,g1,u1,...),
+        # TokenSpeed stores gate/up rows interleaved (g0,u0,g1,u1,...),
         # while this kernel's logical N axis is concatenated gate||up.
         n_gate_phys = offs_bn_gate * 2
         n_up_phys = (offs_bn_up - I_r) * 2 + 1
@@ -1479,7 +1479,7 @@ def invoke_gluon_mxfp4_moe_stage1(
       1. Validate dtypes / shapes; reject unsupported options.
       2. Permute ``w1`` to the (16, 16) MFMA-tile layout (see
          :func:`_b_preshuffle_3d`), or skip if the caller already did.
-      3. Materialise ``num_valid_ids`` / ``sorted_weights`` as device
+      3. Materialize ``num_valid_ids`` / ``sorted_weights`` as device
          tensors when the caller passed a Python scalar / ``None``.
       4. Launch the GEMM kernel.
 
@@ -1589,7 +1589,7 @@ def invoke_gluon_mxfp4_moe_stage1(
     num_tokens = M_padded
     del M_padded
 
-    # Step 3: materialise scalar / None args as device tensors so the
+    # Step 3: materialize scalar / None args as device tensors so the
     # kernel can just `gl.load` from them.
     if torch.is_tensor(num_valid_ids):
         num_valid_ids_ptr = num_valid_ids

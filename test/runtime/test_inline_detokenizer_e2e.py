@@ -1,10 +1,10 @@
-"""End-to-end correctness: AsyncLLM vs HuggingFace reference.
+"""End-to-end correctness: AsyncLLM vs Hugging Face reference.
 
 Independent ground-truth parity test:
 
 * :class:`HFRunner` loads ``Qwen/Qwen3-0.6B-Base`` via
   ``transformers.AutoModelForCausalLM`` in a dedicated subprocess
-  and runs HuggingFace's own ``model.generate`` — the ground truth.
+  and runs Hugging Face's own ``model.generate`` — the ground truth.
 * A local ``_run_rt_generate`` helper instantiates the tokenspeed
   ``Engine`` (which constructs ``AsyncLLM`` wired to the scheduler
   subprocess and the inline ``IncrementalDetokenizer``), runs greedy
@@ -66,7 +66,7 @@ register_cuda_ci(
     suite="runtime-1gpu",
     # TODO(amd_ci): re-enable on AMD/ROCm runners. Hits a GPU memory access
     # fault inside reset_valid_cache_length on linux-mi35x runners after
-    # cuda-graph capture; root cause still under investigation. NVIDIA
+    # CUDA graph capture; root cause still under investigation. NVIDIA
     # runners are unaffected and continue to run this test.
     disabled_on_runners=["linux-mi35*"],
     disabled_on_runners_reason=(
@@ -153,7 +153,7 @@ def _run_rt_generate(
 
 
 class TestAsyncLLMMatchesHuggingFaceReference(unittest.TestCase):
-    """tokenspeed AsyncLLM output must match HuggingFace's reference
+    """TokenSpeed AsyncLLM output must match the Hugging Face reference
     generation on the same checkpoint. Fails loudly if the
     scheduler → tokenizer-manager → inline-detokenizer → collector
     pipeline drifts from what plain ``AutoModelForCausalLM.generate``

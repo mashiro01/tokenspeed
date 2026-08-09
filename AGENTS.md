@@ -1,6 +1,6 @@
 # General Agent Guidelines
 
-> If a `AGENTS.local.md` file exists alongside this file, read and respect it--
+> If an `AGENTS.local.md` file exists alongside this file, read and respect it —
 > it contains developer-specific overrides that supplement this shared guidance.
 
 ## Development environment
@@ -18,7 +18,7 @@
 * Do not substitute a narrower lint command for the repository hook before
   committing. Always run the exact `pre-commit run --all-files` command and
   commit any formatter changes it makes.
-* When creating commits, perform sign off on behalf of the author.
+* When creating commits, add a DCO sign-off on behalf of the author.
 
 ## Dependency boundaries
 
@@ -34,17 +34,18 @@
 
 Inside the root `tokenspeed-kernel/` directory:
 
-* All direct tokenspeed-triton imports should happen in `_triton.py` and then
-  re-import to other places.
+* Import tokenspeed-triton directly only in `_triton.py`; all other modules
+  must import those symbols from `_triton.py`.
 * All direct third-party code should be placed in `thirdparty/` and imported
-  into `ops/` then registered via `register_kernel`.
-* Prefer CuteDSL for NVIDIA GPU kernels and Triton Gluon for AMD GPU kernels.
+  into `ops/`, then registered via `register_kernel`.
+* Prefer CuTe DSL for NVIDIA GPU kernels and Triton Gluon for AMD GPU kernels.
   Use Triton for portable solutions across vendors. Vendor libraries should
   stay optional, and other solutions may be used as temporary transitions, but
   new work should consolidate toward these backend choices.
-* Files under `ops/` should follow `<family>/<solution>` structure, like
-  `gemm/trtllm.py` or `attention/triton/`.
-* When defining new public APIs, explain arguments and returns in docstring.
+* Files under `ops/` must follow the `<family>/<solution>` structure; examples
+  include `gemm/trtllm.py` and `attention/triton/`.
+* When defining new public APIs, document arguments and return values in the
+  API docstring.
 
 ## tokenspeed-kernel-amd
 

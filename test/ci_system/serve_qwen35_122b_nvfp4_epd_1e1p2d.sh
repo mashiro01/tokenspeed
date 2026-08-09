@@ -221,7 +221,7 @@ wait_serving decode0 "${pids[2]}" 2400
 wait_serving decode1 "${pids[3]}" 2400
 wait_http encode-bootstrap "http://127.0.0.1:${ENCODE_BOOTSTRAP_PORT}/health" 2400
 
-echo "[epd-1e1p2d] starting smg gateway log=$LOG_DIR/gateway.log"
+echo "[epd-1e1p2d] starting SMG gateway log=$LOG_DIR/gateway.log"
 python3 -m smg launch \
   --epd-disaggregation \
   --encode "grpc://127.0.0.1:${ENCODE_PORT}" "$ENCODE_BOOTSTRAP_PORT" \

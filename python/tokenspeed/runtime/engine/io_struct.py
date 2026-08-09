@@ -892,9 +892,9 @@ class UpdateWeightsFromTensorReqOutput(BaseReq, kw_only=True):
 
 
 class InitWeightsUpdateGroupReqInput(BaseReq, kw_only=True):
-    # The master address
+    # Address of the group coordinator.
     master_address: str
-    # The master port
+    # Port of the group coordinator.
     master_port: int
     # The rank offset
     rank_offset: int
@@ -1215,7 +1215,7 @@ class MsgpackDecoder:
         buffer = self._resolve_buffer(data)
         torch_dtype = getattr(torch, dtype, None)
         if not isinstance(torch_dtype, torch.dtype):
-            # numpy typestring (a field typed torch.Tensor fed an ndarray).
+            # NumPy type string (a ``torch.Tensor`` field given an ndarray).
             return torch.from_numpy(
                 np.frombuffer(buffer, dtype=np.dtype(dtype)).copy()
             ).reshape(shape)

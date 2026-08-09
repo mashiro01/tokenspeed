@@ -67,7 +67,7 @@ class DestroyWeightsUpdateGroupHandlerTest(unittest.TestCase):
 class ModelRunnerDestroyIdempotentTest(unittest.TestCase):
     def test_destroy_without_live_group_is_success(self):
         # The path slime hits when destroy is called with no prior init (or
-        # twice): no live group -> success, no torch/NCCL work required.
+        # twice): no live group -> success, no PyTorch/NCCL work required.
         from tokenspeed.runtime.execution.model_runner import ModelRunner
 
         runner = object.__new__(ModelRunner)  # bypass __init__/model load

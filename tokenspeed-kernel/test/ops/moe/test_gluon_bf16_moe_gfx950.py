@@ -41,7 +41,7 @@ REL_TOL = 2e-2
 
 
 def _routing_softmax_topk(logits: torch.Tensor, topk: int):
-    """Reference router: softmax over experts then renormalised top-k."""
+    """Reference router: softmax over experts then renormalized top-k."""
     probs = torch.softmax(logits.float(), dim=-1)
     weights, ids = torch.topk(probs, topk, dim=-1)
     weights = weights / weights.sum(dim=-1, keepdim=True)

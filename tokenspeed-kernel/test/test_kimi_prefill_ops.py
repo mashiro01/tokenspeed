@@ -77,7 +77,7 @@ def test_kimi3_router_projection_falls_back_for_noncanonical_shape() -> None:
 
 
 def test_kimi3_router_projection_auto_splits_on_token_count() -> None:
-    """auto keeps the CUDA kernel at small M and switches to cublas above it.
+    """``auto`` keeps the CUDA kernel at small M and switches to cuBLAS above it.
 
     The CUDA kernel's per-thread token loop runs on CUDA cores, so its time
     grows linearly with M while the tensor-core GEMM stays flat; the dispatch

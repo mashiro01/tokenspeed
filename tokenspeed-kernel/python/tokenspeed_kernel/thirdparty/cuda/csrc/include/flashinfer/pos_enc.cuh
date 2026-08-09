@@ -73,7 +73,7 @@ __device__ __forceinline__ float get_alibi_slope(uint32_t head_idx, uint32_t num
  * \tparam T A template type indicates the x data type
  * \param x A pointer to the start of x data
  * \param freq A vector of float indicates the thread-local rope frequency
- * \param offset A integer indicates the offset of the position in RoPE
+ * \param offset An integer indicating the position offset in RoPE.
  */
 template <uint32_t vec_size, uint32_t bdx, typename T>
 __device__ __forceinline__ vec_t<float, vec_size> vec_apply_llama_rope(
@@ -129,7 +129,7 @@ __device__ __forceinline__ vec_t<float, vec_size> vec_apply_llama_rope_cos_sin(
  * \tparam T A template type indicates the x data type
  * \param x A pointer to the start of x data
  * \param freq A vector of float indicates the thread-local rope frequency
- * \param offset A integer indicates the offset of the position in RoPE
+ * \param offset An integer indicating the position offset in RoPE.
  */
 template <uint32_t vec_size, uint32_t bdx, typename T>
 __device__ __forceinline__ vec_t<float, vec_size> vec_apply_llama_rope_interleave(
@@ -169,23 +169,16 @@ __device__ __forceinline__ vec_t<float, vec_size> vec_apply_llama_rope_cos_sin_i
 }
 
 /*
-HACK: in the interleave mode with cos_sin_cache, we actually only use the first half of
-cos and sin
+In interleaved mode with cos_sin_cache, the computation uses only the first
+half of the loaded cosine and sine vectors. For vec_size = 4, it computes:
 
-For example,
-In the below example, the vec_size is 4
-the computation in the kernel is:
-    [x1, x2, x3, x4...] * [cos1, cos1, cos2, cos2] + [-x2, x1, -x4, x3...] * [sin1, sin1, sin2,
-sin2] the data we loaded are:
-    - loaded vec = [x1, x2, x3, x4]
-    - loaded cos = [cos1, cos2, cos3, cos4]
-    - loaded sin = [sin1, sin2, sin3, sin4]
-But only the first half of cos and sin is used in the computation.
+  [x1, x2, x3, x4, ...] * [cos1, cos1, cos2, cos2]
+    + [-x2, x1, -x4, x3, ...] * [sin1, sin1, sin2, sin2]
 
-However, we argue the additional overhead is acceptable:
-    1. loading additional elements of cos and sin is not adding much overhead. The arithmetic
-intensity is the same as non-interleave mode. Each elements of cos and sin is load twice
-    2. we don't want two code paths of cos and sin vector for interleave and non-interleave mode.
+The loads still fetch [cos1, cos2, cos3, cos4] and
+[sin1, sin2, sin3, sin4]. The extra loads are acceptable because they do not
+change the arithmetic intensity relative to noninterleaved mode, and one
+vectorized path avoids duplicating the cosine and sine logic.
 */
 template <uint32_t vec_size, uint32_t bdx, typename T>
 __device__ __forceinline__ vec_t<float, vec_size>
@@ -199,7 +192,7 @@ vec_apply_llama_rope_cos_sin_interleave_reuse_half(const T* x, const vec_t<float
     vec_before = vec;
 #pragma unroll
     for (uint32_t i = 0; i < vec_size; ++i) {
-      // i / 2 is to get the index of the first half of cos and sin
+      // i / 2 indexes the first half of the cosine and sine vectors.
       vec[i] = vec[i] * cos[i / 2] +
                ((i % 2 == 0) ? -vec_before[i ^ 1] : vec_before[i ^ 1]) * sin[i / 2];
     }
@@ -502,7 +495,7 @@ __global__ void BatchQKApplyRotaryPosIdsHeadParallelismKernel(
     size_t q_stride_h, size_t k_stride_n, size_t k_stride_h, size_t q_rope_stride_n,
     size_t q_rope_stride_h, size_t k_rope_stride_n, size_t k_rope_stride_h, float smooth_a,
     float smooth_b, float rope_rcp_scale, float rope_rcp_theta) {
-  // NOTE: q and q_rope may be the same ptr, so do k and k_rope
+  // q and q_rope may point to the same memory, as may k and k_rope.
   uint32_t bx = blockIdx.x, tx = threadIdx.x, ty = threadIdx.y;
   uint32_t by = blockIdx.y;
   const uint32_t bdy = blockDim.y;
@@ -573,7 +566,7 @@ __global__ void BatchQKApplyRotaryPosIdsKernel(
     size_t q_stride_h, size_t k_stride_n, size_t k_stride_h, size_t q_rope_stride_n,
     size_t q_rope_stride_h, size_t k_rope_stride_n, size_t k_rope_stride_h, float smooth_a,
     float smooth_b, float rope_rcp_scale, float rope_rcp_theta) {
-  // NOTE: q and q_rope may be the same ptr, so do k and k_rope
+  // q and q_rope may point to the same memory, as may k and k_rope.
   uint32_t bx = blockIdx.x, tx = threadIdx.x, ty = threadIdx.y;
   const uint32_t bdy = blockDim.y;
   vec_t<float, vec_size> freq;

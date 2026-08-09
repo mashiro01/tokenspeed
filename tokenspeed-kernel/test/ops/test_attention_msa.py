@@ -757,7 +757,7 @@ def _cutedsl_decode_score_available() -> bool:
 
 @pytest.mark.skipif(
     not _cutedsl_decode_score_available(),
-    reason="CuteDSL index decode score requires SM100 and cutlass-dsl",
+    reason="CuTe DSL index decode score requires SM100 and cutlass-dsl",
 )
 @pytest.mark.parametrize(
     "decode_query_len,seq_list",
@@ -860,7 +860,7 @@ def test_cutedsl_decode_score_matches_triton(
 
 @pytest.mark.skipif(
     not _cutedsl_decode_score_available(),
-    reason="CuteDSL index decode score requires SM100 and cutlass-dsl",
+    reason="CuTe DSL index decode score requires SM100 and cutlass-dsl",
 )
 def test_cutedsl_decode_score_gates() -> None:
     from tokenspeed_kernel.ops.attention.cute_dsl.minimax_index_decode_score import (

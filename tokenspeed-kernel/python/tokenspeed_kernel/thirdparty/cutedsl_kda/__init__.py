@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Single import point for the CuteDSL KDA AOT prefill kernel.
+"""Single import point for the CuTe DSL KDA AOT prefill kernel.
 
 The kernel, its wrapper, and the AOT ``.so`` payload ship as the standalone
 ``tokenspeed-cutedsl-kda`` distribution (import package ``tokenspeed_cutedsl_kda``,
@@ -46,7 +46,7 @@ from importlib.util import find_spec
 DEFAULT_SCALE: float = 1.0 / math.sqrt(128)
 
 _INSTALL_HINT = (
-    "CuteDSL KDA is not installed. Install it with "
+    "CuTe DSL KDA is not installed. Install it with "
     "`pip install tokenspeed-cutedsl-kda` (sm_100a / sm_103a, CUDA 13)."
 )
 

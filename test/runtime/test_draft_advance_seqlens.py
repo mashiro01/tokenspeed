@@ -128,7 +128,7 @@ def test_msa_init_cuda_graph_state_matches_helper_signature():
     """msa must take the post-ownership signature (no seq_lens_buf).
 
     It was left on the old signature while the shared parameter was dropped
-    from init_backend_cuda_graph_state, so every MiniMax cuda-graph startup
+    from init_backend_cuda_graph_state, so every MiniMax CUDA graph startup
     raised TypeError: missing 1 required positional argument: 'seq_lens_buf'.
     """
     be = _msa_backend()

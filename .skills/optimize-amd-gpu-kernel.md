@@ -13,13 +13,14 @@ description: Optimizing kernel performance on AMD Instinct MI GPUs.
   same benchmark/profiling method.
 * Use Gluon for explicit low-level control: buffer load/store, async copy to
   LDS, shared layouts, MFMA layout, wave count, and LLVM attributes.
-* Pay attention to both `ttg` level and `llvm` level opportunities and balances.
+* Pay attention to the opportunities and trade-offs at both the `ttg` level and
+  the `llvm` level.
 * Tune configuration parameters, but do not overfit with many one-off switch
   cases.
 
 ## Profiling Tools
 
-* Use Proton for high-level TFLOp/s or TB/s calculation; check in code changes
+* Use Proton for high-level TFLOP/s or TB/s calculation; check in code changes
   for `triton.jit`/`gluon.jit` `repr` for reuse.
 * Use `rocprofv3` in ROCm to understand low-level internals like counters.
 * Proton also supports fine-grained profiling with `scope` APIs and
@@ -37,15 +38,15 @@ Applicable to various problems:
 * Prefer coalesced and vectorized async global memory load/store.
 * If indexing range allows, prefer buffer load/store intrinsics in Gluon to
   avoid out-of-bound branches and overheads.
-* Avoid shared memory bank conflict if possible. Use padding instead of
+* Avoid shared memory bank conflicts if possible. Use padding instead of
   swizzling.
 * For async copy to LDS, arrange global load layouts so each thread issues wide,
   aligned loads where possible; 128-bit per-thread loads are a good target.
 
-### Compute bound problems
+### Compute-bound problems
 
 The key is to keep issuing MFMA instructions preferably every cycle, and avoid
-exposed memory instruction latencies. Generally two approaches:
+exposed memory instruction latencies. There are generally two approaches:
 
 * Use 4 waves per workgroup, and perform fine-grained per-instruction level
   interleaving in the same wave on one SIMD. Typically needs controlling LLVM
@@ -55,13 +56,13 @@ exposed memory instruction latencies. Generally two approaches:
   "ping-pong" among each other to overlap. Available via the
   `amd.warp_pipeline_stage` API.
 
-Search and read AMD ISA docs and Triton codebase and examples to get
+Search and read the AMD ISA docs, the Triton codebase, and its examples for
 inspiration.
 
-* If high VGPR pressure, consider slice along M/N in the hot loop and interleave
-  to retire certain slices of loaded values earlier.
+* If VGPR pressure is high, consider slicing along M/N in the hot loop and
+  interleaving to retire certain slices of loaded values earlier.
 
-### Memory bound problems
+### Memory-bound problems
 
 The key is to saturate GPU memory bandwidth with enough inflight memory
 instructions, and avoid exposed compute instruction cycles.
@@ -72,14 +73,14 @@ instructions, and avoid exposed compute instruction cycles.
 * Use cache modifiers like `".cg"`, `".wt"`, etc. to control whether to cache at
   certain levels.
 
-### Latency bound problems
+### Latency-bound problems
 
 * Fuse multiple small kernels into one kernel when possible.
 
 ### Small problem sizes
 
-* Perform split-k style optimization and launch second reduction kernel to
-  see if beneficial.
+* Perform split-k style optimization and launch a second reduction kernel to
+  see if it is beneficial.
 * Split-K can increase occupancy for high K, but the second reduction/finalize
   kernel costs several microseconds. Only route it when it is consistently
   faster than torch for the real shapes.

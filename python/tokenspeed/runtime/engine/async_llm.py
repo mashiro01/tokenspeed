@@ -363,7 +363,7 @@ class AsyncLLM(SchedulerControlClient, EngineClient):
         ``LLM`` bridge, RL-trainer drivers, etc.) signal client disconnect
         via ``asyncio.CancelledError`` — not via a polled
         ``request.is_disconnected()`` check. If the task driving this
-        generator is cancelled mid-wait, the ``finally`` below drops the
+        generator is canceled mid-wait, the ``finally`` below drops the
         rid from ``rid_to_state`` and fires an ``AbortReq`` at the
         scheduler so no per-request state leaks.
         """

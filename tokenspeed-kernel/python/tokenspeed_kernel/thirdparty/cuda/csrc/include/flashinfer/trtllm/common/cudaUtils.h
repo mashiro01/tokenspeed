@@ -44,14 +44,13 @@
 // #include <vector>
 // #ifdef _WIN32  // Windows
 // #include <windows.h>
-// #undef ERROR   // A Windows header file defines ERROR as 0, but it's used in our logger.h enum.
-// Logging breaks without
-//                // this undef.
+// #undef ERROR   // A Windows header defines ERROR as 0, but logger.h uses it in an enum.
+//                // Logging does not work without this undefinition.
 // #endif         // WIN32
 
 namespace tensorrt_llm::common {
 
-// // workspace for cublas gemm : 32MB
+// // Workspace for cuBLAS GEMM: 32 MB.
 // #define CUBLAS_WORKSPACE_SIZE 33554432
 
 // typedef struct __align__(4)
@@ -121,7 +120,7 @@ inline bool doCheckError(cudaStream_t stream) {
   }
 
 #ifndef NDEBUG
-  // Debug builds will sync when we're not capturing unless explicitly
+  // Debug builds synchronize when capture is inactive unless explicitly
   // disabled.
   bool const checkError = cudaLaunchBlocking.value_or(!isCapturing(stream));
 #else

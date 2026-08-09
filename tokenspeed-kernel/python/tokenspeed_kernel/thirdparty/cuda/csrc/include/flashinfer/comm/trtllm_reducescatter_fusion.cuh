@@ -858,8 +858,8 @@ class ReduceScatterFusedOp {
         reinterpret_cast<__nv_fp8_e4m3*>(&ret)[i] = static_cast<__nv_fp8_e4m3>(
             static_cast<float>(reinterpret_cast<T*>(&val)[i]) * m_scale_factor);
       }
-      // PackedQuantizedType ret 是一个包含8个__nv_fp8_e4m3的向量，m_params.quant_out也按照这个格式来存储
-      // 将m_params.quant_out的m_access_id位置的8个__nv_fp8_e4m3向量替换为ret
+      // m_params.quant_out uses the same PackedQuantizedType layout as ret, so this
+      // overwrites the packed vector at index m_access_id.
       reinterpret_cast<PackedQuantizedType*>(m_params.quant_out)[m_access_id] = ret;
     } else if constexpr (GetQuantType<Pattern> == QuantType::kFP8BlockWise) {
       vec_t<__nv_fp8_e4m3, VEC_SIZE> quant_out = block_quant_fp8(
@@ -1028,11 +1028,17 @@ template <ReduceScatterFusionPattern Pattern, typename T, int NRanks, bool Fp32A
 __global__ void reducescatter_fusion_kernel_oneshot_lamport(ReduceScatterFusionParams<T> params) {
   static constexpr int VEC_SIZE = details::kBytesPerAccess / sizeof(T);
   RIndexHelper<T> index_helper(params);
-  int token_id = index_helper.token_id; // token id (线程级别)
-  int access_id_in_token = index_helper.access_id_in_token; // 以VEC_SIZE为单位,在当前token中的access id(threadIdx.x)
-  int token_stride = index_helper.token_stride; // token_id增加步长
-  int access_id = index_helper.access_id; // 全局access id = token_id * hidden_dim / VEC_SIZE + access_id_in_token;
-  int access_stride = index_helper.access_stride; // token_id增加时，对应access_stride增加步长 = token_stride * hidden_dim / VEC_SIZE
+  // Token ID for this thread.
+  int token_id = index_helper.token_id;
+  // Access ID within the current token, in VEC_SIZE units (threadIdx.x).
+  int access_id_in_token = index_helper.access_id_in_token;
+  // Stride by which token_id advances.
+  int token_stride = index_helper.token_stride;
+  // Global access ID = token_id * hidden_dim / VEC_SIZE + access_id_in_token.
+  int access_id = index_helper.access_id;
+  // As token_id advances, the access ID advances by
+  // access_stride = token_stride * hidden_dim / VEC_SIZE.
+  int access_stride = index_helper.access_stride;
   int tot_access = index_helper.tot_access;
   vec_t<T, VEC_SIZE> clear_vec;
   clear_vec.fill(utils::neg_zero_v<T>);
@@ -1058,7 +1064,7 @@ __global__ void reducescatter_fusion_kernel_oneshot_lamport(ReduceScatterFusionP
     vec_t<T, VEC_SIZE> val;
     val.load(reinterpret_cast<T*>(params.reducescatter_in) + idx * VEC_SIZE);
     utils::remove_neg_zero(val);
-    // 计算数据要存放在哪一个target_rank
+    // Determine which target_rank the data should be written to.
     int current_token_idx = idx / access_per_token;
     int threshold = remaining_tokens * (tokens_per_rank + 1);
     int target_rank;
@@ -1083,7 +1089,7 @@ __global__ void reducescatter_fusion_kernel_oneshot_lamport(ReduceScatterFusionP
     int start_idx = start_token_idx * access_per_token;
     int end_idx = start_idx + token_count_this_rank * access_per_token;
 
-    // idx:输入数据的全局地址(从所有 rank 的view获取); out_idx:输出地址
+    // idx: global input address in the cross-rank view; out_idx: output address.
     for (int idx = access_id + start_idx, out_idx = access_id; idx < end_idx;
         idx += access_stride, out_idx += access_stride) {
       ReduceScatterFusedOp<Pattern, T> fused_op(params, out_idx, access_id_in_token, token_count_this_rank);

@@ -19,7 +19,7 @@
 // SOFTWARE.
 
 /*
- * Materialized from flashinfer JIT template: activation_fuse_block_quant_templ_ep
+ * Materialized from the FlashInfer JIT template: activation_fuse_block_quant_templ_ep
  * act_func_name = silu
  */
 #include <flashinfer/activation.cuh>

@@ -101,10 +101,10 @@ if platform.is_nvidia and platform.is_blackwell:
         the rel extent must be a multiple of 128, and with a sliding window
         the window length must equal the extent (distances beyond the window
         are masked anyway, so the table is sliced to it). Otherwise the bias
-        is applied via the generic ``score_mod`` gather. NOTE: the installed
-        fa4 wheel does not ship fused rel_bias, so score_mod is the LIVE bias
-        mechanism for this varlen family today — do not remove it until the
-        wheel does (checked 2026-07-14).
+        is applied through the generic ``score_mod`` gather. The installed
+        FA4 wheel does not include fused ``rel_bias``, so ``score_mod`` remains
+        the active bias mechanism for this variable-length family. Do not remove
+        it until the wheel does (checked 2026-07-14).
 
         Args:
             rel_logits: Relative bias logits with shape
@@ -972,7 +972,7 @@ if platform.is_nvidia and platform.is_blackwell:
             and torch.cuda.is_current_stream_capturing()
         ):
             raise RuntimeError(
-                "MXFP8 rel decode kernel not compiled before CUDA-graph "
+                "MXFP8 rel decode kernel not compiled before CUDA graph "
                 "capture; call the tokenspeed_mha rel_decode warmup with "
                 "blockscaled=True first"
             )
@@ -1062,7 +1062,7 @@ if platform.is_nvidia and platform.is_blackwell:
             and torch.cuda.is_current_stream_capturing()
         ):
             raise RuntimeError(
-                "MXFP8 rel extend kernel not compiled before CUDA-graph "
+                "MXFP8 rel extend kernel not compiled before CUDA graph "
                 "capture; warm up the tokenspeed_mha rel_extend config with "
                 "blockscaled=True first"
             )

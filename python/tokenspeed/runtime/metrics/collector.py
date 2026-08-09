@@ -320,7 +320,7 @@ class RequestMetrics:
             self._init_prometheus(labels, registry=registry)
 
     def _init_prometheus(self, labels: dict[str, str], *, registry=None) -> None:
-        # We need to import prometheus_client after setting the env variable PROMETHEUS_MULTIPROC_DIR
+        # Import prometheus_client after setting ``PROMETHEUS_MULTIPROC_DIR``.
         from prometheus_client import Counter, Histogram
 
         labelnames = list(labels.keys())

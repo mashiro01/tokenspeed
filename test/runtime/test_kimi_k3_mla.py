@@ -350,7 +350,7 @@ def test_decode_grouped_matches_single_table_and_reference(
 def test_decode_grouped_writes_land_at_group_locations(
     backend_factory, gpu_pool
 ) -> None:
-    """forward_decode(save_kv_cache=True) writes via grouped locationations, not the
+    """forward_decode(save_kv_cache=True) writes via grouped locations, not the
     caller's page_table-derived out_cache_loc."""
     pool = gpu_pool
     page_size = pool.page_size

@@ -79,7 +79,7 @@ def create_fused_set_kv_buffer_arg(
         v_buffer = v_buffer.view(v_buffer.shape[0], -1)
 
     # Non-trivial scales need 1/scale applied before FP8 cast — the fused kernel
-    # doesn't support this yet, so log a warning and skip the fused path.
+    # does not support this yet, so log a warning and skip the fused path.
     k_scale = layer.k_scale
     v_scale = layer.v_scale
     if (k_scale is not None and k_scale != 1.0) or (

@@ -40,7 +40,7 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
   const uint32_t tx = threadIdx.x, ty = threadIdx.y;
   constexpr uint32_t warp_size = 32;
   const uint32_t num_warps = blockDim.y;
-  // NOTE(Zihao): it's guaranteed that num_warps should be smaller than 32
+  // NOTE(Zihao): num_warps is guaranteed to be less than 32.
   const uint32_t thread_id = tx + ty * warp_size;
   const uint32_t num_threads = num_warps * warp_size;
   const uint32_t rounds = ceil_div(d, VEC_SIZE * num_threads);
@@ -64,7 +64,7 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
     }
   }
 
-  // first, warp reduce sum
+  // First, reduce the sum within each warp.
 #pragma unroll
   for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
     sum_sq += math::shfl_xor_sync(sum_sq, offset);
@@ -72,7 +72,7 @@ __global__ void RMSNormKernel(T* __restrict__ input, T* __restrict__ weight, T* 
 
   smem[ty] = sum_sq;
   __syncthreads();
-  // then, cross warp reduce sum using only the first warp
+  // Then, reduce across warps using only the first warp.
   if (ty == 0) {
     sum_sq = (tx < num_warps) ? smem[tx] : 0.f;
 #pragma unroll
@@ -168,10 +168,10 @@ __global__ void QKRMSNormKernel(T* __restrict__ input, T* __restrict__ weight,
 #endif
 
   for (uint32_t job_idx = worker_idx; job_idx < num_jobs; job_idx += num_workers) {
-    // clear buffer
+    // Clear the buffer.
     float sum_sq = 0.f;
 
-    // map back to batch-idx and head-idx; layout [batch_size, num_heads, head_dim]
+    // Map back to the batch and head indices; layout: [batch_size, num_heads, head_dim].
     const uint32_t batch_idx = job_idx / num_heads;
     const uint32_t head_idx = job_idx % num_heads;
 
@@ -188,8 +188,8 @@ __global__ void QKRMSNormKernel(T* __restrict__ input, T* __restrict__ weight,
       }
     }
 
-    // only have warp reduce sum
-    // no need for __syncwarps as shfl already sync
+    // Only a warp-level sum reduction is needed.
+    // __syncwarp is unnecessary because shfl already synchronizes the warp.
 #pragma unroll
     for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
       sum_sq += math::shfl_xor_sync(sum_sq, offset);
@@ -246,7 +246,7 @@ cudaError_t QKRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint3
   DISPATCH_ALIGNED_VEC_SIZE(vec_size, VEC_SIZE, {
     auto kernel = QKRMSNormKernel<VEC_SIZE, T>;
 
-    // calculate launching blocks
+    // Calculate the number of blocks to launch.
     int num_blocks_per_sm = 0, num_sms = 0, dev_id = 0;
     FLASHINFER_CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&num_blocks_per_sm, kernel,
                                                                        num_warps * 32, smem_size));
@@ -258,7 +258,7 @@ cudaError_t QKRMSNorm(T* input, T* weight, T* output, uint32_t batch_size, uint3
     config.gridDim = nblks;
     config.blockDim = nthrs;
 
-    // execute kernel
+    // Launch the kernel.
     FLASHINFER_CUDA_CALL(cudaLaunchKernelEx(&config, kernel, input, weight, output, d, batch_size,
                                             num_heads, stride_input_n, stride_input_h,
                                             stride_output_n, stride_output_h, weight_bias, eps));
@@ -313,7 +313,7 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
     }
   }
 
-  // first, warp reduce sum
+  // First, reduce the sum within each warp.
 #pragma unroll
   for (uint32_t offset = warp_size / 2; offset > 0; offset /= 2) {
     sum_sq += math::shfl_xor_sync(sum_sq, offset);
@@ -321,7 +321,7 @@ __global__ void FusedAddRMSNormKernel(T* __restrict__ input, T* __restrict__ res
 
   smem[ty] = sum_sq;
   __syncthreads();
-  // then, cross warp reduce sum using only the first warp
+  // Then, reduce across warps using only the first warp.
   if (ty == 0) {
     sum_sq = (tx < num_warps) ? smem[tx] : 0.f;
 #pragma unroll
@@ -441,7 +441,7 @@ cudaError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batc
   const uint32_t num_warps = ceil_div(block_size, 32);
   dim3 nblks(batch_size);
   dim3 nthrs(32, num_warps);
-  // NOTE(Zihao): use ceil_div(num_warps, 4) * 4 for address alignment to 16 bytes
+  // Round num_warps up to a multiple of 4 for 16-byte address alignment.
   const uint32_t smem_size = (ceil_div(num_warps, 4) * 4 + d) * sizeof(float);
   float weight_bias = 1.f;
   void* args[] = {&input,        &residual,        &weight,      &d,
@@ -469,7 +469,7 @@ cudaError_t GemmaFusedAddRMSNorm(T* input, T* residual, T* weight, uint32_t batc
   return cudaSuccess;
 }
 // ============================================================================
-// RMSNormFusedParallelKernel - 不同线程处理不同input
+// RMSNormFusedParallelKernel — different threads handle different inputs
 // ============================================================================
 
 template <uint32_t VEC_SIZE, typename T>
@@ -493,7 +493,8 @@ __global__ void RMSNormFusedParallelKernel(
   float* smem_warp_sum_sq_2 = smem + num_warps;
 
   // ========== Phase 1: Compute sum_sq for both inputs in parallel ==========
-  // 前 num_threads_1 个线程处理 input1，后 num_threads_2 个线程处理 input2
+  // The first num_threads_1 threads handle input1; the next num_threads_2 threads
+  // handle input2.
   float sum_sq = 0.f;
 
 #if (__CUDACC_VER_MAJOR__ >= 12 && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
@@ -501,7 +502,7 @@ __global__ void RMSNormFusedParallelKernel(
 #endif
 
   if (thread_id < num_threads_1) {
-    // 处理 input1
+    // Process input1.
     const uint32_t rounds_1 = ceil_div(d1, VEC_SIZE * num_threads_1);
     for (uint32_t i = 0; i < rounds_1; i++) {
       vec_t<T, VEC_SIZE> input_vec;
@@ -515,7 +516,7 @@ __global__ void RMSNormFusedParallelKernel(
       }
     }
   } else if (thread_id < num_threads_1 + num_threads_2) {
-    // 处理 input2
+    // Process input2.
     const uint32_t local_thread_id = thread_id - num_threads_1;
     const uint32_t rounds_2 = ceil_div(d2, VEC_SIZE * num_threads_2);
     for (uint32_t i = 0; i < rounds_2; i++) {
@@ -537,7 +538,7 @@ __global__ void RMSNormFusedParallelKernel(
     sum_sq += math::shfl_xor_sync(sum_sq, offset);
   }
 
-  // Store warp results to appropriate location
+  // Store each warp's results in the appropriate location.
   const uint32_t num_warps_1 = ceil_div(num_threads_1, warp_size);
   const uint32_t num_warps_2 = ceil_div(num_threads_2, warp_size);
 
@@ -555,7 +556,7 @@ __global__ void RMSNormFusedParallelKernel(
     float sum_sq_1 = 0.f;
     float sum_sq_2 = 0.f;
 
-    // Reduce for input1 (warps handling input1)
+    // Reduce input1 across the warps that handle it.
     if (tx < num_warps_1) {
       sum_sq_1 = smem_warp_sum_sq_1[tx];
     }
@@ -564,7 +565,7 @@ __global__ void RMSNormFusedParallelKernel(
       sum_sq_1 += math::shfl_xor_sync(sum_sq_1, offset);
     }
 
-    // Reduce for input2 (warps handling input2)
+    // Reduce input2 across the warps that handle it.
     if (tx < num_warps_2) {
       sum_sq_2 = smem_warp_sum_sq_2[tx];
     }
@@ -585,7 +586,7 @@ __global__ void RMSNormFusedParallelKernel(
 
   // ========== Phase 4: Apply RMSNorm and weights in parallel ==========
   if (thread_id < num_threads_1) {
-    // 处理 output1
+    // Process output1.
     const uint32_t rounds_1 = ceil_div(d1, VEC_SIZE * num_threads_1);
     for (uint32_t i = 0; i < rounds_1; i++) {
       vec_t<T, VEC_SIZE> input_vec;
@@ -607,7 +608,7 @@ __global__ void RMSNormFusedParallelKernel(
       }
     }
   } else if (thread_id < num_threads_1 + num_threads_2) {
-    // 处理 output2
+    // Process output2.
     const uint32_t local_thread_id = thread_id - num_threads_1;
     const uint32_t rounds_2 = ceil_div(d2, VEC_SIZE * num_threads_2);
     for (uint32_t i = 0; i < rounds_2; i++) {
@@ -646,12 +647,12 @@ cudaError_t RMSNormFusedParallel(
   const uint32_t vec_size2 = std::gcd(16 / sizeof(T), d2);
   const uint32_t vec_size = std::gcd(vec_size1, vec_size2);
 
-  // 根据维度大小分配线程数
-  // 计算每个input需要的最小线程数
+  // Allocate threads according to the dimension sizes.
+  // Compute the minimum number of threads each input requires.
   const uint32_t min_threads_1 = ceil_div(d1, vec_size);
   const uint32_t min_threads_2 = ceil_div(d2, vec_size);
 
-  // 按比例分配线程，但确保总数不超过1024
+  // Allocate threads proportionally, keeping the total at or below 1024.
   const uint32_t total_min_threads = min_threads_1 + min_threads_2;
   uint32_t num_threads_1, num_threads_2;
 
@@ -659,13 +660,13 @@ cudaError_t RMSNormFusedParallel(
     num_threads_1 = min_threads_1;
     num_threads_2 = min_threads_2;
   } else {
-    // 如果>=1024, 按比例分配
+    // If the total exceeds 1024, allocate proportionally.
     const float ratio = float(min_threads_1) / float(total_min_threads);
     num_threads_1 = std::max(32u, uint32_t(1024 * ratio));
     num_threads_2 = std::max(32u, 1024 - num_threads_1);
   }
 
-  // 确保线程数是warp size的倍数
+  // Round the thread counts up to a multiple of the warp size.
   num_threads_1 = (num_threads_1 + 31) / 32 * 32;
   num_threads_2 = (num_threads_2 + 31) / 32 * 32;
 
@@ -682,7 +683,7 @@ cudaError_t RMSNormFusedParallel(
 
   dim3 nblks(batch_size);
   dim3 nthrs(32, num_warps);
-  // Need space for warp_sum_sq_1[num_warps] and warp_sum_sq_2[num_warps]
+  // Reserve space for warp_sum_sq_1[num_warps] and warp_sum_sq_2[num_warps].
   const uint32_t smem_size = 2 * num_warps * sizeof(float);
 
   cudaLaunchConfig_t config;
@@ -743,9 +744,9 @@ __global__ void generalLayerNorm(T const* input, Tw const* gemma, Tw const* beta
   T const clamp_min = cuda_cast<T>(clamp_ptr ? clamp_ptr[0] : -FLT_MAX);
   T const clamp_max = cuda_cast<T>(clamp_ptr ? clamp_ptr[1] : FLT_MAX);
 
-  // The quantized data type's maximum value (upper-bound).
+  // The quantized data type's maximum value (upper bound).
   static constexpr float MAX_QUANT_VAL = QuantTypeStaticVals<QuantT>::MAX_VAL;
-  // The minimum scaling factor (lower-bound)
+  // The minimum scaling factor (lower bound).
   static constexpr float MIN_SCALING_FACTOR = QuantTypeStaticVals<QuantT>::MIN_SCALING_FACTOR;
   static constexpr float MIN_SCALING_FACTOR_RCP =
       QuantTypeStaticVals<QuantT>::MIN_SCALING_FACTOR_RCP;
@@ -881,13 +882,13 @@ void dispatch_layernorm_type_square_method(
     float* scale_orig_quant_per_token, float* sum_per_token, QuantT* normed_output_quant,
     bool const has_fp8_min_scaling, dim3 const grid, dim3 const block, size_t const shmem_size,
     cudaStream_t stream) {
-  // Do we use shared memory to cache intermediate results
+  // Whether to use shared memory to cache intermediate results.
   bool use_shmem = true;
   if (shmem_size >= (48 << 10)) {
     cudaError_t ret =
         cudaFuncSetAttribute(generalLayerNorm<T, Tw, QuantT, true, USE_DIFF_OF_SQUARES>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize, shmem_size);
-    // Use shared memory when the capacity is enough
+    // Use shared memory when its capacity is sufficient.
     use_shmem = (ret == cudaSuccess);
   }
 
@@ -930,7 +931,7 @@ cudaError_t LayerNorm(T* input, Tw* gemma, Tw* beta, T* out, uint32_t tokens, ui
                       float eps = 1e-5, cudaStream_t stream = 0) {
   dim3 grid(tokens);
   dim3 block(min(hidden_dim, 1024));
-  // Make sure block.x is multiple of 32 for warp shuffle to work
+  // Ensure block.x is a multiple of 32 so the warp shuffle works.
   block.x = 32 * ((block.x + 31) / 32);
 
   constexpr size_t vec_size = 2;
@@ -938,8 +939,8 @@ cudaError_t LayerNorm(T* input, Tw* gemma, Tw* beta, T* out, uint32_t tokens, ui
   bool const use_vec_type = (hidden_dim % vec_size == 0) &&
                             (std::is_same<T, half>::value || std::is_same<T, __nv_bfloat16>::value);
 
-  // Enable min_scaling factor if it is fp8 row-wise per-token quantization
-  // TODO(kaixih): add support for fp8 quantization if needed
+  // Enable min_scaling for FP8 row-wise per-token quantization.
+  // TODO(kaixih): Add FP8 quantization support if needed.
   bool has_fp8_min_scaling = false;
   float* clamp_ptr = nullptr;
   float* scale = nullptr;

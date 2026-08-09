@@ -416,7 +416,7 @@ class MetadataBuffers:
 def group_concurrent_contiguous(
     src_indices: npt.NDArray[np.int64], dst_indices: npt.NDArray[np.int64]
 ) -> tuple[list[npt.NDArray[np.int64]], list[npt.NDArray[np.int64]]]:
-    """Vectorised NumPy implementation."""
+    """Vectorized NumPy implementation."""
     if src_indices.size == 0:
         return [], []
 
@@ -435,9 +435,10 @@ class StepCounter:
 
     @classmethod
     def is_step_ready(cls, current_step: int, target_step: int) -> bool:
-        # because COUNT_NUM_MAX is very large, we can make sure that if diff is > COUNT_NUM_MAX / 2 means the flush is finished
-        # and if the current_sent_count == task_stop_count also means the flush is not finished
-        # so if current_sent_count != task_stop_count and diff < COUNT_NUM_MAX / 2, the flush is not finished
+        # Steps wrap around modulo COUNT_NUM_MAX, so they cannot be compared directly.
+        # COUNT_NUM_MAX is large enough that a forward distance of more than half the range
+        # can only mean target_step is already behind current_step, so the step is ready.
+        # Equal values mean the step has not been reached yet.
         return (
             target_step != current_step
             and (target_step + cls.COUNT_NUM_MAX - current_step) % cls.COUNT_NUM_MAX
@@ -445,12 +446,12 @@ class StepCounter:
         )
 
     def __init__(self, device: str, gpu_id: int):
-        # utilities for cache step
+        # Cache-step counters.
         self.d_ready_cache_step = torch.tensor(0, dtype=torch.int64).cuda(gpu_id)
         self.h_ready_cache_step = torch.tensor(0, dtype=torch.int64, pin_memory=True)
         self.cache_step: int = 0
 
-        # utilities for aux step
+        # Auxiliary-step counters.
         self.d_ready_aux_step = torch.tensor(0, dtype=torch.int64).cuda(gpu_id)
         self.h_ready_aux_step = torch.tensor(0, dtype=torch.int64, pin_memory=True)
         self.aux_step: int = 0

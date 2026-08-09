@@ -592,7 +592,7 @@ class ModelConfig:
             quant_cfg = getattr(self.hf_config, "compression_config", None)
         if quant_cfg is None:
             # modelopt NVFP4 checkpoints store quant config in hf_quant_config.json
-            # Resolve the local snapshot directory (model_path may be a HF hub ID)
+            # Resolve the local snapshot directory (model_path may be a Hugging Face Hub ID).
             if os.path.isdir(self.model_path):
                 model_dir = self.model_path
             else:

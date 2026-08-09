@@ -76,7 +76,7 @@ def _load_trtllm_comm_module():
 
 
 # ---------------------------------------------------------------------------
-# Pattern enums (pure Python, identical to flashinfer)
+# Pattern enums (pure Python, identical to FlashInfer)
 # ---------------------------------------------------------------------------
 
 
@@ -464,7 +464,7 @@ def trtllm_create_mnnvl_workspace_for_all_reduce_fusion(
         raise RuntimeError("mnnvl workspace: symmetric allocation too small")
     handle.get_buffer(tp_rank, (handle.buffer_size // 4,), torch.float32).fill_(-0.0)
 
-    # Rotation state, same layout as flashinfer's buffer_flags:
+    # Rotation state, same layout as FlashInfer's buffer_flags:
     # [cur idx, dirty idx, bytes per buffer, dirty stages, bytes_to_clear[4],
     #  arrival counter]
     buffer_flags = torch.tensor(
@@ -661,8 +661,12 @@ def trtllm_allreduce_fusion(
         return
 
     if not use_oneshot:
-        assert not residual_reduce_scattered, "Currently not supported!"
-        assert token_num > world_size, "sequence length should be larger than tp_size"
+        assert (
+            not residual_reduce_scattered
+        ), "residual_reduce_scattered requires use_oneshot"
+        assert (
+            token_num > world_size
+        ), "The sequence length must be greater than tp_size"
 
     required_lamport_comm_size = (
         token_num * hidden_dim * 2 * world_size
@@ -964,7 +968,9 @@ def trtllm_reducescatter_fusion(
         )
 
     if not use_oneshot:
-        assert token_num > world_size, "sequence length should be larger than tp_size"
+        assert (
+            token_num > world_size
+        ), "The sequence length must be greater than tp_size"
 
     if pattern_code == ReduceScatterFusionPattern.kRSResidualRMSNormFP8BlockWiseQuant:
         assert use_oneshot, "FP8 blockwise quant requires oneshot!"
@@ -1078,7 +1084,7 @@ def trtllm_create_ipc_workspace_for_minimax(
     # Lamport sentinel: ALWAYS fp32 -0 (0x80000000). The MiniMax kernel stores
     # per-token variance sums (fp32) in the lamport buffer regardless of the
     # input/gamma dtype, so we must init with the fp32 sentinel pattern.
-    # Initialising with fp16 -0 (0x8000) would set the bytes to 0x80008000
+    # Initializing with fp16 -0 (0x8000) would set the bytes to 0x80008000
     # repeating, which an fp32 read would see as non-negative-zero and
     # immediately consume as "already written", producing garbage.
     trtllm_lamport_initialize(

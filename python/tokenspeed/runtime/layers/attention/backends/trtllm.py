@@ -198,7 +198,7 @@ class TRTLLMMHAAttnBackend(CacheGroupsMixin, AttentionBackend):
         # Instead of a non-causal mask, expand each request into spec_num_tokens
         # single-query rows sharing the SAME block-end seq_len, so each row
         # attends over the whole block. Mirrors the MHA draft_block_decode path;
-        # target verify and ordinary trtllm decode are untouched.
+        # target verification and ordinary TensorRT-LLM decode are unchanged.
         self.draft_block_decode = bool(config.draft_block_decode)
 
     # ------------------------------------------------------------------
@@ -393,7 +393,7 @@ class TRTLLMMHAAttnBackend(CacheGroupsMixin, AttentionBackend):
         return o.view(-1, layer.tp_q_head_num * layer.head_dim)
 
     # ------------------------------------------------------------------
-    # Metadata initialisation
+    # Metadata initialization
     # ------------------------------------------------------------------
 
     def init_forward_metadata(
@@ -558,7 +558,7 @@ class TRTLLMMHAAttnBackend(CacheGroupsMixin, AttentionBackend):
         """Eager DFLASH draft-block metadata: spec_num_tokens single-query rows
         per request, all carrying the block-end seq_len (prefix + spec_num_tokens)
         so each query attends over the whole block. Allocates fresh buffers (the
-        cuda-graph path uses persistent ones), mirroring the MHA backend.
+        CUDA graph path uses persistent ones), mirroring the MHA backend.
         """
         assert (
             seq_lens.dtype == torch.int32
@@ -600,7 +600,7 @@ class TRTLLMMHAAttnBackend(CacheGroupsMixin, AttentionBackend):
     ) -> torch.Tensor:
         """Return KV seqlens clamped to >= spec_num_tokens for the MTP verify path.
 
-        Writes into the persistent spec_cache_seqlens_buf (CUDA-graph safe)
+        Writes into the persistent spec_cache_seqlens_buf (CUDA graph safe)
         to avoid NaN from empty causal spans on padded rows (seq_len=1).
         """
         dst = self.spec_cache_seqlens_buf[:bs]
@@ -774,7 +774,7 @@ class TRTLLMMHAAttnBackend(CacheGroupsMixin, AttentionBackend):
     ):
         if forward_mode.is_extend_or_mixed():
             raise NotImplementedError(
-                f"trtllm CUDA graph capture not supported for {forward_mode}"
+                f"TensorRT-LLM CUDA graph capture is not supported for {forward_mode}"
             )
 
         # Real tables only arrive at replay; capture records metadata views
@@ -808,7 +808,7 @@ class TRTLLMMHAAttnBackend(CacheGroupsMixin, AttentionBackend):
             )
 
     def _init_block_decode_metadata_capture(self, bs: int):
-        """DFLASH draft block (cuda-graph capture): spec_num_tokens single-query
+        """DFLASH draft block (CUDA graph capture): spec_num_tokens single-query
         rows per request over the persistent expanded buffers. seq_lens are
         filled in-graph by fill_block_decode_seq_lens; seed a safe baseline here
         so the capture run stays in range before that op records."""
@@ -899,7 +899,7 @@ class TRTLLMMHAAttnBackend(CacheGroupsMixin, AttentionBackend):
     ):
         if forward_mode.is_extend_or_mixed():
             raise NotImplementedError(
-                f"trtllm CUDA graph replay not supported for {forward_mode}"
+                f"TensorRT-LLM CUDA graph replay is not supported for {forward_mode}"
             )
 
         if self.draft_block_decode and self.spec_num_tokens > 1:
@@ -959,7 +959,7 @@ class TRTLLMMHAAttnBackend(CacheGroupsMixin, AttentionBackend):
 
     def fill_block_decode_seq_lens(self, bs: int, block_seq_lens: torch.Tensor) -> None:
         """DFLASH: broadcast each request's block-end length to its
-        spec_num_tokens cuda-graph decode rows.
+        spec_num_tokens CUDA graph decode rows.
 
         Called by the drafter inside the captured graph so every replay
         re-derives cache_seqlens from the live draft length. Mirrors the MHA

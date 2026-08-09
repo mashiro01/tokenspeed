@@ -592,9 +592,8 @@ def scaled_mm_kernel(
     accumulator_dtype = ACCUMULATOR_DTYPE
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=accumulator_dtype)
 
-    # NOTE: Some tensor inputs are so large, they will cause int32 overflow
-    # so it is necessary to use tl.int64 for all the offsets, else SEGV will
-    # eventually occur.
+    # Some tensor inputs are large enough to overflow INT32. Use tl.int64 for
+    # every offset to avoid an eventual segmentation fault.
 
     # Offsets and masks.
     offsets_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
@@ -607,8 +606,8 @@ def scaled_mm_kernel(
     offsets_a = stride_am * offsets_am[:, None] + stride_ak * offsets_k[None, :]
     offsets_b = stride_bk * offsets_k[:, None] + stride_bn * offsets_bn[None, :]
 
-    # NOTE: BLOCK_SIZE_SCALE_A could be 1 or BLOCK_SIZE_M, so need to create
-    # appropriate offsets and masks for each case. Same goes for
+    # BLOCK_SIZE_SCALE_A can be 1 or BLOCK_SIZE_M, so create appropriate
+    # offsets and masks for each case. The same applies to
     # BLOCK_SIZE_SCALE_B.
     offsets_scale_am = (
         tl.arange(0, BLOCK_SIZE_SCALE_A)
@@ -646,9 +645,9 @@ def scaled_mm_kernel(
     # Apply scale at end.
     masks_scale_a = masks_scale_am[:, None] & (tl.arange(0, 1) < 1)[:, None]
     scale_a = tl.load(scale_a_ptrs[:, None], masks_scale_a)
-    # Need to broadcast to the appropriate size, if scale_a is already
-    # (BLOCK_SIZE_M, 1) then it will broadcast to its own shape. Same goes
-    # for scale_b below.
+    # Broadcast to the required size. If scale_a already has shape
+    # (BLOCK_SIZE_M, 1), it broadcasts to its existing shape. The same applies
+    # to scale_b below.
     scale_a = scale_a.broadcast_to((BLOCK_SIZE_M, 1))
     accumulator = scale_a * accumulator.to(tl.float32)
 

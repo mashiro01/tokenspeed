@@ -261,7 +261,7 @@ class VocabParallelEmbedding(torch.nn.Module):
         if use_presharded_weights:
             assert (
                 num_added_embeddings == 0
-            ), "Lora is not supported with presharded weights."
+            ), "LoRA is not supported with presharded weights."
 
         self.org_vocab_size_padded = pad_vocab_size(
             self.org_vocab_size, self.padding_size
@@ -450,7 +450,7 @@ class VocabParallelEmbedding(torch.nn.Module):
         shard_size = self.shard_indices.org_vocab_end_index - start_idx
 
         # If param packed on the same dim we are sharding on, then
-        # need to adjust offsets of loaded weight by pack_factor.
+        # Adjust loaded-weight offsets by pack_factor.
         if packed_dim is not None and packed_dim == output_dim:
             packed_factor = (
                 param.packed_factor
@@ -499,7 +499,7 @@ class VocabParallelEmbedding(torch.nn.Module):
             )
         else:
             # Single-rank (DP / replicated) path has no shard mask, so an
-            # out-of-range id (e.g. CUDA-graph capture warmup where the drafter
+            # out-of-range id (e.g. CUDA graph capture warmup where the drafter
             # feeds argmax over uninitialized logits) hits F.embedding OOB.
             # Clamp here for parity with the tp_size>1 mask path; under normal
             # inference upstream guarantees id < num_embeddings_padded so this

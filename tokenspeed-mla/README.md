@@ -15,11 +15,11 @@ Speed-of-light TokenSpeed MLA kernels for Blackwell (`SM100/SM103`) with:
   - Supports strided views and optional pre-allocated output buffers
 
 This package includes performance-oriented optimizations for latency-sensitive
-serving workloads, especially coding agent style use cases with high request
+serving workloads, especially coding-agent use cases with high request
 concurrency, short decode steps, and strict time-to-first-token/next-token
-requirements. For MLA prefill kernel, we supported two version, one is the open
-source version, and another is the binary version with some Nvidia internal knobs
-for better performance. For MLA decode kernel, small `q_len * num_heads`
+requirements. For the MLA prefill kernel, we support two versions: an
+open-source version and a binary version with internal NVIDIA tuning controls
+for better performance. For the MLA decode kernel, small `q_len * num_heads`
 configurations can fold a query-token group (`fold_sq_factor`) into heads for
 better tile utilization; remaining query groups are scheduled across the query
 sequence dimension.
@@ -29,7 +29,7 @@ sequence dimension.
 ### Prefill Performance
 ![Prefill Latency Comparison](https://raw.githubusercontent.com/lightseekorg/tokenspeed/main/tokenspeed-mla/assets/latency_comp_prefill.png)
 
-Where:
+Test cases:
 ```
 use case 1: batch_size = 1, seqlen_qo = 8 * 1024, seqlen_kv = 8 * 1024
 use case 2: batch_size = 1, seqlen_qo = 8 * 1024, seqlen_kv = 32 * 1024
@@ -38,9 +38,14 @@ use case 4: batch_size = 4, seqlen_qo = 512,      seqlen_kv = 80 * 1024
 use case 5: batch_size = 4, seqlen_qo = 1024,     seqlen_kv = 80 * 1024
 ```
 
-TensorRT-LLM’s MLA performance is already strong. The TokenSpeed MLA Prefill kernel offers two backends: the open-source version and a binary version with superior performance. While the open-source version is slightly slower than TensorRT-LLM’s native implementation, the AOT binary version excels across tested use cases. Its key optimization is a fine-tuned softmax implementation leveraging NVIDIA-internal knobs.
+TensorRT-LLM’s MLA performance is already strong. The TokenSpeed MLA prefill
+kernel offers two backends: an open-source version and a faster binary version.
+Although the open-source version is slightly slower than TensorRT-LLM’s native
+implementation, the AOT binary version performs best across the tested cases.
+Its key optimization is a finely tuned softmax implementation that uses
+internal NVIDIA controls.
 
-The performance numbers can be collected using the following command line:
+Reproduce these measurements with the following command:
 ```
 python ./tokenspeed-mla/python/tokenspeed_mla/fmha.py \
   --is_causal \
@@ -62,7 +67,7 @@ In the above test cases, `q_seqlen = 4` and `kv_seqlen = 80K`.
 
 TensorRT-LLM uses a single kernel for MLA decode, which appears to adopt a swap-AB strategy in the tested cases. In contrast, TokenSpeed’s MLA decode kernel uses a two-kernel implementation: one kernel computes the MLA decode with split-KV, and a second kernel performs the reduction of the split-KV partial results.
 
-Key Optimization of TokenSpeed MLA decode kernel: Group `q_seqlen` and `num_heads` into BMM1 `M`
+Key optimization: combine `q_seqlen` and `num_heads` in the BMM1 `M` dimension
 
 In `mla_decode.py`, `mla_decode_fp16.py`, and `mla_decode_fp8.py`, decode uses
 `fold_sq_factor` to partially fold query tokens into the head axis when
@@ -83,13 +88,15 @@ scheduler second dimension (`q_seqlen_eff=2`).
 
 Other optimizations include:
 
-- Using 2CTA UTCMMA instruction to reduce shared memory usage.
-- Try to use as less mbarrier as possible.
-- Split kv loading warp to get more latency hiding ability. After loading K, V is already in the L2 cache. Loading K of next tile will not have to wait for the completion of V loading.
-- Using multiple stage (sub-tiling) for STG in epilogue.
+- Using the 2CTA UTCMMA instruction to reduce shared memory usage.
+- Using as few mbarriers as possible.
+- Splitting the KV loading warp for better latency hiding. After K is loaded, V is
+  already in the L2 cache, so loading K for the next tile does not have to wait for
+  V to finish loading.
+- Using multiple stages (sub-tiling) for STG in the epilogue.
 
 
-The performance numbers can be collected using the following command line:
+Reproduce these measurements with the following command:
 ```
 python ./tokenspeed-mla/python/tokenspeed_mla/mla_decode_fp8.py \
   --batch_size 4 \
@@ -128,9 +135,9 @@ What it supports:
 
 Input/output dtype behavior:
 
-- CuTe DSL backend accepts input dtypes supported :
+- The CuTe DSL backend accepts the following input dtypes:
   - `torch.float16`, `torch.bfloat16`, `torch.float8_e4m3fn`, `torch.float8_e5m2`
-  - MLA Prefill only support `torch.float8_e4m3fn`
+  - MLA prefill supports only `torch.float8_e4m3fn`
 - Prefill output tensor is BF16 (`torch.bfloat16`)
 - Optional LSE output is FP32
 

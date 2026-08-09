@@ -704,7 +704,7 @@ __device__ __forceinline__ vec_t<DType, VEC_SIZE> GenerateGumbelNoise(uint64_t p
   constexpr float kEPSILON = 1e-20f;
   constexpr float kLOG2 = 0.6931471806f;
   auto uniform2gumbel = [](float x) { return -kLOG2 * log2f(-log2f(x + kEPSILON) + kEPSILON); };
-// TODO: compare the speed of log2 and log
+// TODO: Compare the performance of log2 and log.
 #pragma unroll
   for (uint32_t i = 0; i + 4 <= VEC_SIZE; i += 4) {
     curand_init(philox_seed, subsequence + i, philox_offset, &state);
@@ -821,9 +821,9 @@ __global__ void SamplingFromProbKernel(DType* probs, IdType* output, IdType* ind
   }
   int sampled_id = temp_storage.sampled_id;
   if (sampled_id == d) {
-    // NOTE(Zihao): this would happen when u is very close to 1
-    // and the sum of probabilities is smaller than u
-    // In this case, we use the last valid index as the sampled id
+    // This occurs when u is very close to 1
+    // and the probability sum is less than u.
+    // Use the last valid index as the sampled ID in this case.
     sampled_id = temp_storage.last_valid_id;
   }
   output[bx] = sampled_id;
@@ -878,9 +878,9 @@ __global__ void TopKSamplingFromProbKernel(DType* probs, IdType* output, IdType*
     __syncthreads();
     sampled_id = temp_storage.sampled_id;
     if (sampled_id == d) {
-      // NOTE(Zihao): this would happen when u is very close to 1
-      // and the sum of probabilities is smaller than u
-      // In this case, we use the last valid index as the sampled id
+      // This occurs when u is very close to 1
+      // and the probability sum is less than u.
+      // Use the last valid index as the sampled ID in this case.
       sampled_id = temp_storage.last_valid_id;
     }
     double pivot_0 = probs[row_idx * d + sampled_id];
@@ -991,9 +991,9 @@ __global__ void TopPSamplingFromProbKernel(DType* probs, IdType* output, IdType*
     __syncthreads();
     sampled_id = temp_storage.sampled_id;
     if (sampled_id == d) {
-      // NOTE(Zihao): this would happen when u is very close to 1
-      // and the sum of probabilities is smaller than u
-      // In this case, we use the last valid index as the sampled id
+      // This occurs when u is very close to 1
+      // and the probability sum is less than u.
+      // Use the last valid index as the sampled ID in this case.
       sampled_id = temp_storage.last_valid_id;
     }
     double pivot_0 = probs[row_idx * d + sampled_id];
@@ -1121,9 +1121,9 @@ __global__ void MinPSamplingFromProbKernel(DType* probs, float* min_p_arr, IdTyp
   }
   sampled_id = temp_storage.sampled_id;
   if (sampled_id == d) {
-    // NOTE(Zihao): this would happen when u is very close to 1
-    // and the sum of probabilities is smaller than u
-    // In this case, we use the last valid index as the sampled id
+    // This occurs when u is very close to 1
+    // and the probability sum is less than u.
+    // Use the last valid index as the sampled ID in this case.
     sampled_id = temp_storage.last_valid_id;
   }
   output[bx] = sampled_id;
@@ -1178,9 +1178,9 @@ __global__ void TopKTopPSamplingFromProbKernel(DType* probs, IdType* top_k_arr, 
     __syncthreads();
     sampled_id = temp_storage.sampled_id;
     if (sampled_id == d) {
-      // NOTE(Zihao): this would happen when u is very close to 1
-      // and the sum of probabilities is smaller than u
-      // In this case, we use the last valid index as the sampled id
+      // This occurs when u is very close to 1
+      // and the probability sum is less than u.
+      // Use the last valid index as the sampled ID in this case.
       sampled_id = temp_storage.last_valid_id;
     }
     double pivot_0 = probs[row_idx * d + sampled_id];
@@ -2493,9 +2493,9 @@ __global__ void ChainSpeculativeSampling(DType* draft_probs, IdType* draft_token
   __syncthreads();
   int sampled_id = temp_storage.sampled_id;
   if (sampled_id == d) {
-    // NOTE(Zihao): this would happen when u is very close to 1
-    // and the sum of probabilities is smaller than u
-    // In this case, we use the last valid index as the sampled id
+    // This occurs when u is very close to 1
+    // and the probability sum is less than u.
+    // Use the last valid index as the sampled ID in this case.
     sampled_id = temp_storage.last_valid_id;
   }
   // set the first rejected token

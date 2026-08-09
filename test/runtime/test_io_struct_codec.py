@@ -422,7 +422,7 @@ def test_shm_handle_rides_typed_and_consumable():
 
 def test_mm_item_reslots_handle_passed_as_feature():
     # Compatibility: constructors that predate the feature/feature_shm split
-    # may pass a SHM handle via ``feature``.
+    # may pass an SHM handle via ``feature``.
     handle = ShmTensorHandle.publish(torch.ones(4))
     try:
         item = MultimodalDataItem(modality=Modality.IMAGE, feature=handle)

@@ -54,7 +54,7 @@ def is_flash_kda_installed() -> bool:
         import flash_kda  # noqa: F401
     except Exception:
         # Present but unloadable (e.g. extension built for another
-        # torch/CUDA ABI). Treat as unavailable rather than failing import.
+        # PyTorch/CUDA ABI). Treat as unavailable rather than failing import.
         return False
     return True
 

@@ -404,11 +404,10 @@ class DeepseekV3ForCausalLMNextN(DeepseekV3ForCausalLM):
                 if weight_name not in name:
                     continue
                 # We have mlp.experts[0].gate_proj in the checkpoint.
-                # Since moe_loader handles the experts below,
-                # we need to skip here BEFORE we update the name, otherwise
-                # name will be updated to mlp.experts[0].gate_up_proj, which
-                # will then be updated below by moe_loader
-                # for mlp.experts[0].gate_gate_up_proj, which breaks load.
+                # moe_loader handles the experts below. Skip them before
+                # updating the name; otherwise, mlp.experts[0].gate_proj first
+                # becomes mlp.experts[0].gate_up_proj and then the invalid
+                # mlp.experts[0].gate_gate_up_proj, which breaks loading.
                 if ("mlp.experts." in name) and name not in params_dict:
                     continue
                 name = name.replace(weight_name, param_name)

@@ -1,9 +1,9 @@
 """Kimi-K3 AttnRes mixing + router numerics tests (cheap; kernel parity on GPU).
 
 Covers the ``attn_res_fwd`` op the model routes AttnRes mixing through: the
-torch fallback must match the reference ``modeling_kimi.py::_apply_attn_res``
+PyTorch fallback must match the reference ``modeling_kimi.py::_apply_attn_res``
 math, the model wiring must slice candidates correctly, and (when a Blackwell
-kernel build is present) the CUDA kernel must match the torch fallback.
+kernel build is present) the CUDA kernel must match the PyTorch fallback.
 """
 
 import os
@@ -92,7 +92,7 @@ class AttnResTests(unittest.TestCase):
         blocks = torch.randn(K, T, H, dtype=torch.bfloat16, device=dev)
         res_w = torch.randn(H, dtype=torch.bfloat16, device=dev)
         rms_w = torch.rand(H, dtype=torch.bfloat16, device=dev) + 0.5
-        got = attn_res_fwd(prefix, blocks, res_w, rms_w, _EPS)  # cuda path
+        got = attn_res_fwd(prefix, blocks, res_w, rms_w, _EPS)  # CUDA path
         ref = torch_attn_res_fwd(
             layer_residual=prefix,
             block_residual=blocks,
@@ -109,7 +109,7 @@ class AttnResTests(unittest.TestCase):
         single-token kernels when no fused out-norm is requested, and to the
         online kernel (which fuses the norm) otherwise. N counts the layer
         residual, so K = N - 1 blocks. Cover both, plus N=13 (> N_MAX) which
-        must stay on the torch fallback.
+        must stay on the PyTorch fallback.
         """
         try:
             from tokenspeed_kernel.ops.attn_res.cuda import _HAS_CUDA_KERNEL

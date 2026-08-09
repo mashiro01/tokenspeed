@@ -3,7 +3,7 @@
 
 """Dense paged fp8 decode forward path.
 
-This file owns the CUTE DSL entry point for decode attention via
+This file owns the CuTe DSL entry point for decode attention via
 ``SparseDecodeAttentionForwardSm100`` — SM100 UTCMMA + persistent
 scheduling, paged fp8 Q/K/V, BSA blk128-style intra-warp overlap pipeline.
 Forward only.
@@ -503,7 +503,7 @@ class SparseDecodeAttentionForwardSm100:
         # ------------------------------------------------------------------
         # q_tma_bytes (and Phase 1.5+: kv_tma_bytes / q_subtile_bytes) are
         # recomputed inside the kernel from the constexpr SMEM layouts.
-        # Passing them as Constexpr[int] kernel args ended up marshalling
+        # Passing them as Constexpr[int] kernel args ended up marshaling
         # to dynamic Int32 here, which then tripped MbarrierArray's
         # `if tx_count < 0` check inside PipelineTmaUmma.create.
         self.kernel(
@@ -2590,7 +2590,7 @@ def run_decode_attention(
     O_partial_dummy: Optional[torch.Tensor] = None,
     LSE_partial_dummy: Optional[torch.Tensor] = None,
 ) -> None:
-    """Launch the SM100 UMMA paged decode attention CUTE DSL kernel.
+    """Launch the SM100 UMMA paged decode attention CuTe DSL kernel.
 
     qhead_per_kv is derived from input shapes (q.shape[1] // k.shape[1]).
     disable_softmax_exp2 toggles the sage-style host flag (decision §1.7);
@@ -2647,7 +2647,7 @@ def run_decode_attention(
             disable_softmax_exp2=bool(disable_softmax_exp2),
         )
         # Always pass non-None fake tensors so the @cute.kernel positional
-        # arg marshalling stays stable; the kernel only reads these when
+        # arg marshaling stays stable; the kernel only reads these when
         # split_kv=True (decision #10 epilogue branch).
         fake_O_partial = make_fake_tensor(
             Float32, (partial_rows_flat, head_dim), divisibility=4
@@ -2698,7 +2698,7 @@ def run_decode_attention(
     # (see fake_O_partial / fake_LSE_partial above).  Runtime callers that
     # don't need them (split_kv=False) pass None; allocate small uninitialized
     # dummy buffers so the kernel signature still matches without launching
-    # torch fill kernels.
+    # PyTorch fill kernels.
     if O_partial is None:
         # Reuse caller-cached dummy when available (e.g. the
         # SparseDecodePagedAttentionWrapper plan() pre-allocation), else

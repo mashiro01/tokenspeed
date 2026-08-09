@@ -1067,7 +1067,7 @@ class FusedOp {
 
 #if CUDA_VERSION >= 12080
     if constexpr (GetQuantType<Pattern> == QuantType::kFP4) {
-      // NOTE(Yingyi): might update later
+      // TODO(Yingyi): Revisit this scale-factor offset calculation.
       auto sf_out = utils::cvt_quant_to_fp4_get_sf_out_offset<uint32_t, 2>(
           std::nullopt /* batchIdx */, token_id, m_access_id_in_token, std::nullopt /* numRows */,
           m_params.hidden_dim, reinterpret_cast<uint32_t*>(m_params.scale_out), m_params.layout);

@@ -97,7 +97,7 @@ void trtllm_allreduce_fusion(TensorView allreduce_in, int64_t world_size, int64_
     params.scale_stride = scale_out.has_value() ? int32_t(scale_out.value().stride(1)) : 0;
     params.residual_reduce_scattered = residual_reduce_scattered;
     if (residual_reduce_scattered) {
-      TVM_FFI_ICHECK(use_oneshot) << "residual_reduce_scattered only support use_oneshot";
+      TVM_FFI_ICHECK(use_oneshot) << "residual_reduce_scattered requires use_oneshot";
     }
     params.rms_gamma =
         rms_gamma.has_value() ? reinterpret_cast<void*>(rms_gamma.value().data_ptr()) : nullptr;

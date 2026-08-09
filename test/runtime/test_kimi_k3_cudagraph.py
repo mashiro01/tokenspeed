@@ -1,4 +1,4 @@
-"""Kimi-K3 paged-cache CUDA-graph capture/replay core logic.
+"""Kimi-K3 paged-cache CUDA graph capture/replay core logic.
 
 CPU-only (plain tensors, no real graph capture): exercises the metadata-buffer
 capture/replay LOGIC that the decode CUDA graph depends on. The real
@@ -68,8 +68,8 @@ def _bare_mla_backend(
     is_draft: bool = False,
     spec_num_tokens: int = 1,
 ) -> CuteDSLMLABackend:
-    """A CuteDSLMLABackend with only the attributes the CUDA-graph metadata
-    paths touch — the full ctor JIT-compiles CuteDSL kernels (GPU only)."""
+    """A CuteDSLMLABackend with only the attributes the CUDA graph metadata
+    paths touch — the full ctor JIT-compiles CuTe DSL kernels (GPU only)."""
     backend = object.__new__(CuteDSLMLABackend)
     backend.device = "cpu"
     backend.page_size = _PAGE_SIZE

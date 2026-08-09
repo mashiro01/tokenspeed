@@ -1,4 +1,4 @@
-"""lm_head GEMM kernel wrapper (ported from TRT-LLM invokeFusedAGemm).
+"""lm_head GEMM kernel wrapper (ported from TensorRT-LLM invokeFusedAGemm).
 
 Computes:
     out = hidden_states @ weight.T

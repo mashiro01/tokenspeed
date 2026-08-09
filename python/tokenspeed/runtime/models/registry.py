@@ -51,7 +51,7 @@ class _ModelRegistry:
             )
 
         raise ValueError(
-            f"Model architectures {architectures} are not supported for now. "
+            f"Model architectures {architectures} are not currently supported. "
             f"Supported architectures: {all_supported_archs}"
         )
 

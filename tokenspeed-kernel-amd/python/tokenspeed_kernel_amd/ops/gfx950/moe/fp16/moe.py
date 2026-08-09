@@ -52,7 +52,7 @@ from tokenspeed_kernel_amd.ops.gfx950.moe.fp16.warp_decode_gluon_kernel import (
 # to exactly one entry of sorted_expert_ids).
 BLOCK_M = 64
 
-# ---- Decode-specialised stage-1 config -------------------------------------
+# ---- Decode-specialized stage-1 config -------------------------------------
 # Decode schedule: small M tile, large K tile, single LDS buffer -> minimal
 # resource -> max occupancy, plus split-K for extra CTAs. Tuned on MI355X DSv3.
 DECODE_MAX_M = 16  # auto-enable the decode path at/below this M
@@ -90,9 +90,9 @@ def gluon_bf16_moe(
         y[t] = sum_{s in topk} w[t,s] * down_e( silu(gate_e(h)) * up_e(h) )
         where e = topk_ids[t, s], w = topk_weights[t, s].
 
-    ``decode`` selects the decode-specialised path (``None`` = auto: on at
+    ``decode`` selects the decode-specialized path (``None`` = auto: on at
     ``num_tokens <= DECODE_MAX_M``). The decode path uses a smaller sort/tile
-    ``BLOCK_M``, the fused single-workgroup align, and a decode-specialised stage 1
+    ``BLOCK_M``, the fused single-workgroup align, and a decode-specialized stage 1
     (small M, K=128, single LDS buffer) with split-K; the prefill path uses the
     device align + the pipelined XCD-remap stage 1. ``split_k`` overrides the
     stage-1 split factor (``None`` = auto by M).

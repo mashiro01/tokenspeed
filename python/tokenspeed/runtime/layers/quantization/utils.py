@@ -169,16 +169,16 @@ def find_matched_target(
     Helper function to look up which "target" in the compressed-tensors
     config that a layer corresponds to.
 
-    Recall that a compressed-tensors configs has a concept of
-    config_groups, where each layer can be quantized with with a different
+    Recall that a compressed-tensors config defines
+    config_groups, in which each layer can be quantized with a different
     scheme.
 
-    targets in each config_group will be a list of either layer names
-    (or regexes corresponding to layer names) or names of torch Modules.
+    Targets in each config_group are a list of layer names
+    (or regular expressions matching layer names) or PyTorch module names.
 
-    First, we try to match the layer_name with a target
-    Second, we try to match the module's name with a target
-    Third, we try to map the layer_name to a list of fused module names.
+    First, we try to match layer_name with a target.
+    Second, we try to match the module's name with a target.
+    Third, we try to map layer_name to a list of fused module names.
         *All* component module names must match in order for a match to be
         successful. A successful match returns the first component target
 

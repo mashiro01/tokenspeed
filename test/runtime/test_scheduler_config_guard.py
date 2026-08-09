@@ -20,8 +20,8 @@ def _load_paged_cache_spec():
 
         return spec
     except (ImportError, ModuleNotFoundError):
-        # The package pulls torch-backed modules. spec.py itself is
-        # torch-free, so load it directly in a bare environment.
+        # The package pulls PyTorch-backed modules. spec.py itself is
+        # PyTorch-free, so load it directly in a bare environment.
         repo_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )

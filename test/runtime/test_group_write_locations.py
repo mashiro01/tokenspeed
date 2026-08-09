@@ -44,7 +44,7 @@ class _TorchCase(unittest.TestCase):
         try:
             import torch
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch: {exc}")
+            self.skipTest(f"requires PyTorch: {exc}")
         self.torch = torch
 
 

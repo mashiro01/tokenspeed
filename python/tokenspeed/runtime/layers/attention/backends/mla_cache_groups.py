@@ -49,7 +49,7 @@ class MlaCacheGroupMixin:
     # A draft MLA backend always reads the batch-ordered draft page table that
     # DraftPageStaging publishes (single history group, already in kernel
     # pages), never the wrapper's per-group table dispatch. This flag tells the
-    # CUDA-graph wrapper to skip that dispatch for MLA drafts.
+    # CUDA graph wrapper to skip that dispatch for MLA drafts.
     reads_staged_draft_page_table = True
 
     def mark_cache_contract(self, logical_page_size: int | None = None) -> None:
@@ -57,7 +57,7 @@ class MlaCacheGroupMixin:
 
         Called by the registry before graph-state allocation. Eager forwards
         bind the group tables automatically once cache metadata arrives; this
-        flag lets CUDA-graph capture size its per-group write-location buffer up
+        flag lets CUDA graph capture size its per-group write-location buffer up
         front. ``logical_page_size`` is accepted for call-site uniformity with
         other backends but unused: every MLA draft reads the batch-ordered draft
         page table published by ``DraftPageStaging`` (already in kernel pages),
@@ -152,7 +152,7 @@ class MlaCacheGroupMixin:
     ) -> torch.Tensor:
         """Per-token absolute latent slots from a logical full-history table.
 
-        flashinfer's paged prefill (``plan(page_size=1)``) reads a
+        FlashInfer's paged prefill (``plan(page_size=1)``) reads a
         ``[bs, max_context]`` table indexed per token: slot(req, t) =
         ``table[req, t // P] * P + t % P``. Columns past a request's live range
         resolve through the table's null/-1 pages and are never read (the kernel

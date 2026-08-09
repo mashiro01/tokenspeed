@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2026 LightSeek Foundation
  *
- * Vendored from flashinfer/sampling.cuh (Apache-2.0), with the kernel
+ * Vendored from FlashInfer's flashinfer/sampling.cuh (Apache-2.0), with the kernel
  * template split on input vs output dtype so bf16/fp16 input folds the
  * upcast into the kernel's load. Output is always fp32.
  */

@@ -721,7 +721,7 @@ def _deepseek_v4_indexer_topk_from_logits_prefill_op(
     row_ends: torch.Tensor | None = None,
     out: torch.Tensor,
 ) -> torch.Tensor:
-    """Use the local TRT-LLM CUDA prefill selector."""
+    """Use the local TensorRT-LLM CUDA prefill selector."""
 
     if not logits.is_cuda or logits.dtype != torch.float32:
         raise RuntimeError("DeepSeek V4 prefill indexer requires CUDA float32 logits")
@@ -2004,7 +2004,7 @@ def _deepseek_v4_swa_slot_mapping(
 ) -> torch.Tensor:
     """Build the SWA write-slot mapping, already sanitized for cache inserts.
 
-    The returned mapping has invalid CUDA-graph tokens and out-of-capacity
+    The returned mapping has invalid CUDA graph tokens and out-of-capacity
     slots masked to -1, so per-layer SWA inserts can consume it directly.
     Sanitizing here keeps the mask/clamp elementwise chain at once per step;
     doing it per layer previously baked ~7 tiny kernels x 61 layers into the

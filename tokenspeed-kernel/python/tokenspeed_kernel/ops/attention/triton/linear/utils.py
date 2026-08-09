@@ -184,7 +184,7 @@ if check_pytorch_version("2.4"):
 else:
     assert (
         device == "cuda"
-    ), "Only cuda device is supported for PyTorch version < 2.4.0."
+    ), "PyTorch versions earlier than 2.4.0 support only CUDA devices."
     autocast_custom_fwd = device_torch_lib.amp.custom_fwd
 
     def custom_device_ctx(index: int):

@@ -248,7 +248,7 @@ struct alignas(128) Counter {
     typename cub::Traits<T>::UnsignedBits kth_value_bits;
     // Per-row short-circuit flag: when set to non-zero, radix_kernel and
     // last_filter_kernel return immediately without doing any work for this
-    // row. Lets callers (e.g. fused top-k + top-p) skip top-k for rows where
+    // row. This lets callers (e.g. fused top-k + top-p) skip top-k for rows where
     // top_k is effectively "no cap" (mode 3.2). Zero by default — memset of
     // the workspace leaves this off, so existing callers see no behavior
     // change.

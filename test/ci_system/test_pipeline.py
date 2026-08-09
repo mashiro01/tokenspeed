@@ -693,7 +693,7 @@ def test_validate_task_rejects_per_label_optional_with_non_boolean_value(tmp_pat
 
 def test_build_matrix_default_priority_preserves_existing_order(tmp_path):
     # Two tasks; both omit `priority`. Order must match the existing
-    # behaviour: alphabetical by file path, then label order from the yaml.
+    # behavior: alphabetical by file path, then label order from the YAML file.
     _write_task_yaml(
         tmp_path,
         "a-first.yaml",

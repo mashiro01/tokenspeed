@@ -217,7 +217,7 @@ def test_tower_valueerror_concludes_room_failed_not_crash():
 
 # --- DisaggEncodeExecutor ring buffers: every transferred buffer must be a
 # registered, non-overlapping memory region. Registering each fresh per-request
-# ``item.encoded`` address fails on RDMA (the torch caching allocator packs
+# ``item.encoded`` address fails on RDMA (the PyTorch caching allocator packs
 # freed-but-still-registered tensors together -> a later grown region straddles
 # others -> "overlapped memory region" -> the one-sided write fails -> the prefill
 # scheduler dies). The executor instead collapses every send through a fixed RING
@@ -415,7 +415,7 @@ class _FeatureFnModel:
 
     def __init__(self):
         # In a real model image_encoder defaults to get_image_feature and is
-        # swapped to the cudagraph wrapper during multimodal runtime preparation;
+        # replaced with the CUDA graph wrapper during multimodal runtime preparation;
         # use a distinct sentinel so the test proves IMAGE routes via the seam.
         self.image_encoder = lambda items: "via-image_encoder-seam"
         self.video_encoder = lambda items: "via-video_encoder-seam"
@@ -436,7 +436,7 @@ def test_feature_fn_image_routes_through_image_encoder_seam():
 
     model = _FeatureFnModel()
     exe = DisaggEncodeExecutor(object(), model, "cpu")
-    # IMAGE must dispatch through image_encoder (the cudagraph seam), NOT
+    # IMAGE must dispatch through image_encoder (the CUDA graph seam), not
     # get_image_feature directly -- else the captured graph would be bypassed.
     assert exe._feature_fn(Modality.IMAGE) is model.image_encoder
     assert exe._feature_fn(Modality.IMAGE) is not model.get_image_feature

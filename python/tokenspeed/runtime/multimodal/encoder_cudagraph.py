@@ -215,7 +215,7 @@ class VisionEncoderCudaGraphAdapter:
         target = metadata_sequence_budget + 1
         if cu.shape[0] > target:
             raise RuntimeError(
-                f"{self.modality_name} encoder cudagraph needs {cu.shape[0] - 1} "
+                f"{self.modality_name} encoder CUDA graph needs {cu.shape[0] - 1} "
                 f"metadata sequences, but the configured limit is "
                 f"{metadata_sequence_budget}"
             )
@@ -255,7 +255,7 @@ class VisionEncoderCudaGraphAdapter:
     ) -> dict[str, Any]:
         if not isinstance(batch, VisionEncoderBatch):
             raise TypeError(
-                f"{self.modality_name} encoder cudagraph expected "
+                f"{self.modality_name} encoder CUDA graph expected "
                 f"VisionEncoderBatch, got {type(batch).__name__}"
             )
         metadata = dict(self.tower.prepare_metadata(batch.grid))
@@ -279,7 +279,7 @@ class VisionEncoderCudaGraphAdapter:
     ) -> torch.Tensor:
         if not isinstance(batch, VisionEncoderBatch):
             raise TypeError(
-                f"{self.modality_name} encoder cudagraph expected "
+                f"{self.modality_name} encoder CUDA graph expected "
                 f"VisionEncoderBatch, got {type(batch).__name__}"
             )
         return self.post_encode(encoder_outs, batch.grid)
@@ -414,7 +414,7 @@ class EncoderCudaGraphWrapper:
         # Encoder TP > 1 used to capture under the custom-AR context. That
         # backend never armed (its resources were gated on a flag nothing
         # set), so this was already a nullcontext; the remaining AR paths
-        # (trtllm one-shot, NCCL) need no capture-time context.
+        # (TensorRT-LLM one-shot and NCCL) need no capture-time context.
         ar_ctx: Any = contextlib.nullcontext()
 
         # No pool= argument: each budget graph gets its own private pool. A
@@ -435,7 +435,7 @@ class EncoderCudaGraphWrapper:
             output_buffer=output_buffer,
         )
         logger.debug(
-            "Captured encoder cudagraph: modality=%s, budget=%d, "
+            "Captured encoder CUDA graph: modality=%s, budget=%d, "
             "max_batch_size=%d, metadata_sequence_budget=%d, buffers=%s",
             self.modality_name,
             encoder_output_token_budget,
@@ -488,7 +488,7 @@ class EncoderCudaGraphWrapper:
         src_buffers = batch.input_tensors
         if src_buffers.keys() != graph_meta.input_buffers.keys():
             raise RuntimeError(
-                f"{self.modality_name} encoder cudagraph input keys changed: "
+                f"{self.modality_name} encoder CUDA graph input keys changed: "
                 f"capture={sorted(graph_meta.input_buffers.keys())}, "
                 f"replay={sorted(src_buffers.keys())}"
             )
@@ -498,13 +498,13 @@ class EncoderCudaGraphWrapper:
             n = src.shape[0]
             if n > buf.shape[0]:
                 raise RuntimeError(
-                    f"{self.modality_name} encoder cudagraph input {key} has "
+                    f"{self.modality_name} encoder CUDA graph input {key} has "
                     f"{n} rows, but budget {encoder_output_token_budget} only "
                     f"captured {buf.shape[0]} rows"
                 )
             if src.shape[1:] != buf.shape[1:]:
                 raise RuntimeError(
-                    f"{self.modality_name} encoder cudagraph input {key} "
+                    f"{self.modality_name} encoder CUDA graph input {key} "
                     f"shape changed after dim0: capture={tuple(buf.shape)}, "
                     f"replay={tuple(src.shape)}"
                 )
@@ -522,7 +522,7 @@ class EncoderCudaGraphWrapper:
 
         if replay_buffers.keys() != graph_meta.metadata_buffers.keys():
             raise RuntimeError(
-                f"{self.modality_name} encoder cudagraph metadata keys changed: "
+                f"{self.modality_name} encoder CUDA graph metadata keys changed: "
                 f"capture={sorted(graph_meta.metadata_buffers.keys())}, "
                 f"replay={sorted(replay_buffers.keys())}"
             )
@@ -534,13 +534,13 @@ class EncoderCudaGraphWrapper:
             else:
                 if new.shape[1:] != buf.shape[1:]:
                     raise RuntimeError(
-                        f"{self.modality_name} encoder cudagraph metadata {key} "
+                        f"{self.modality_name} encoder CUDA graph metadata {key} "
                         f"shape changed after dim0: capture={tuple(buf.shape)}, "
                         f"replay={tuple(new.shape)}"
                     )
                 if new.shape[0] > buf.shape[0]:
                     raise RuntimeError(
-                        f"{self.modality_name} encoder cudagraph metadata {key} "
+                        f"{self.modality_name} encoder CUDA graph metadata {key} "
                         f"has {new.shape[0]} rows, but the captured buffer only "
                         f"has {buf.shape[0]} rows"
                     )

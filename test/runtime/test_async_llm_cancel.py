@@ -1,7 +1,7 @@
 """Regression guard for ``AsyncLLM._wait_one_response`` cancellation.
 
 Locks the contract Phase G.1 established: when the task driving a
-streaming generator is cancelled (e.g. FastAPI cancelling its route
+streaming generator is canceled (e.g. FastAPI canceling its route
 coroutine because the client disconnected), the generator's
 ``finally`` drops the rid from ``rid_to_state`` and fires exactly one
 ``AbortReq`` at the scheduler. No dangling per-request state. No

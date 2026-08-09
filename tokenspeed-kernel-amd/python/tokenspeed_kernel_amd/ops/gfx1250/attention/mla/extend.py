@@ -365,7 +365,7 @@ def _mla_extend_fwd_kernel(
     # sequence len for this particular sequence
     seq_len = gl.load(seq_lens_ptr + seq_idx)
 
-    # context length for this particular sequences
+    # Context length for this sequence.
     context_len = seq_len - cur_batch_query_len
 
     # compute the length of the longest sequence prefix spanned by any
@@ -381,9 +381,8 @@ def _mla_extend_fwd_kernel(
     # actual sequence length
     max_seq_prefix_len = gl.minimum(max_seq_prefix_len, seq_len)
 
-    # calculate the number of tiles that need to be processed to
-    # cover the longest sequence prefix (due to causal masking, tiles beyond
-    # this prefix can be skipped)
+    # Calculate the number of tiles needed to cover the longest sequence prefix.
+    # Tiles beyond this prefix can be skipped because of causal masking.
     num_tiles = cdiv_fn(max_seq_prefix_len, TILE_SIZE)
 
     # ---- Sliding-window tile pruning --------------------
@@ -442,8 +441,8 @@ def _mla_extend_fwd_kernel(
         # m_j : (BLOCK_M,)
         m_j = gl.maximum(M, gl.max(S, axis=1))
 
-        # For sliding window there's a chance the max is -inf due to masking of
-        # the entire row. In this case we need to set m_j 0 to avoid NaN
+        # With a sliding window, masking may make the row maximum negative infinity.
+        # Set m_j to zero in that case to avoid NaNs.
         m_j = gl.where(m_j > float("-inf"), m_j, 0.0)
 
         # P : (BLOCK_M, TILE_SIZE,)
@@ -483,7 +482,7 @@ def _mla_extend_fwd_kernel(
     if out_scale_ptr is not None:
         acc = acc * out_scale
         if output_ptr.type.element_ty == gl.float8e4nv:
-            acc = tl.clamp(acc, E4M3_MIN, E4M3_MAX)  # gluon has no clamp interface
+            acc = tl.clamp(acc, E4M3_MIN, E4M3_MAX)  # Gluon has no clamp interface.
         elif output_ptr.type.element_ty == gl.float8e5:
             acc = tl.clamp(acc, E5M2_MIN, E5M2_MAX)
 
@@ -541,11 +540,15 @@ def gluon_mla_extend_gfx1250(
     """
     del max_seqlen_q, max_seqlen_k, qk_nope_head_dim
     if not is_causal:
-        raise NotImplementedError("gluon MLA extend gfx1250 requires causal attention")
+        raise NotImplementedError(
+            "Gluon MLA extend on gfx1250 requires causal attention"
+        )
     if logit_cap != 0.0:
-        raise NotImplementedError("gluon MLA extend gfx1250 does not support logit_cap")
+        raise NotImplementedError(
+            "Gluon MLA extend on gfx1250 does not support logit_cap"
+        )
     if return_lse:
-        raise NotImplementedError("gluon MLA extend gfx1250 does not return LSE")
+        raise NotImplementedError("Gluon MLA extend on gfx1250 does not return LSE")
     if q.ndim != 3:
         raise ValueError(f"q must be [total_q, num_q_heads, head_dim], got {q.shape}")
     fp8_dtypes = (torch.float8_e4m3fn, torch.float8_e5m2)
@@ -557,7 +560,7 @@ def gluon_mla_extend_gfx1250(
     is_fp8 = q.dtype in fp8_dtypes
     if kv_lora_rank != 512 or qk_rope_head_dim != 64:
         raise NotImplementedError(
-            "gluon MLA extend gfx1250 requires kv_lora_rank=512 and "
+            "Gluon MLA extend on gfx1250 requires kv_lora_rank=512 and "
             f"qk_rope_head_dim=64, got {kv_lora_rank} and {qk_rope_head_dim}"
         )
 

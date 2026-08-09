@@ -167,7 +167,8 @@ if platform.is_nvidia:
         del w.w13_weight_scale
         del w.w2_weight_scale
 
-        # Compute fused-kernel scales. The trtllm SwiGLU MoE kernel dequantizes the GEMM1 gate
+        # Compute fused-kernel scales. The TensorRT-LLM SwiGLU MoE kernel
+        # dequantizes the GEMM1 gate
         # (W1) and up (W3) halves with separate scalars, so feed each its own global scale_2
         # (else non-uniform-W1/W3 checkpoints mis-scale the up-proj by up_s2/gate_s2).
         ws2 = w.w13_weight_scale_2
@@ -347,7 +348,7 @@ if platform.is_nvidia:
         if routed:
             # expert_weights just echoes the caller's input; shared-sink callers drop it and pass their own.
             return (gemm2_out, expert_weights, expanded_idx)
-        # Flashinfer's Python wrapper allocates expert_weights with
+        # FlashInfer's Python wrapper allocates expert_weights with
         # ``routing_logits.dtype`` (fp32 for DSv3), but the C++ routing
         # kernel writes bf16 contiguously for DeepSeekV3 routing
         # into the buffer. Only the first half holds valid data; reading

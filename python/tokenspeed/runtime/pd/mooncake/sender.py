@@ -169,9 +169,10 @@ class MooncakeKVSender:
                     elapsed = now - self.init_time
                     if elapsed >= self.kv_mgr.bootstrap_time_out:
                         logger.warning_once(
-                            "Some requests timed out when bootstrapping, "
-                            "which means prefill instances fail to receive the KV indices from the decode instance of this request. "
-                            "If a greater mean TTFT is acceptable, you can 'export TOKENSPEED_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600' (10 minutes) to relax the timeout condition. "
+                            "Some requests timed out during bootstrapping because the prefill instances "
+                            "did not receive their KV indices from the decode instance. "
+                            "If a higher mean TTFT is acceptable, set TOKENSPEED_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600 "
+                            "to extend the timeout to 10 minutes."
                         )
                         self.kv_mgr.record_failure(
                             self.bootstrap_room,

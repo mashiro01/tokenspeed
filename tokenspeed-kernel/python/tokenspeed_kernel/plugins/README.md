@@ -1,4 +1,4 @@
-# Tokenspeed-kernel Plugin System
+# TokenSpeed-Kernel Plugin System
 
 > **Status: experimental.** The plugin contract — entry-point group name,
 > `register()` signature, `KernelSpec` fields, selection priority semantics,
@@ -169,7 +169,7 @@ for info in list_plugins():
   a value strictly higher than the built-in they replace.
 - `discover_plugins()` walks entry points in alphabetical order by
   entry-point name. When two registrations land at the same priority for
-  the same `(family, mode)`, the warning is emitted and selection becomes
+  the same `(family, mode)`, a warning is emitted and selection becomes
   load-order-dependent — set explicit, distinct priorities to avoid this.
 - A plugin whose `register()` raises does not crash discovery; a
   `UserWarning` is emitted and other plugins continue loading.

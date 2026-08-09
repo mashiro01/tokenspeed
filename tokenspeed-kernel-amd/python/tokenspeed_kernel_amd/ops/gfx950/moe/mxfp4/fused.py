@@ -97,7 +97,7 @@ def _ragged_block_schedule(metadata, block_size: int):
 
 
 def composition(cls):
-    """A decorator lets aggregate type to directly access attributes from its aggregate member."""
+    """Let an aggregate type access the attributes of its aggregate members."""
 
     def __getattr__(self, name):
         if name in self.__dict__:
@@ -282,7 +282,7 @@ def shuffle_weight_for_gluon_dot_layout(
 
 
 # ---------------------------------------------------------------------------
-# Layout factories (gluon constexpr functions)
+# Layout factories (Gluon constexpr functions)
 # ---------------------------------------------------------------------------
 
 
@@ -1042,13 +1042,13 @@ class AsyncCopyDescriptor:
                 cache_modifier=CACHE_MODIFIER,
             )
         else:
-            # IMPORTANT: do not pass ``other=0`` here. A non-null
+            # Do not pass ``other=0`` here. A non-null
             # ``other`` causes the lowering to emit per-element
             # branches around each ``buffer.load.async.lds`` which
-            # break ``SIInsertWaitcnts`` static counting and collapse
+            # break ``SIInsertWaitcnts`` static counting, collapsing
             # the async pipeline to ``s_waitcnt vmcnt(0)``. We rely on
             # the buffer descriptor's ``numRecords`` OOB check to zero
-            # masked-out lanes in LDS.
+            # masked-out LDS lanes.
             mask_k = gl.expand_dims(off_k_step + self.off_k, self.op_idx) < self.k_limit
             mask = mask_k & self.masks_nonk
             gl.amd.cdna4.async_copy.buffer_load_to_shared(
@@ -5340,7 +5340,7 @@ def _swizzle_scales_cdna4(s: torch.Tensor) -> torch.Tensor:
     assert s.dtype == torch.uint8, (
         f"_swizzle_scales_cdna4: expected uint8 e8m0 scales, " f"got {s.dtype}"
     )
-    # gluon convention -> upstream convention.
+    # Gluon convention -> upstream convention.
     s = s.transpose(-2, -1).contiguous()
     *leading_shape, K_SCALE, N = s.shape
     B = 1
@@ -6992,12 +6992,12 @@ def _mxfp4_quantize_cdna4_scale_kernel(
     k_group = tl.program_id(1)
     row_in_range = out_m < M
     if HAS_PADDED_SCALE_ROWS:
-        # Under HIP/CUDA-graph replay the grid is captured for the padded row
+        # Under HIP/CUDA graph replay the grid is captured for the padded row
         # count M, but the route kernel only writes gather indices + ragged
         # metadata for gates that map to a valid expert (mask=valid). The final
         # slice_offs entry is that valid row count; rows at/after it are padding
         # whose gather index and scale are never consumed downstream. Their
-        # metadata is uninitialised, so the expert binary search overshoots and
+        # metadata is uninitialized, so the expert binary search overshoots and
         # produces an out-of-bounds scale store. Skip them.
         n_valid_rows = tl.load(slice_offs_ptr + N_EXPERTS)
         row_in_range = row_in_range & (out_m < n_valid_rows)
@@ -7090,7 +7090,7 @@ def _mxfp4_quantize_cdna4_scale_tiled_kernel(
     if HAS_PADDED_SCALE_ROWS:
         # See scalar kernel: skip padded rows beyond the valid routed-row count
         # (slice_offs[N_EXPERTS]); their gather index / metadata are
-        # uninitialised under graph-replay and drive out-of-bounds stores.
+        # uninitialized under graph-replay and drive out-of-bounds stores.
         n_valid_rows = tl.load(slice_offs_ptr + N_EXPERTS)
         valid_m = valid_m & (offs_m < n_valid_rows)
     valid_ks = offs_ks < K_SCALE
@@ -7695,22 +7695,23 @@ def gluon_mxfp_fused_moe(
     swiglu_limit: float = 7.0,
     swiglu_beta: float = 1.0,
 ) -> torch.Tensor:
-    """Route + dispatch GEMM + SwiGLU + combine GEMM, all fused for the
-    gluon mxfp4 / fp8-activation path.
+    """Fuse routing, dispatch GEMM, SwiGLU, and combine GEMM for Gluon.
+
+    This path uses MXFP4 weights and FP8 activations.
 
     Inputs:
-        hidden_states: ``(n_tokens, hidden)`` activation in bf16/fp16.
+        hidden_states: ``(n_tokens, hidden)`` activation in BF16/FP16.
         router_logits: ``(n_tokens, num_experts)`` raw router logits.
-        w13_weight, w2_weight: gluon-swizzled MXFP4 expert weights
+        w13_weight, w2_weight: Gluon-swizzled MXFP4 expert weights
             (``RaggedTensorMetadata``-compatible wrapped tensors).
-        w13_bias, w2_bias: optional float32 expert biases.
-        w13_mx_scale, w2_mx_scale: gluon-swizzled MXFP4 expert weight
+        w13_bias, w2_bias: Optional FP32 expert biases.
+        w13_mx_scale, w2_mx_scale: Gluon-swizzled MXFP4 expert-weight
             scales for the two GEMMs.
-        w13_act_scale, w2_act_scale: per-tensor FP8 activation scales
+        w13_act_scale, w2_act_scale: Per-tensor FP8 activation scales
             for the two GEMMs.
-        out_dtype: output dtype for the final combine output.
-        top_k: routing top_k.
-        swiglu_alpha / swiglu_limit: SwiGLU activation parameters.
+        out_dtype: Output data type for the final combined result.
+        top_k: Routing top-k value.
+        swiglu_alpha, swiglu_limit: SwiGLU activation parameters.
 
         enable_warp_decode: Whether to try the gfx950 small-M warp-decode path.
     """
@@ -8176,7 +8177,7 @@ def _maybe_route_owned_mxfp4_mfma_decode(
         # case to the generic path so results are unchanged. (The non-grouped
         # n_group==topk_group==0 case uses default_scaled_route ->
         # _softmax_topk_reference with scale_when_unnormalized=True, which
-        # matches the gluon kernel, so it is safe here.)
+        # matches the Gluon kernel, so it is safe here.)
         uses_grouped = _uses_grouped_routing(n_group, topk_group)
         if (
             uses_grouped
@@ -8960,7 +8961,7 @@ def _stable_topk_smaller_index(
     raw = values.contiguous().view(integer_dtype).to(torch.int64) & value_mask
     # Build the flip masks on-device with ``full_like`` rather than
     # ``raw.new_tensor(<python int>)``: the latter materializes a CPU tensor and
-    # copies it to the GPU, which is illegal during CUDA-graph capture.
+    # copies it to the GPU, which is illegal during CUDA graph capture.
     ordered = raw ^ torch.where(
         (raw & sign_mask) != 0,
         torch.full_like(raw, value_mask),
@@ -9180,7 +9181,7 @@ GLUON_ROUTE_MAX_E = 1024  # next_pow2(E) bins / EP-wide tiles stay bounded
 # (GP <= 64); configs that exceed it fall back to the generic pipeline.
 GLUON_ROUTE_MAX_G = 64
 
-# torch gate dtype -> gluon element type (for the in-kernel softmax cast that
+# PyTorch gate data type -> Gluon element type (for the in-kernel softmax cast that
 # reproduces topk_forward's ``softmax(...).to(x_dtype)`` rounding exactly).
 _ROUTE_GL_DTYPE = {
     torch.float16: gl.float16,
@@ -9216,7 +9217,7 @@ def _fused_topk(
 
     Selects, per token row, the top ``TOPK`` experts by logit value (ties to
     the smaller expert id, descending value order) and     the softmax gate over
-    the selected logits -- reproducing the triton kernels ``_topk_forward``
+    the selected logits, reproducing the Triton kernels' ``_topk_forward``
     semantics without a separate launch or a ``y_vals``/``y_indx`` global
     round-trip.
     Returns flat ``(idx[GP] int32, vals[GP] X_DTYPE)`` in token-major gate
@@ -9233,8 +9234,8 @@ def _fused_topk(
     # Equivalent to streaming_topk's packed sort: max value wins, ties resolve
     # to the smaller expert index; the iteration emits experts in descending
     # value order, matching topk_forward's output slot order. Results are
-    # written column-by-column into [MP, TKP] tiles (no python lists, which
-    # gluon tracing does not support).
+    # written column by column into [MP, TKP] tiles (without Python lists,
+    # which Gluon tracing does not support).
     tcol = gl.expand_dims(gl.arange(0, TKP, layout=gl.SliceLayout(0, LT)), 0)  # [1,TKP]
     val_t = gl.full([MP, TKP], -1e30, gl.float32, layout=LT)  # finite -inf-ish
     idx_t = gl.zeros([MP, TKP], gl.int32, layout=LT)
@@ -10043,7 +10044,7 @@ def _warp_decode_stage1_coop_compute(
             cache_modifier=W_CACHE_MODIFIER,
         )
     else:
-        # K-contig W (W_TRANSPOSE=True): vectorise the contiguous K_packed axis
+        # K-contig W (W_TRANSPOSE=True): vectorize the contiguous K_packed axis
         # (mirrors the W_TRANSPOSE branch of _pipelined_moe_tile_compute).
         LOAD_W_LAYOUT: gl.constexpr = _load_layout(
             BLOCK_K_W, BLOCK_N, NUM_WARPS, [1, 0], W_ELEM_BITS
@@ -10827,7 +10828,7 @@ def gluon_precomputed_topk_fused_route(
 ]:
     """1-kernel stable route metadata from already-computed top-k.
 
-    This is the precomputed-top-k analogue of ``gluon_fused_route``: it keeps
+    This is the precomputed-top-k analog of ``gluon_fused_route``: it keeps
     the same single-block small-M ragged metadata contract, but skips in-kernel
     softmax/top-k and consumes the caller-provided ``topk_ids`` /
     ``topk_weights`` directly.

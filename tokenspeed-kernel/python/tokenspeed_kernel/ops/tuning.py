@@ -24,7 +24,7 @@ Tunable kernels (the flashinfer MoE and GEMM families) profile their candidate
 tactics only while the tuning window is open, and take each library's heuristic
 tactic otherwise. The runtime opens exactly one window during engine startup,
 around a dummy forward at the largest token count it will ever serve, and closes
-it before any CUDA-graph capture -- a captured graph records the tactic chosen
+it before any CUDA graph capture -- a captured graph records the tactic chosen
 at capture time, so tuning afterwards cannot change a replay.
 
 The window is CLOSED by default. Tuning during serving would be a hazard twice
@@ -102,14 +102,14 @@ def set_autotune_max_num_tokens(num_tokens: int) -> None:
     """Set the token count MoE tuning buckets are generated up to.
 
     Call once at startup, before :func:`autotune` is first entered. The value must stay
-    constant for the process lifetime: flashinfer builds the bucket *mapper*
+    constant for the process lifetime: FlashInfer builds the bucket *mapper*
     from it and consults that mapper on every serving call to compute the
     tactic cache key, so a value derived from the current batch makes lookups
     resolve to the wrong bucket.
 
     Args:
         num_tokens: Largest token count a single forward can carry (the
-            runtime's ``chunked_prefill_size``). Raised to flashinfer's own
+            runtime's ``chunked_prefill_size``). Raised to FlashInfer's own
             default floor when smaller.
     """
     global _autotune_max_num_tokens
@@ -170,12 +170,12 @@ def set_autotune_process_group(process_group) -> None:
 
 
 def load_flashinfer_tuning_cache(path: str) -> bool:
-    """Seed flashinfer's autotuner from a pre-swept tactic table.
+    """Seed FlashInfer's autotuner from a pre-swept tactic table.
 
-    The table is a flashinfer ``save_configs()`` JSON whose ``_metadata``
-    records the exact environment it was swept on (GPU device name,
-    flashinfer/CUDA/cuBLAS/cuDNN versions); ``load_configs`` refuses the whole
-    file on any mismatch, so a table from a different GPU model can never be
+    The table is a FlashInfer ``save_configs()`` JSON file whose ``_metadata``
+    records the exact environment in which it was swept (GPU device name and
+    FlashInfer, CUDA, cuBLAS, and cuDNN versions); ``load_configs`` rejects the
+    entire file on any mismatch, so a table from a different GPU model can never be
     applied silently.
 
     Args:
@@ -183,27 +183,29 @@ def load_flashinfer_tuning_cache(path: str) -> bool:
             ``AutoTuner.save_configs``).
 
     Returns:
-        True when the table was loaded; False for every failure mode --
-        missing file, unimportable flashinfer, or an environment-metadata
+        True when the table was loaded; False for every failure mode, including
+        a missing file, unavailable FlashInfer, or an environment-metadata
         mismatch. Failures log a warning and leave the startup autotune
         window to tune those shapes rather than failing startup.
     """
     try:
         from flashinfer.autotuner import AutoTuner
     except ImportError as exc:
-        logger.warning(f"flashinfer tuning cache not loaded (no flashinfer): {exc}")
+        logger.warning(
+            f"FlashInfer tuning cache not loaded (FlashInfer unavailable): {exc}"
+        )
         return False
     try:
         loaded = AutoTuner.get().load_configs(path)
     except FileNotFoundError:
         logger.warning(
-            f"flashinfer tuning cache {path} not found; the startup autotune "
+            f"FlashInfer tuning cache {path} not found; the startup autotune "
             "window will tune instead"
         )
         return False
     except Exception:
         logger.warning(
-            f"flashinfer tuning cache {path} failed to load; the startup "
+            f"FlashInfer tuning cache {path} failed to load; the startup "
             "autotune window will tune instead",
             exc_info=True,
         )
@@ -212,13 +214,13 @@ def load_flashinfer_tuning_cache(path: str) -> bool:
         # load_configs already logged the mismatch details; restate the
         # consequence at warning level so it is visible in serving logs.
         logger.warning(
-            f"flashinfer tuning cache {path} rejected: environment metadata "
-            "(GPU model / flashinfer / CUDA versions) does not match this "
+            f"FlashInfer tuning cache {path} rejected: environment metadata "
+            "(GPU model, FlashInfer version, and CUDA version) does not match this "
             "host; the startup autotune window will tune instead. Re-run the "
             "MoE tactic sweeper on this environment to regenerate it."
         )
         return False
-    logger.info(f"flashinfer tuning cache loaded from {path}")
+    logger.info(f"FlashInfer tuning cache loaded from {path}")
     return True
 
 
@@ -226,24 +228,25 @@ def load_flashinfer_tuning_cache(path: str) -> bool:
 def load_packaged_flashinfer_tuning_cache(
     model: str, ep_size: int, tp_size: int
 ) -> bool:
-    """Load the in-tree tactic table for this model/layout/device, if one ships.
+    """Load the in-tree tactic table for this model, layout, and device, if available.
 
-    Tables live as package data under ``ops/moe/flashinfer/tactics/`` named
-    vLLM-configs style::
+    Tables are package data under ``ops/moe/flashinfer/tactics/`` and use
+    vLLM-style names::
 
         <model>,ep=<N>,tp=<N>,device_name=<GPU>,
         flashinfer=<ver>,cudnn=<ver>.json
 
     EP and MoE-TP together pin the swept workload shape (local expert count
     and per-partition intermediate size), and the exact GPU device name and
-    installed flashinfer and cuDNN versions are part of the name, so a lookup
+    installed FlashInfer and cuDNN versions are part of the name, so a lookup
     can only ever find a table swept for this precise environment; the table's
-    embedded metadata re-checks the version facts at load. A miss is normal for
-    layouts no table has been swept on and logs at INFO. Cached per layout: call
-    sites run per-layer, the load must not.
+    embedded metadata validates the versions again at load time. A miss is normal
+    for layouts that have not been swept and is logged at INFO. Results are cached
+    by layout because call sites run for each layer, while loading must happen only
+    once.
 
     Args:
-        model: Model slug used in the table filename (e.g. ``"kimi-k3"``).
+        model: Model slug used in the table filename (for example, ``"kimi-k3"``).
         ep_size: Expert-parallel world size of the serving layout.
         tp_size: MoE tensor-parallel size of the serving layout.
 
@@ -291,7 +294,7 @@ def load_packaged_flashinfer_tuning_cache(
         )
         if stale:
             logger.warning(
-                f"stale flashinfer tuning cache: {stale[0]} was swept on a "
+                f"stale FlashInfer tuning cache: {stale[0]} was swept on a "
                 "different FlashInfer or cuDNN version "
                 f"(installed: flashinfer={fi_version}, cudnn={cudnn_version}) "
                 "and will not be loaded. Re-sweep with "
@@ -300,7 +303,7 @@ def load_packaged_flashinfer_tuning_cache(
             )
         else:
             logger.info(
-                f"no packaged flashinfer tuning cache for this environment "
+                f"no packaged FlashInfer tuning cache for this environment "
                 f"(looked for {name}); the startup autotune window will tune "
                 "instead. Sweep one with benchmark/moe_tactic_sweep to pin "
                 "tactics."

@@ -1412,11 +1412,11 @@ def test_gluon_dsa_prefill_topk_exact_override_checks_page_size() -> None:
 
 
 def test_gluon_mxfp4_apply_priority_prefers_dynamic_over_precomputed() -> None:
-    """The dynamic gluon mxfp4 apply outranks the precomputed one.
+    """The dynamic Gluon MXFP4 apply outranks the precomputed one.
 
     ``moe_plan`` never requests a ``routing_mode`` trait, so both the
     ``kernel_routing`` (dynamic) and ``precomputed_topk`` apply kernels match a
-    gluon mxfp4 plan's traits. Selection therefore falls to declared priority.
+    Gluon MXFP4 plan's traits. Selection therefore falls to declared priority.
     The dynamic entry (``SPECIALIZED + 3``) is the one that forwards caller
     top-k into BOTH the decode and package-prefill fast paths, so it must win
     over the precomputed entry (``SPECIALIZED + 2``), which only runs the
@@ -1427,7 +1427,7 @@ def test_gluon_mxfp4_apply_priority_prefers_dynamic_over_precomputed() -> None:
     dynamic = registry.get_by_name("gluon_mxfp4_dynamic_moe_apply")
     precomputed = registry.get_by_name("gluon_mxfp4_precomputed_moe_apply")
     if dynamic is None or precomputed is None:
-        pytest.skip("gluon mxfp4 apply kernels are AMD-only")
+        pytest.skip("Gluon MXFP4 apply kernels are AMD-only")
 
     # Trait profiles differ only by routing_mode; everything else that gates
     # selection is identical, so priority is the tiebreaker.
@@ -1447,7 +1447,7 @@ def test_gluon_mxfp4_apply_priority_prefers_dynamic_over_precomputed() -> None:
 def test_gluon_mxfp4_plan_selects_dynamic_apply_on_cdna4(
     mi350_platform: PlatformInfo,
 ) -> None:
-    """A CDNA4 gluon mxfp4 plan resolves to the dynamic apply, not precomputed.
+    """A CDNA4 Gluon MXFP4 plan resolves to the dynamic apply, not precomputed.
 
     This is the end-to-end confirmation of the priority test above: with the
     platform overridden to CDNA4 (so both AMD apply kernels satisfy their
@@ -1457,7 +1457,7 @@ def test_gluon_mxfp4_plan_selects_dynamic_apply_on_cdna4(
     """
     registry = KernelRegistry.get()
     if registry.get_by_name("gluon_mxfp4_dynamic_moe_apply") is None:
-        pytest.skip("gluon mxfp4 apply kernels are AMD-only")
+        pytest.skip("Gluon MXFP4 apply kernels are AMD-only")
 
     real_platform = Platform.get()
     try:
@@ -1601,7 +1601,7 @@ def test_gluon_mxfp4_dynamic_apply_forwards_precomputed_topk_by_batch_size(
     the precomputed top-k and recomputed routing from ``router_logits``.
     """
     if not hasattr(_moe_gluon_mxfp4, "gluon_mxfp4_dynamic_moe_apply"):
-        pytest.skip("gluon mxfp4 dynamic apply is AMD-only")
+        pytest.skip("Gluon MXFP4 dynamic apply is AMD-only")
 
     captured: dict[str, object] = {}
 

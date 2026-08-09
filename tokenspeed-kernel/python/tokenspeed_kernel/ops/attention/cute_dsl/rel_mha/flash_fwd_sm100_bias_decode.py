@@ -4029,7 +4029,7 @@ class FlashAttentionDecodeSm100Bias:
                     cute.copy(
                         dsmem_store_atom_r, tRrM_final, tRsR_peer, mbar_ptr=peer_mbar
                     )
-                    cute.arch.fence_acq_rel_cta()  # dont reorder dsmem store after wait
+                    cute.arch.fence_acq_rel_cta()  # Do not reorder the DSMEM store after the wait.
                     cute.arch.mbarrier_wait(local_mbar, phase=0)
                     tRrR = tRsR_local.load()
                     for j in cutlass.range_constexpr(cute.size(tRrM_final)):
@@ -4065,7 +4065,7 @@ class FlashAttentionDecodeSm100Bias:
                     cute.copy(
                         dsmem_store_atom_r, tRrL_local, tRsR_peer, mbar_ptr=peer_mbar
                     )
-                    cute.arch.fence_acq_rel_cta()  # dont reorder dsmem store after wait
+                    cute.arch.fence_acq_rel_cta()  # Do not reorder the DSMEM store after the wait.
                     cute.arch.mbarrier_wait(local_mbar, phase=0)
                     colsum += tRsR_local.load()
 
@@ -5312,7 +5312,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_warm_l2",
         action="store_true",
-        help="dont rotate profiling workspace and dont flush L2 before profiling",
+        help="Do not rotate the profiling workspace or flush L2 before profiling",
     )
 
     parser.add_argument(

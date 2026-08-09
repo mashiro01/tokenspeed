@@ -267,7 +267,7 @@ class DFlash(BaseDrafter):
         capacity, then reuse it in place for every batch size.
 
         Sizing to the max ``max_bs`` block (rather than growing per batch size)
-        is required for CUDA-graph correctness. Graphs are captured for
+        is required for CUDA graph correctness. Graphs are captured for
         increasing batch sizes (``[1, 2, ..., max_bs]``); a buffer grown lazily
         would be freed and reallocated when a larger bs needs more room, leaving
         every smaller-bs graph captured earlier with an

@@ -86,7 +86,7 @@ logger = logging.getLogger(__name__)
 
 
 class _Communicator(Generic[T]):
-    """Note: The communicator now only run up to 1 in-flight request at any time."""
+    """Run at most one in-flight request at a time."""
 
     def __init__(self, sender: zmq.Socket, fan_out: int, mode="queueing"):
         self._sender = sender
@@ -384,7 +384,9 @@ class SchedulerControlClient:
     ) -> tuple[bool, str]:
         self.auto_create_handle_loop()
         if self.server_args.mapping.attn.has_dp:
-            raise RuntimeError("dp_size must be 1 for init parameter update group")
+            raise RuntimeError(
+                "dp_size must be 1 to initialize the parameter-update group"
+            )
         result = (await self.init_weights_update_group_communicator(obj))[0]
         return result.success, result.message
 
@@ -395,7 +397,7 @@ class SchedulerControlClient:
         self.auto_create_handle_loop()
         assert (
             not self.server_args.mapping.attn.has_dp
-        ), "dp_size must be 1 for destroy parameter update group"
+        ), "dp_size must be 1 to destroy the parameter-update group"
         result = (await self.destroy_weights_update_group_communicator(obj))[0]
         return result.success, result.message
 
@@ -405,10 +407,11 @@ class SchedulerControlClient:
     ) -> tuple[bool, str]:
         self.auto_create_handle_loop()
         if self.server_args.mapping.attn.has_dp:
-            raise RuntimeError("dp_size must be 1 for update weights from distributed")
+            raise RuntimeError(
+                "dp_size must be 1 to update weights from a distributed source"
+            )
 
-        # This means that weight sync
-        # cannot run while requests are in progress.
+        # Weight synchronization cannot run while requests are in progress.
         async with self.model_update_lock.writer_lock:
             result = (await self.update_weights_from_distributed_communicator(obj))[0]
             return result.success, result.message
@@ -419,10 +422,9 @@ class SchedulerControlClient:
     ) -> tuple[bool, str]:
         self.auto_create_handle_loop()
         if self.server_args.mapping.attn.has_dp:
-            raise RuntimeError("dp_size must be 1 for update weights from tensor")
+            raise RuntimeError("dp_size must be 1 to update weights from a tensor")
 
-        # This means that weight sync
-        # cannot run while requests are in progress.
+        # Weight synchronization cannot run while requests are in progress.
         async with self.model_update_lock.writer_lock:
             result = (await self.update_weights_from_tensor_communicator(obj))[0]
             return result.success, result.message

@@ -804,7 +804,7 @@ class RandomDataset(BenchmarkDataset):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        # Use numpy's default_rng for deterministic sampling
+        # Use NumPy's default_rng for deterministic sampling.
         # Do not use random.seed() or np.random.seed() elsewhere in this class.
         # This ensures that the RNG is isolated from global RNG state.
         self._rng = np.random.default_rng(self.random_seed)
@@ -965,17 +965,15 @@ class RandomDataset(BenchmarkDataset):
         index: int,
         allowed_tokens: np.ndarray,
     ) -> tuple[str, int, int]:
-        """
-        Returns (prompt, total_input_len).
+        """Return ``(prompt, total_input_len)``.
 
-        NOTE: After decoding the prompt we have to encode and decode it again.
-        This is done because in some cases N consecutive tokens
-        give a string tokenized into != N number of tokens.
-        For example for GPT2Tokenizer:
-        [6880, 6881] -> ['Ġcalls', 'here'] ->
-        [1650, 939, 486] -> ['Ġcall', 'sh', 'ere']
-        To avoid uncontrolled change of the prompt length,
-        the encoded sequence is truncated before being decoded again.
+        The prompt is encoded and decoded again after its initial decoding
+        because ``N`` consecutive tokens can produce text that retokenizes to a
+        different number of tokens. For example, ``GPT2Tokenizer`` maps
+        ``[6880, 6881]`` to ``['Ġcalls', 'here']``, which retokenizes to
+        ``[1650, 939, 486]`` (``['Ġcall', 'sh', 'ere']``). To prevent the prompt
+        length from changing unpredictably, the encoded sequence is truncated
+        before the final decoding.
         """
         # Build the inner sequence by sampling
         # sequentially from the allowed tokens
@@ -1807,7 +1805,7 @@ def add_serving_cli_args(parser: argparse.ArgumentParser) -> None:
         choices=["CPU", "GPU", "MEM", "CUDA_PROFILER", "VIZTRACER", "PROTON"],
         default=None,
         help="Profiler activities for /start_profile (default: server-side "
-        "default, CPU and GPU via the torch profiler). PROTON drives the "
+        "default, CPU and GPU through the PyTorch profiler). PROTON drives the "
         "Triton Proton profiler inside each scheduler process; it cannot be "
         "combined with GPU or CUDA_PROFILER, which need the same "
         "CUPTI/roctracer interface.",

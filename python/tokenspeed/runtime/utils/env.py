@@ -121,9 +121,8 @@ def global_server_args_dict_update(server_args: ServerArgs):
 class EnvField:
     def __init__(self, default: Any):
         self.default = default
-        #  we use None to indicate whether the value is set or not
-        # If the value is manually set to None, we need mark it as _set_to_none.
-        # Always use clear() to reset the value, which leads to the default fallback.
+        # None normally indicates that the value is unset. Record explicit None
+        # assignments separately, and use clear() to restore the default fallback.
         self._set_to_none = False
 
     def __set_name__(self, owner, name):

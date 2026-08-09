@@ -50,8 +50,8 @@ class Logprob:
 
     Attributes:
         logprob: log-probability of the sampled token.
-        rank: slot rank of the entry; 0 for the sampled token. NOTE: this is the
-            slot index, not the token's rank in the full-vocab distribution.
+        rank: Slot rank of the entry; 0 for the sampled token. This is the slot
+            index, not the token's rank in the full-vocabulary distribution.
     """
 
     logprob: float
@@ -106,8 +106,9 @@ class LogprobsProcessor:
     @staticmethod
     def _row(recv_obj, field: str, idx: int):
         # Defensive: sampler may not have populated logprobs for this request
-        # (e.g. backend doesn't support logprobs, overlap race). Treat missing
-        # or out-of-range wire fields as empty rather than crashing the loop.
+        # (for example, the backend lacks log-probability support or an overlap
+        # race occurs). Treat missing or out-of-range wire fields as empty
+        # rather than crashing the loop.
         lst = getattr(recv_obj, field, None) or []
         return lst[idx] if idx < len(lst) else []
 

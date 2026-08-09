@@ -15,7 +15,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""sm100 GDN fast-path must match the Triton FLA reference it replaces."""
+"""The SM100 GDN fast path must match the Triton FLA reference it replaces."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import torch.nn.functional as F
 from tokenspeed_kernel.ops.attention.flashinfer import gated_delta_rule as gdn
 
 pytestmark = pytest.mark.skipif(
-    not gdn.is_available(), reason="sm100 GDN kernel unavailable"
+    not gdn.is_available(), reason="SM100 GDN kernel unavailable"
 )
 
 
@@ -49,7 +49,7 @@ def test_is_supported_gates() -> None:
     assert gdn.is_supported(D, torch.bfloat16, 16, 32)  # GVA num_v > num_q
     assert not gdn.is_supported(64, torch.bfloat16, 16, 16)
     assert not gdn.is_supported(D, torch.float16, 16, 16)
-    # num_v < num_q would read g/beta/state out of bounds in flashinfer.
+    # num_v < num_q would read g/beta/state out of bounds in FlashInfer.
     assert not gdn.is_supported(D, torch.bfloat16, 32, 16)
 
 

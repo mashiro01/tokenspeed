@@ -50,10 +50,10 @@ if __name__ == "__main__":
 from tokenspeed_mla import fmha_helpers as fmha_utils
 
 """
-A fused multi-head attention (FMHA) example for the NVIDIA Blackwell SM100 architecture using CUTE DSL
+A fused multi-head attention (FMHA) example for the NVIDIA Blackwell SM100 architecture using CuTe DSL.
 
-This example demonstrates an implementation of fused multi-head attention using a TMA + Blackwell SM100
-TensorCore warp-specialized persistent kernel. The implementation integrates the Q*K^T matrix multiplication,
+This example implements fused multi-head attention using a TMA + Blackwell SM100
+Tensor Core warp-specialized persistent kernel. The implementation integrates the Q*K^T matrix multiplication,
 softmax normalization, and softmax(Q*K^T)*V into a single kernel, avoiding intermediate data movement between
 global memory and shared memory, thus improving computational efficiency.
 
@@ -73,11 +73,11 @@ To run this example:
       --q_shape 4,1024,8,64 --k_shape 4,1024,8,64                         \
       --is_persistent
 
-The above example runs FMHA with batch size 4, sequence length 1024, 8 attention heads, and head
-dimension 64. The Blackwell tcgen05 MMA tile shape is (128, 128), and the kernel uses fp16 for input/output
-with fp32 for accumulation.
+The command above runs FMHA with batch size 4, sequence length 1024, 8 attention heads, and head
+dimension 64. The Blackwell tcgen05 MMA tile shape is (128, 128), and the kernel uses FP16 for input and output,
+with FP32 for accumulation.
 
-To collect performance with NCU profiler:
+To collect performance data with the NVIDIA Nsight Compute (ncu) profiler:
 
 .. code-block:: bash
 
@@ -284,7 +284,7 @@ class BlackwellFusedMultiHeadAttentionForward:
         """Set up configurations and parameters for the FMHA kernel operation.
 
         This method initializes and configures various attributes required for the
-        execution of the fused multi-head attention kernel, mainly about the pipeline stages:
+        execution of the fused multi-head attention kernel, focusing on the pipeline stages:
 
         - Sets up staging parameters for Q, K, V inputs and accumulator data
         - Configures pipeline stages for softmax, correction, and epilogue operations
@@ -292,7 +292,7 @@ class BlackwellFusedMultiHeadAttentionForward:
 
         self.q_stage = 2
         self.kv_stage = 4 if self.q_dtype.width == 8 else 3
-        # For D192, the smem usage of Q & K is larger. So, we need to reduce the stage count.
+        # Q and K consume more shared memory at D192, so reduce the stage count.
         if self.head_dim == 192 and self.q_dtype.width == 16:
             self.kv_stage = 2
         self.p_mma_stage = 1
@@ -380,8 +380,8 @@ class BlackwellFusedMultiHeadAttentionForward:
         :type window_size_right: Optional[Int32]
         :param stream: The CUDA stream to execute the kernel on
         :type stream: cuda.CUstream
-        :raises TypeError: If tensor data types don't match or aren't supported
-        :raises RuntimeError: If tensor layouts aren't in supported formats
+        :raises TypeError: If tensor data types do not match or are unsupported
+        :raises RuntimeError: If tensor layouts do not use supported formats
         """
         b, s_q_max, s_lse_max, s_k_max, h_q, h_k, d, dv = problem_size
         h_r = h_q // h_k
@@ -516,9 +516,8 @@ class BlackwellFusedMultiHeadAttentionForward:
             self.v_dtype,
             self.kv_stage,
         )
-        # k & v shared the same smem buffers. For D192, k & v's layouts are different.
-        # To prevent buffer overlapped among different stages,
-        # we need to ensure the stride of stage mode is the larger one.
+        # K and V share the same shared-memory buffers. At D192, their layouts differ.
+        # Use the larger stage stride to prevent buffers from overlapping across stages.
         v_smem_layout_staged = cute.append(
             cute.select(v_smem_layout_staged_origin, mode=[0, 1, 2]),
             cute.select(k_smem_layout_staged, mode=[3]).outer,
@@ -1186,8 +1185,8 @@ class BlackwellFusedMultiHeadAttentionForward:
                     )
                     # Release K0
                     k_handle.release()
-                    # Note: Q0 & Q1 are still needed in the seqlen_kv loop
-                    # so we need to release them after the seqlen_kv loop
+                    # Q0 and Q1 remain live throughout the seqlen_kv loop, so
+                    # release them after the loop.
                     seqlen_kv_loop_steps = fmha_utils.FusedMask.get_trip_count(
                         self.mask_type,
                         curr_block_coord,
@@ -1197,7 +1196,7 @@ class BlackwellFusedMultiHeadAttentionForward:
                         window_size_left,
                         window_size_right,
                     )
-                    # O1 hasn't been accumulated yet, its first MMA calculation doesn't need to accumulate
+                    # O1 is not yet accumulated, so its first MMA calculation starts from zero.
                     pv_whether_acc = False
                     for i in cutlass.range(1, seqlen_kv_loop_steps, 1, unroll=1):
                         # Wait for Ki
@@ -3188,7 +3187,7 @@ def run(
     h_r = h_q // h_k
     dv = d if d != 192 else 128
 
-    # Prepare pytorch tensors: Q, K, V (random from 0 to 2) and O (all zero)
+    # Prepare PyTorch tensors: Q, K, V (random from 0 to 2) and O (all zero)
     if not torch.cuda.is_available():
         raise RuntimeError("GPU is required to run this example!")
 
@@ -3252,7 +3251,7 @@ def run(
         if zero_out:
             f32_torch_tensor = torch.zeros(*shape, dtype=torch.float32)
         else:
-            # Create f32 torch tensor (cpu)
+            # Create an FP32 PyTorch tensor on the CPU.
             f32_torch_tensor = cutlass_torch.create_and_permute_torch_tensor(
                 shape,
                 torch.float32,
@@ -3260,7 +3259,7 @@ def run(
                 init_type=init_type,
                 init_config=init_config,
             )
-        # Create dtype cute & torch tensor (gpu)
+        # Create CuTe and PyTorch tensors of the requested type on the GPU.
         _, torch_tensor = cutlass_torch.cute_tensor_like(
             f32_torch_tensor,
             dtype,
@@ -3393,7 +3392,7 @@ def run(
             bottom_right_align,
         ):
             raise testing.CantImplementError(
-                "sliding window doesn't support current setting"
+                "sliding-window attention does not support the current configuration"
             )
 
     fmha = BlackwellFusedMultiHeadAttentionForward(
@@ -3428,9 +3427,8 @@ def run(
 
     if scale_softmax == 0.0:  # default to 1/sqrt(d)
         scale_softmax = 1.0 / math.sqrt(d)
-    log2_e = math.log2(
-        math.exp(1.0)
-    )  # gpu uses exp2 for perf concerns, we need an extra factor 'log2_e' here
+    # GPUs use exp2 for performance, so convert the scale from base e to base 2.
+    log2_e = math.log2(math.exp(1.0))
 
     scale_softmax = scale_q * scale_k * scale_softmax
     scale_softmax_log2 = scale_softmax * log2_e
@@ -3932,7 +3930,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--bottom_right_align",
         action="store_true",
-        help="Whether to use bottom right align, under this settion, the end of q is aligned with the end of k.",
+        help=(
+            "Use bottom-right alignment, where the end of Q is aligned with "
+            "the end of K."
+        ),
     )
 
     parser.add_argument(

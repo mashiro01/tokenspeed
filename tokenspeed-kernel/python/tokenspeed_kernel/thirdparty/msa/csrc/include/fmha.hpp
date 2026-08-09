@@ -30,7 +30,7 @@
  **************************************************************************************************/
 /*!
   \file
-  \brief An universal device layer for cutlass 3.x-style kernels.
+  \brief A universal device layer for CUTLASS 3.x-style kernels.
 */
 
 #pragma once

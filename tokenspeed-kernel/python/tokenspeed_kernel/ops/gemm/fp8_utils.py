@@ -56,7 +56,7 @@ def ceil_div(x: int, y: int) -> int:
 
 def swizzle_mxfp8_scale(sf: torch.Tensor, M: int, K: int) -> torch.Tensor:
     """Re-layout row-major MXFP8 (1,32) block scales into the F8_128x4
-    swizzled layout consumed by flashinfer's block-scaled GEMMs.
+    swizzled layout consumed by FlashInfer's block-scaled GEMMs.
 
     Args:
         sf: ``[M, K // 32]`` uint8 e8m0 scales, row-major.
@@ -201,7 +201,7 @@ def _per_token_group_quant_8bit_padded_colmajor(
 
     y = tl.load(y_ptr + offsets, mask=col_mask, other=0.0).to(tl.float32)
     amax = tl.max(tl.abs(y))
-    # Match TRT-LLM's scale_1x128_kernel: an all-zero group uses a neutral
+    # Match TensorRT-LLM's scale_1x128_kernel: an all-zero group uses a neutral
     # scale of one, while every other group uses amax / FP8_MAX.
     y_s_inv = tl.where(amax == 0.0, 1.0, bit8_max / amax)
     y_s = 1.0 / y_s_inv
@@ -373,10 +373,10 @@ def _per_token_group_quant_8bit_raw(
     quantized tensor along with the scaling factor used for quantization.
 
     Args:
-        x: The input tenosr with ndim >= 2.
+        x: The input tensor with ``ndim >= 2``.
         group_size: The group size used for quantization.
         eps: The minimum to avoid dividing zero.
-        dtype: The dype of output tensor.
+        dtype: The output tensor's data type.
         column_major_scales: Store scale groups as columns.
         scale_tma_aligned: Pad the scale storage for TMA alignment.
         scale_ue8m0: Encode four power-of-two scale exponents per int32.
@@ -388,7 +388,7 @@ def _per_token_group_quant_8bit_raw(
     """
     assert (
         x.shape[-1] % group_size == 0
-    ), "the last dimension of `x` cannot be divisible by `group_size`"
+    ), "the last dimension of `x` must be divisible by `group_size`"
     assert x.is_contiguous(), "`x` is not contiguous"
 
     if _is_amd:
@@ -586,7 +586,7 @@ def flashinfer_fp8_blockscale_quantize_prepacked(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize activations into FlashInfer's native MN-major scale layout.
 
-    For row counts already divisible by four, this exposes TRT-LLM's native
+    For row counts already divisible by four, this exposes TensorRT-LLM's native
     ``[K / 128, M]`` scale output directly. Otherwise a fused Triton kernel
     writes the valid quantized rows plus zero/one padding directly into
     ``[round_up(M, 4), K]`` values and ``[K / 128, round_up(M, 4)]`` scales.
@@ -627,7 +627,7 @@ def flashinfer_fp8_blockscale_quantize_prepacked(
         expected_shape = (columns // group_size, valid_rows)
         if tuple(x_s.shape) != expected_shape or not x_s.is_contiguous():
             raise RuntimeError(
-                "TRT-LLM FP8 quantizer returned unexpected prepared scales: "
+                "TensorRT-LLM FP8 quantizer returned unexpected prepared scales: "
                 f"shape={tuple(x_s.shape)}, stride={tuple(x_s.stride())}, "
                 f"expected contiguous {expected_shape}"
             )
@@ -734,16 +734,16 @@ def static_quant_fp8(
     quantized tensor along with the scaling factor used for quantization.
 
     Args:
-        x: The input tenosr with ndim >= 2.
+        x: The input tensor with ``ndim >= 2``.
         x_s: The quantization scale.
         repeat_scale: Whether to broadcast per-tensor scale to per-channel scale.
-        dtype: The dype of output tensor.
+        dtype: The output tensor's data type.
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: The quantized tensor and the scaling factor for quantization.
     """
     assert x.is_contiguous(), "`x` is not contiguous"
-    assert x_s.numel() == 1, "only supports per-tensor scale"
+    assert x_s.numel() == 1, "Only per-tensor scaling is supported"
 
     x_q = torch.empty_like(x, device=x.device, dtype=fp8_dtype)
     M = x.numel() // x.shape[-1]

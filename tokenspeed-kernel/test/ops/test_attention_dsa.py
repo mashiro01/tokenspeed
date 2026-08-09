@@ -235,13 +235,13 @@ def test_dsa_prefill_topk_fp8(device: str, require) -> None:
 
 
 def test_dsa_plan_triton(device: str) -> None:
-    # The triton decode kernel derives its own causal bounds and ignores the
+    # The Triton decode kernel derives its own causal bounds and ignores the
     # plan, so triton_dsa_plan is a no-op returning an opaque, non-None
     # placeholder; passing out= returns that same placeholder.
     seq_lens_2d = torch.tensor([[20], [65], [3]], device=device, dtype=torch.int32)
     plan = dsa_plan(seq_lens_2d=seq_lens_2d, page_size=64, solution="triton")
     if plan is None:
-        pytest.skip("triton dsa_plan is not registered on this platform")
+        pytest.skip("Triton dsa_plan is not registered on this platform")
 
     refreshed = dsa_plan(
         seq_lens_2d=seq_lens_2d, page_size=64, out=plan, solution="triton"

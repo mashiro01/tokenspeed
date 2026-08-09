@@ -68,7 +68,7 @@ def main() -> None:
         "serve",
         help="Launch the TokenSpeed inference server.",
         description="Launch the TokenSpeed inference server: the full serving "
-        "stack by default (currently an smg gateway fronting a gRPC engine), "
+        "stack by default (currently an SMG gateway fronting a gRPC engine), "
         "or the engine alone with --headless.",
     )
     serve_parser.add_argument(

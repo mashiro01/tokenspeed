@@ -28,12 +28,12 @@
  *                                                        mergeBlocks dropped;
  *                                                        ascending-by-index sort fused)
  *
- * v2.0_indexer_topk_qo_outermost fork additions (FlashInfer-original):
+ * v2.0_indexer_topk_qo_outermost fork additions (original to FlashInfer):
  *   SparseTopKTransposeKernel        — input layout adapter (reused from v1.6.5)
  *   SparseTopKIdentityFillKernel     — trivial-row fast path  (reused from v1.6.5)
  *   IndexerTopKWithSortKernel        — wraps topKPerRowJob and fuses an
  *                                      ascending-by-index cub::BlockRadixSort over
- *                                      smemOutput before the gmem write, so the
+ *                                      smemOutput before the GMEM write, so the
  *                                      output contract matches the v1.6.5 fork
  *                                      (qo_outermost layout, asc-by-index)
  *   SparseTopKSelect                 — top-level dispatcher
@@ -115,25 +115,25 @@ __device__ __forceinline__ int32_t GatherBlockTableValue(
 //
 // Pipeline:
 //
-//   [in (Hq, K, qo) row-contig fp32]
+//   [in (Hq, K, qo) row-contiguous FP32]
 //          |
-//          v  SparseTopKTransposeKernel  (per-head 32x32 SMEM tile transpose)
+//          v  SparseTopKTransposeKernel  (per-head 32×32 SMEM tile transpose)
 //          |
-//   [transpose_buf (Hq, qo, K) row-contig fp32 — workspace]
+//   [transpose_buf (Hq, qo, K) row-contiguous FP32 — workspace]
 //          |
 //          v  IndexerTopKWithSortKernel<MAX_TOPK>(grid=num_rows, block=512)
-//          |    Stage 0: 10-bit fp16 hist + cub::BlockScan + threshold + classify
-//          |    Stage 1/2/3: 10+10+10 bit fp32 (only if Stage 0 didn't finish)
+//          |    Stage 0: 10-bit FP16 histogram + cub::BlockScan + threshold + classify
+//          |    Stage 1/2/3: 10+10+10-bit FP32 (only if Stage 0 did not finish)
 //          |    Final pass: bounded rank-select / warp merge over the staged bin
 //          |    Warp-only bitonic sort on smemOutput (ascending by index)
-//          |    NEW: write gmem with qo_outermost offset
+//          |    New: write GMEM with qo_outermost offset
 //          |
 //   [out (qo, num_qo_heads, topk) int32, ascending-by-index]
-//     If block_table is supplied, selected logical indices are sorted first,
+//     If block_table is supplied, selected logical indices are first sorted,
 //     then gathered through block_table[t][h][idx] before the write.
 //
 // Trivial path (max_k_tiles <= topk) routes to SparseTopKIdentityFillKernel,
-// same as the v1.6.5 fork — preserves the seamless drop-in contract.
+// as the v1.6.5 fork and preserves the seamless drop-in contract.
 //
 // Workspace = transpose_buf only (no descriptors / merge_in / unsorted_tmp /
 // counter slabs needed; v1.6.5's workspace formula is preserved as a
@@ -141,7 +141,7 @@ __device__ __forceinline__ int32_t GatherBlockTableValue(
 // still work without any change).
 
 // =============================================================================
-// indexerTopK helpers — vendored from TRT-LLM indexerTopK.cu
+// indexerTopK helpers — vendored from TensorRT-LLM indexerTopK.cu
 // =============================================================================
 
 template <int step>
@@ -175,8 +175,8 @@ __device__ __forceinline__ bool isPartialMatch(float x, uint32_t pattern) {
   return (bits ^ pattern) >> shift == 0;
 }
 
-// Map Func over the input data, using vectorized float4 loads when possible.
-// stride1==1 only (we always feed transpose_buf, which is row-contig).
+// Map Func over the input data using vectorized float4 loads when possible.
+// Only stride1 == 1 is supported; transpose_buf is always row-contiguous.
 template <typename T, typename idxT, typename Func>
 __device__ void vectorized_process(size_t thread_rank, size_t num_threads, T const* in, idxT len,
                                    Func f) {
@@ -368,12 +368,12 @@ __device__ bool processHistogramStep(float const* logits, int rowEnd, uint32_t& 
 // Transpose kernel — reused verbatim from v1.6.5_2cta_per_row_qo_outermost
 // =============================================================================
 //
-// Per-head 32x32 SMEM tile transpose.  Source layout has qo as the innermost
-// dim (stride 1, K-stride = qo); dest swaps so K becomes innermost (stride 1,
-// qo-stride = K).  Heads dim stays outermost in both.
+// Per-head 32×32 SMEM tile transpose. The source layout has qo as its innermost
+// dimension (stride 1, K-stride = qo); the destination swaps the axes so K is
+// innermost (stride 1, qo-stride = K). The head dimension remains outermost.
 //
 // Block: (32, 8) = 256 threads.  Each thread does 4 elements per pass.
-// Tile : 32x32 floats with [32][33] padding to remove SMEM bank conflicts.
+// Tile: 32×32 floats with [32][33] padding to eliminate SMEM bank conflicts.
 // Grid : (ceil(qo / 32), ceil(K / 32), num_qo_heads)
 //
 // Fallback used when XorF4 preconditions (qo % TILE == 0 && K % TILE == 0 &&
@@ -563,22 +563,23 @@ __global__ void SparseTopKIdentityFillKernel(int32_t* __restrict__ out,
 // =============================================================================
 //
 // v2.0 used cub::BlockRadixSort<uint32_t, 512, 1> over all 512 threads to
-// sort the topk indices ascending — but only ≤64 of the 512 keys are real
-// (rest are sentinel ~0u), so 92%+ of the sort work was wasted, and nsys
-// measured this as ~13 us per kernel call (largest single component of the
+// sort the top-k indices in ascending order, but only 64 or fewer of the 512
+// keys are real. The rest are ~0u sentinels, so more than 92% of the sort work
+// was wasted. Nsight Systems measured this at approximately 13 microseconds
+// per kernel call, the largest single component of the
 // IndexerTopK kernel duration).
 //
 // v2.1 replaces it with a warp-only bitonic sort (single warp, 32 lanes ×
-// {1, 2} keys depending on MAX_TOPK), modelled on v1.6.5's WarpBitonicSortAsc16.
+// {1, 2} keys depending on MAX_TOPK), modeled on v1.6.5's WarpBitonicSortAsc16.
 // Expected cost: < 1 us, savings ~12 us per kernel call.
 
 constexpr int kFinalCandidateSourceBits = 14;
 constexpr uint64_t kFinalCandidateSourceMask = (1ull << kFinalCandidateSourceBits) - 1;
 
-// Pack score, staging position, and source index into one sortable key.  The
-// high 32 bits preserve numeric float order.  Staging position is next so an
+// Pack the score, staging position, and source index into one sortable key. The
+// high 32 bits preserve numeric floating-point order. The staging position is next, so an
 // equal-score tie follows the legacy rank loop, which preferred larger staged
-// positions (`i < j` incremented i's rank).  The source index is payload in the
+// positions (`i < j` incremented i's rank). The source index is the payload in the
 // low 14 bits; max_k_tiles is constrained to < 12288 by the dispatcher.
 __device__ __forceinline__ uint64_t MakeFinalCandidateKey(float logit,
                                                          int staging_position,
@@ -667,7 +668,7 @@ __device__ __forceinline__ void WarpBitonicSortAsc64(uint32_t* keys, uint32_t la
 }
 
 // =============================================================================
-// IndexerTopKWithSortKernel — fused indexerTopK + asc-by-index sort + qo_outermost write
+// IndexerTopKWithSortKernel — fused indexerTopK + ascending-index sort + qo_outermost write
 // =============================================================================
 //
 // Per-CTA work (1 CTA per (qo_head, qo_pos) row):
@@ -683,13 +684,13 @@ __device__ __forceinline__ void WarpBitonicSortAsc64(uint32_t* keys, uint32_t la
 //   5. Write to gmem with qo_outermost strides:
 //        out[t][qo_head_idx][k] at t*out_stride_t + qo_head_idx*out_stride_h + k*out_stride_k
 //
-// Template params:
+// Template parameters:
 //   MAX_TOPK            — round-up template bin (16/32/64), runtime topk ≤ MAX_TOPK
 //   kNumThreadsPerBlock — fixed at 512 (matches trtllm canonical config)
-//   kNumBins            — fixed at 1024 (10-bit fp16 / fp32 hist)
+//   kNumBins            — fixed at 1024 (10-bit FP16/FP32 histogram)
 //   kNumFinalItems      — fixed at 2048 (final-candidate staging capacity)
 //
-// Dynamic SMEM = topk * sizeof(int32_t).  The module configures the kernel's
+// Dynamic SMEM = topk * sizeof(int32_t). The module configures the kernel's
 // dynamic-SMEM attribute once at load time so graph capture only sees launches.
 constexpr uint32_t kSparseTopkMaxK = 64;
 constexpr int kIndexerNumThreadsPerBlock = 512;
@@ -850,7 +851,7 @@ __global__ void __launch_bounds__(kIndexerNumThreadsPerBlock) IndexerTopKWithSor
   int thresholdBinIdx = -1;
   uint32_t logitPattern = 0;
 
-  // ---- Stage 0: fp16 10-bit hist -----------------------------------------
+  // ---- Stage 0: FP16 10-bit histogram ------------------------------------
   bool continueToNextStep =
       processHistogramStep<0, kNumThreadsPerBlock, kNumBins, kNumFinalItems>(
           logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx,
@@ -858,7 +859,7 @@ __global__ void __launch_bounds__(kIndexerNumThreadsPerBlock) IndexerTopKWithSor
           force_begin, force_end_start, row_num_valid_pages);
 
   if (continueToNextStep) {
-    // Stage 1: fp32 high 10 bits.
+    // Stage 1: FP32 high 10 bits.
     continueToNextStep =
         processHistogramStep<1, kNumThreadsPerBlock, kNumBins, kNumFinalItems>(
             logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx,
@@ -866,7 +867,7 @@ __global__ void __launch_bounds__(kIndexerNumThreadsPerBlock) IndexerTopKWithSor
             force_begin, force_end_start, row_num_valid_pages);
   }
   if (continueToNextStep) {
-    // Stage 2: fp32 mid 10 bits.
+    // Stage 2: FP32 middle 10 bits.
     continueToNextStep =
         processHistogramStep<2, kNumThreadsPerBlock, kNumBins, kNumFinalItems>(
             logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx,
@@ -874,7 +875,7 @@ __global__ void __launch_bounds__(kIndexerNumThreadsPerBlock) IndexerTopKWithSor
             force_begin, force_end_start, row_num_valid_pages);
   }
   if (continueToNextStep) {
-    // Stage 3: fp32 low 10 bits.  After this step every remaining tie shares
+    // Stage 3: FP32 low 10 bits. After this step every remaining tie shares
     // the same 32-bit pattern so we just fill the topk window directly.
     processHistogramStep<3, kNumThreadsPerBlock, kNumBins, kNumFinalItems>(
         logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx,
@@ -966,14 +967,16 @@ __global__ void __launch_bounds__(kIndexerNumThreadsPerBlock) IndexerTopKWithSor
 
   // ---- v2.1 warp-only fused asc-by-index sort -----------------------------
   // After final-candidate selection fills smemOutput[0..topk-1] (unsorted by index),
-  // only warp 0 (32 lanes) participates in the sort.  Other 480 threads idle.
+  // only warp 0 (32 lanes) participates in the sort. The other 480 threads are idle.
   //
-  // Why warp-only vs cub::BlockRadixSort<512, 1>:
+  // Why use a warp-only sort instead of cub::BlockRadixSort<512, 1>:
   //   - cub::BlockRadixSort<uint32_t, 512, 1>.Sort() processes ALL 512 thread
   //     positions even though only ≤64 are real (rest are sentinel ~0u).
-  //     Per nsys, that variant cost ~13 us per kernel call.
+  //     Nsight Systems measured that variant at approximately 13 microseconds
+  //     per kernel call.
   //   - WarpBitonicSortAsc{32,64} only sorts the 32/64 real slots.  Estimated
-  //     cost: < 1 us per kernel.  Savings: ~12 us per call = ~50% of the
+  //     cost: less than 1 microsecond per kernel. Savings: approximately 12
+  //     microseconds per call, or approximately 50% of the
   //     v2.0 IndexerTopKWithSortKernel runtime on n1024_K8192.
   __syncthreads();  // ensure all threads' writes to smemOutput are visible
   if (threadIdx.x == 0) {
@@ -1169,7 +1172,7 @@ cudaError_t LaunchTransposeAndIndexerTopK(const float* in_strided, float* transp
 }
 
 // =============================================================================
-// Workspace size — transpose_buf only: (num_qo_heads, max_k_tiles, total_qo_len) fp32.
+// Workspace size — transpose_buf only: (num_qo_heads, max_k_tiles, total_qo_len) FP32.
 // =============================================================================
 inline size_t SparseTopKWorkspaceSize(uint32_t total_qo_len, uint32_t num_qo_heads,
                                       uint32_t max_k_tiles, SparseTopKInputLayout input_layout) {
@@ -1180,10 +1183,10 @@ inline size_t SparseTopKWorkspaceSize(uint32_t total_qo_len, uint32_t num_qo_hea
 // =============================================================================
 // Top-level dispatcher
 // =============================================================================
-//   in        : (num_qo_heads, max_k_tiles, total_qo_len) contiguous fp32 for kHKT,
-//               or (total_qo_len, num_qo_heads, max_k_tiles) contiguous fp32 for kTHK
+//   in        : (num_qo_heads, max_k_tiles, total_qo_len) contiguous FP32 for kHKT,
+//               or (total_qo_len, num_qo_heads, max_k_tiles) contiguous FP32 for kTHK
 //   out       : (total_qo_len, num_qo_heads, topk=16) int32. Without block_table,
-//               values are logical k_tile indices asc by k_tile index. With
+//               values are logical k_tile indices in ascending k_tile order. With
 //               block_table, logical indices are sorted first, then gathered
 //               from block_table[t][h][idx].
 //   workspace : int32, at least SparseTopKWorkspaceSize(...) elements

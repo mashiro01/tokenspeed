@@ -445,7 +445,7 @@ class TestSconvUnifiedKernel(unittest.TestCase):
 
     def test_publish_two_field_split_and_fp8(self):
         """Fused K+V split across two fields, and an fp8 destination: the
-        kernel's store-side casts must match torch's."""
+        kernel's store-side casts must match PyTorch's."""
         from tokenspeed_kernel.ops.conv import inkling_ring_sconv
 
         weight = self._weight()

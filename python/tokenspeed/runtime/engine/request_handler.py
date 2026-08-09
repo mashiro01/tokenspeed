@@ -331,7 +331,7 @@ class RequestHandler:
         )
 
     # ------------------------------------------------------------------
-    # Profiling: torch / cuda / viztracer / mem-snapshot / proton, driven
+    # Profiling: PyTorch, CUDA, VizTracer, memory snapshots, or PROTON, driven
     # by /start_profile and /stop_profile control requests. Proton must be
     # driven from this process (not the frontend): its GPU hooks are
     # per-process and the scheduler subprocess is torn down with SIGKILL,

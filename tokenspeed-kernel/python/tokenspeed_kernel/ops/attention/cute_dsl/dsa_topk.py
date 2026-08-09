@@ -24,9 +24,10 @@ Wraps the vendored TensorRT-LLM CuTe DSL radix runners as a length-aware per-row
 top-k over a ``[num_rows, num_cols]`` indexer-logits matrix, matching the
 ``deterministic_decode_topk(..., lengths=seq_lens, q_len_per_req=next_n)`` contract
 it replaces (returned int32 column indices are the "local offsets" that
-``local_topk_to_global_slots`` maps to KV slots). Cluster-first: falls back to the
-non-cluster runner when the problem exceeds cluster capacity. NVIDIA Blackwell
-(sm_100+) only; gate on :func:`has_cute_dsl_decode_topk`.
+``local_topk_to_global_slots`` maps to KV slots). It tries the cluster runner
+first and falls back to the non-cluster runner when the problem exceeds cluster
+capacity. This kernel supports only NVIDIA Blackwell (sm_100+); check
+:func:`has_cute_dsl_decode_topk` before calling it.
 """
 
 from __future__ import annotations
@@ -41,9 +42,9 @@ __all__ = [
 
 
 def _ts_supported_arch() -> bool:
-    """Gate: the CuTe DSL multi-CTA / cluster radix top-k needs NVIDIA sm_100+.
+    """Check whether NVIDIA sm_100+ supports the CuTe DSL cluster radix top-k.
 
-    Returns False if platform detection raises (e.g. CPU-only host) so callers
+    Returns ``False`` if platform detection raises (for example, on a CPU-only host), so callers
     fall back transparently.
     """
     try:
@@ -96,11 +97,11 @@ def cute_dsl_decode_topk(
 
     Args:
         logits: 2-D row-major contiguous CUDA tensor ``[num_rows, num_cols]``
-            (``num_rows = num_reqs * next_n``), fp16/bf16/fp32. No pre-masking
+            (``num_rows = num_reqs * next_n``), FP16/BF16/FP32. No pre-masking
             needed; the causal window is derived in-kernel from seq_lens/next_n.
         seq_lens: Per-request candidate length, int32 ``[num_reqs]``. Row ``r``'s
             window is ``seq_lens[r // next_n] - next_n + (r % next_n) + 1`` cols.
-        topk: Candidates to select per row (1..2048).
+        topk: Candidates to select per row (1–2,048).
         next_n: Query rows per request (speculative ``q_len_per_req``); 1 for decode.
         out: Optional int32 ``[num_rows, topk]`` buffer, written in place and returned.
 
@@ -143,7 +144,7 @@ def cute_dsl_decode_topk(
         out = out.contiguous()
 
     # Cluster-first. Re-zero the shared ``row_states`` scratch every call: the
-    # kernels self-clean it, but that reuse races under tight CUDA-graph scheduling.
+    # kernels self-clean it, but that reuse races under tight CUDA graph scheduling.
     _ClusterRunner._row_states_initialized = False
     indices, _ = _ClusterRunner.forward(
         logits,

@@ -70,7 +70,7 @@ from tokenspeed_kernel.ops.attention.triton.qkv_rotary import (
     packed_qkv_neox_rotary,
 )
 
-# CUDA-graph bucketing for the cuDNN vision prefill backend: batch and max
+# CUDA graph bucketing for the cuDNN vision prefill backend: batch and max
 # seqlen are quantized so a small set of captured graphs covers the request
 # distribution. The consts are consumed by VLM tower models, not by
 # ``MultimodalEncoderAttention`` itself.

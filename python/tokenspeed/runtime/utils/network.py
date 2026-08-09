@@ -89,7 +89,7 @@ def get_local_ip_by_remote() -> str | None:
         s.connect(("2001:4860:4860::8888", 80))
         return s.getsockname()[0]
     except Exception:
-        raise ValueError("Can not get local ip")
+        raise ValueError("Cannot determine the local IP address")
 
 
 def get_ip() -> str:

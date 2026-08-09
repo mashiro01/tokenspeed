@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""NVIDIA sigmoid_bias_topk: the fused minimax adapter must match the torch
+"""NVIDIA sigmoid_bias_topk: the fused MiniMax adapter must match the PyTorch
 reference (same expert set, same weights) and win selection on NVIDIA."""
 
 import pytest
@@ -62,7 +62,7 @@ def test_minimax_adapter_matches_torch(tokens, experts, topk, normalize):
 
 
 def test_entry_point_selects_fused_kernel():
-    """The public entry point must not fall back to the multi-launch torch
+    """The public entry point must not fall back to the multi-launch PyTorch
     reference on NVIDIA."""
     logits = torch.randn(2, 896, dtype=torch.float32, device="cuda")
     bias = torch.randn(896, dtype=torch.float32, device="cuda")
@@ -84,7 +84,7 @@ def test_entry_point_selects_fused_kernel():
 @pytest.mark.parametrize("scale", [1.0, 2.5])
 def test_decode_shape_uses_lean_kernel_and_is_exact(normalize, scale):
     """The K3 decode shape (1, 896) topk=16 takes the packed-key single-CTA
-    kernel on NVIDIA: exact expert set and weights vs torch, and CUDA-graph
+    kernel on NVIDIA: exact expert set and weights versus PyTorch, and CUDA graph
     capturable (the decode path replays it inside the step graph)."""
     torch.manual_seed(7)
     logits = (torch.randn(1, 896, device="cuda") * 0.2).float()

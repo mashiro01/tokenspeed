@@ -1135,8 +1135,8 @@ def ex2_emulation_packed_f32x2(
     def combine_int_frac_ex2(
         x_rounded: Float32, frac_ex2: Float32, *, loc=None, ip=None
     ) -> Float32:
-        # x_rounded, S is the sign bit, N is a bit we don't care about
-        # X are bits of the integer
+        # In x_rounded, S is the sign bit, N is unused, and X contains the
+        # integer bits.
         # |  S   | 10010110 | NSSSSSSSSSSSSSSXXXXXXXX |
         # | sign | exponent |        mantissa         |
         # shift left the integer part by 23
@@ -1150,9 +1150,8 @@ def ex2_emulation_packed_f32x2(
         # |  0   | 01111111 | FFFFFFFFFFFFFFFFFFFFFFF |
         # | sign | exponent |        mantissa         |
 
-        # the frac_ex2 * 2^(integer part) is the final result
-        # We can directly add the exponent part
-        # as the result is also a normalized FP32 number
+        # frac_ex2 * 2^(integer part) is the final result. Add the exponent
+        # directly because the result is also a normalized FP32 number.
         return cutlass.Float32(
             llvm.inline_asm(
                 T.f32(),

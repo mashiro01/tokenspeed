@@ -146,11 +146,11 @@ def test_flashmla_grouped_decode_block_table_and_write_locs() -> None:
 def test_flashmla_grouped_prefill_index_math() -> None:
     """The two prefill index views built from the LCM full-history table:
 
-    * per-token slot table (flashinfer paged prefill, plan page_size=1)
+    * per-token slot table (FlashInfer paged prefill, plan page_size=1)
     * packed new-token write locations (_extend_out_cache_loc)
 
     Validates the metadata math directly through the mixin helpers. The
-    flashinfer paged-prefill READ (wrapper.plan) needs a live serving wrapper
+    A FlashInfer paged-prefill read (wrapper.plan) requires a live serving wrapper
     state and is validated end-to-end on a real model, not here.
     """
     pool = _make_pool("cuda", usable_pages=6)

@@ -18,31 +18,32 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Rel-bias decode v2 on the standalone tokenspeed-mha decode kernel.
+"""Relative-bias decode v2 using the standalone TokenSpeed MHA decode kernel.
 
-Replaces the fa4-fork fwd + triton shear + split-KV combine three-launch
-path with ONE kernel (CUTLASS gqa_decode dataflow: K @ Q first GEMM,
-grouped-head packing, rel bias fused into the log2 online softmax, SWA
-tile culling, split-KV with in-kernel deterministic reduction). The
-kernel consumes the COMPACT per-head rel table directly — no shear
-prepass.
+This implementation replaces the three-kernel sequence of the FA4-fork
+forward pass, Triton shear, and split-KV combine with a single kernel. Its
+CUTLASS ``gqa_decode`` data flow performs the K @ Q GEMM first, packs grouped
+heads, fuses relative bias into the log2 online softmax, culls sliding-window
+attention tiles, and performs a deterministic split-KV reduction in the
+kernel. It consumes the compact per-head relative-bias table directly, without
+a shear prepass.
 
-Serving page sizes run NATIVELY (64/128/256): the kernel assembles its
-K/V MMA tiles from sub-page TMA boxes, so the engine's per-step flat
-group table is consumed directly — no cache re-view, no page-table
-expansion, no per-call table-rewrite ops. ``-1`` window holes are safe
-by two independent mechanisms (both verified bit-exact and under
-compute-sanitizer): the page index is a bounds-checked TMA coordinate
-(out-of-range loads zero-fill, never fault), and the in-kernel window
-mask is pure index math that -infs out-of-window columns regardless of
-loaded content. NOTE the mask alone does not neutralize NaNs — the
-zero-fill is load-bearing; never point an out-of-window table entry at
-real (potentially uninitialized) memory.
+The kernel handles serving page sizes 64, 128, and 256 natively. It assembles
+K/V MMA tiles from subpage TMA boxes, allowing it to consume the engine's flat
+per-step group table without reinterpreting the cache, expanding the page
+table, or rewriting the table for each call. Two independent mechanisms make
+``-1`` window holes safe; both are verified bit-for-bit and with Compute
+Sanitizer. First, the page index is a bounds-checked TMA coordinate, so
+out-of-range loads return zeros instead of faulting. Second, the in-kernel
+window mask uses only index arithmetic to set out-of-window columns to
+negative infinity, regardless of their loaded contents. The mask alone does
+not neutralize NaNs, so the zero-fill is essential: an out-of-window table
+entry must never point to real, potentially uninitialized memory.
 
-Compiled once per static config (page size included) with TVM FFI:
-runtime calls take torch tensors, dynamic batch / page-count / seqlens,
-and are CUDA-graph safe (``reduction_mode="kernel"`` rewrites its
-workspaces every launch).
+TVM FFI compiles the kernel once per static configuration, including page
+size. Runtime calls accept PyTorch tensors and dynamic batch sizes, page
+counts, and sequence lengths. They are safe for CUDA graph capture because
+``reduction_mode="kernel"`` rewrites the workspaces on every launch.
 """
 
 from __future__ import annotations
@@ -52,7 +53,8 @@ import os as _os
 
 import torch
 
-# swa scans <=5 tiles (no split win); full attention splits + reduces in-kernel (A/B knob).
+# Sliding-window attention scans at most five tiles, where splitting does not
+# help. Full attention splits and reduces within the kernel (an A/B knob).
 _V2_FULL_SPLITS = max(1, int(_os.environ.get("TSMHA_V2_FULL_SPLITS", "8")))
 
 
@@ -67,16 +69,20 @@ class _CompiledCache:
 
 
 _DECODE = _CompiledCache()
-# Split-KV workspaces, exact-B contiguous; see the allocation comment in the wrapper.
+# Contiguous split-KV workspaces sized to the exact batch; see the allocation
+# comment in the wrapper.
 _WORKSPACES: dict = {}
 
 
 def _prediction_tile(
     prediction: int, grouped_head_tile: int, window_left: int, dtype: torch.dtype
 ) -> int:
-    """Query-token packing per CTA. SWA defers to the kernel's own packing
-    model (short bf16 windows want few output rows per CTA); full attention
-    keeps maximum legal packing (grouped_head_tile * tile <= 32)."""
+    """Choose query-token packing for each CTA.
+
+    Sliding-window attention uses the kernel's packing model because short
+    BF16 windows benefit from fewer output rows per CTA. Full attention uses
+    the maximum legal packing: ``grouped_head_tile * tile <= 32``.
+    """
     if prediction == 1:
         return 1
     if window_left >= 0:

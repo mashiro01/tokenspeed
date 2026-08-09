@@ -124,7 +124,7 @@ if platform.is_nvidia and m_grouped_fp8_gemm_nt_masked is not None:
         # exactly what the shared MoE checkpoint loader already produces
         # (w13 = [w1(gate) | w3(up)] concatenated, w2 = [hidden, ispp]), and the
         # gate-first half order is what silu_and_mul consumes, so unlike the
-        # cutlass/TRT-LLM FP8 paths no gate/up swap is required here.
+        # CUTLASS/TensorRT-LLM FP8 paths require no gate/up swap here.
         #
         # Clamp the inverse scales so experts whose shards were never populated
         # cannot dequantize into zeros and produce NaNs downstream.

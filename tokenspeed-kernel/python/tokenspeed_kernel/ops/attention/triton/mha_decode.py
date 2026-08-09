@@ -85,7 +85,7 @@ def _fwd_kernel_stage1(
     cache_len = cache_len - (MAX_SEQLEN_Q - 1 - q_pos)
     cache_len = tl.maximum(cache_len, 0)
     # WINDOW_LEFT is exclusive of the current token, so keep WINDOW_LEFT + 1
-    # keys (window_left left keys plus the current one).
+    # keys (window_left preceding keys plus the current key).
     cur_batch_seq_len = (
         tl.minimum(cache_len, WINDOW_LEFT + 1) if WINDOW_LEFT >= 0 else cache_len
     )
@@ -319,7 +319,7 @@ def _fwd_grouped_kernel_stage1(
     cache_len = cache_len - (MAX_SEQLEN_Q - 1 - q_pos)
     cache_len = tl.maximum(cache_len, 0)
     # WINDOW_LEFT is exclusive of the current token, so keep WINDOW_LEFT + 1
-    # keys (window_left left keys plus the current one).
+    # keys (window_left preceding keys plus the current key).
     cur_batch_seq_len = (
         tl.minimum(cache_len, WINDOW_LEFT + 1) if WINDOW_LEFT >= 0 else cache_len
     )
@@ -564,7 +564,7 @@ def _fwd_kernel_stage2(
     cache_len = cache_len - (MAX_SEQLEN_Q - 1 - q_pos)
     cache_len = tl.maximum(cache_len, 0)
     # WINDOW_LEFT is exclusive of the current token, so keep WINDOW_LEFT + 1
-    # keys (window_left left keys plus the current one).
+    # keys (window_left preceding keys plus the current key).
     cur_batch_seq_len = (
         tl.minimum(cache_len, WINDOW_LEFT + 1) if WINDOW_LEFT >= 0 else cache_len
     )

@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
-# Portable torch fallback for the Attention-Residual mix. Also selected when the
+# Portable PyTorch fallback for the Attention-Residual mix. Also selected when the
 # shape falls outside the Blackwell kernel's supported range.
 import torch
 from tokenspeed_kernel.registry import Priority, register_kernel

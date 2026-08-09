@@ -21,7 +21,7 @@
 """Dense16 Gluon GEMM kernels for gfx950.
 
 The public entry point computes ``A @ B.T`` for supported 16-bit floating-point
-dense inputs and returns ``None`` when the generic caller should use its torch
+dense inputs and returns ``None`` when the generic caller should use its PyTorch
 fallback.
 """
 
@@ -1665,7 +1665,7 @@ def gluon_mm_a16w16_gfx950(
 
     Dispatches among warp-reduce small-M, tuned medium-M, and large-M paths.
     Returns ``None`` for unsupported or disabled dense16 shapes so the generic
-    GEMM caller can use its torch fallback.
+    GEMM caller can use its PyTorch fallback.
 
     Args:
         A: Activation matrix with shape ``[M, K]``.

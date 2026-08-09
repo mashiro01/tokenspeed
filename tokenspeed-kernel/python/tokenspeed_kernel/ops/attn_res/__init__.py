@@ -20,7 +20,7 @@
 #
 # Attention-Residual mixing op: RMSNorm + per-candidate softmax score + weighted
 # sum over a set of residual-stream snapshots (the Kimi-K3 AttnRes block-mix).
-# Dispatches to the Blackwell TMA kernel, falling back to a portable torch path
+# Dispatches to the Blackwell TMA kernel, falling back to a portable PyTorch path
 # on other hardware or for shapes outside the kernel's supported range.
 from tokenspeed_kernel.selection import select_kernel
 from tokenspeed_kernel.signature import dense_tensor_format, format_signature

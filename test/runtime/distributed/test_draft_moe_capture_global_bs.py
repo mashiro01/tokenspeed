@@ -21,7 +21,7 @@
 """Regression test for the MTP draft NaN under CUDA graph (DP + MoE).
 
 Root cause: the draft first-step MoE all-gather (``draft_first_step_reduce``)
-sizes its TritonRSAG collective from ``ctx.global_bs``. The CUDA-graph capture
+sizes its TritonRSAG collective from ``ctx.global_bs``. The CUDA graph capture
 path (``CudaGraphWrapper._capture_one``) set ``ctx.global_num_tokens`` to a
 uniform dummy but left ``ctx.global_bs`` as ``None``. With ``global_bs is None``
 the draft MoE scattered-token-count helper falls back to a *single-rank* layout

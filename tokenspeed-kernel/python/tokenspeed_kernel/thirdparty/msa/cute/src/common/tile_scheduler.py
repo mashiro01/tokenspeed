@@ -441,17 +441,17 @@ class SingleTileLPTScheduler:
             size_one_head = size_one_kv_head
             size_l2 = 50 * 1024 * 1024  # 40 MB for K & V
             # Swizzle is the size of each "section". Round swizzle to a power of 2
-            # Need to be careful about the case where only one head will fit
-            # swizzle is how many heads can fit in L2
-            # Seems faster if swizzle is a power of 2
+            # Account for the case in which L2 can hold only one head. The
+            # swizzle is the number of heads that fit in L2 and performs best
+            # when it is a power of two.
             log2_floor = lambda n: 31 - clz(n)
             swizzle = (
                 1
                 if size_l2 < size_one_head
                 else (1 << log2_floor(size_l2 // size_one_head))
             )
-            # If we're in the last section (called residual), we don't want to divide by
-            # swizzle. Instead we want to divide by the remainder.
+            # In the final (residual) section, divide by the remainder instead
+            # of the swizzle.
             num_hb_quotient = (args.num_head * args.num_batch) // swizzle
             num_hb_remainder = (args.num_head * args.num_batch) % swizzle
             return SingleTileLPTScheduler.Params(
@@ -598,8 +598,8 @@ class SingleTileLPTScheduler:
         params = self.params
         # Implement LPT scheduling coordinate calculation
         bidhb, l2_mod = divmod(self._tile_idx, params.l2_major_divmod)
-        # If we're in the last section (called residual), we don't want to divide by
-        # swizzle. Instead we want to divide by the remainder.
+        # In the final (residual) section, divide by the remainder instead of
+        # the swizzle.
         block, bidhb_residual = 0, 0
         if bidhb < params.num_hb_quotient:
             block, bidhb_residual = divmod(l2_mod, params.l2_minor_divmod)
@@ -891,10 +891,10 @@ class SingleTileVarlenScheduler:
                 - num_m_blocks_prev_lane * params.num_head
             )
             if cutlass.const_expr(params.lpt or params.head_swizzle):
-                # This is a version of the SingleTileLPTScheduler, complicated by the fact that
-                # the seqlen can vary per batch.
-                # TODO: is there any case where num_m_blocks is 0?
-                # TODO: by right we should read the seqlen_kv but we're assuming seqlen_q == seqlen_k here
+                # This SingleTileLPTScheduler variant supports sequence lengths
+                # that vary across the batch.
+                # TODO: Determine whether num_m_blocks can be 0.
+                # TODO: Read seqlen_kv instead of assuming seqlen_q == seqlen_k.
                 num_n_blocks = (
                     num_m_blocks
                     * params.tile_shape_mn[0]

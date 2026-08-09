@@ -1,30 +1,30 @@
-# TokenSpeed-kernel
+# TokenSpeed-Kernel
 
-TokenSpeed-kernel aims to provide a collection of the best portable and
-performant kernels for multi-silicon AI inference. It features:
+TokenSpeed-Kernel provides a curated collection of portable, high-performance
+kernels for AI inference across multiple accelerator platforms. It features:
 
 * A clean layered API for maximal structured flexibility
 * Kernel registration and selection logic to decouple complexity and increase reuse
 * Plugin mechanism for multi-silicon extensibility
 * A minimal list of curated dependencies for fast iteration
 
-TokenSpeed-kernel is pip-installable on its own and can be directly used by
+TokenSpeed-Kernel can be installed independently with pip and used directly by
 others.
 
 ## Design Goals
 
-TokenSpeed-kernel is designed with the following functionality goals in mind:
+TokenSpeed-Kernel has the following functional goals:
 
-* Support various kernels in AI models (attention, MoE, etc.)
-* Support multiple silicon vendors and generations
-* Marry default portability and performance solutions
+* Support a broad range of AI model kernels, including attention and MoE
+* Support multiple accelerator vendors and generations
+* Balance portability and performance by default
 
-In addition, to have a better devflow for fast iteration:
+It also has the following development-workflow goals:
 
-* Provide unified infra to verify and debug kernel numerics standalone
-* Provide unified infra to run and benchmark kernels standalone
+* Provide unified infrastructure for standalone numerical verification and debugging
+* Provide unified infrastructure for standalone kernel execution and benchmarking
 * Support tracing shapes and profiling workloads at runtime
-* Stay forward-looking, with guardrails for agentic devflow
+* Remain forward-looking, with guardrails for agentic development workflows
 
 ## Overall Design
 
@@ -91,7 +91,7 @@ tokenspeed_kernel/
 ```
 
 Each `ops/<family>/` directory holds peer subdirectories — one per
-solution. A solution is either an in-tree JIT kernel (Triton/Gluon/CuteDSL),
+solution. A solution is either an in-tree JIT kernel (Triton/Gluon/CuTe DSL),
 or a thin wrapper around an external library.
 All of them register through the same decorator and are scored by the same
 selection logic, so adding a backend is one new file in the right family
@@ -100,8 +100,8 @@ folder.
 ### Solution choices
 
 - **Triton** — in-tree; default portable JIT path for various kernels
-- **Gluon / CuteDSL** — in-tree; performant JIT path for key kernels
-- **Vendor libraries** — wrapped (FlashAttention, TRT-LLM, etc.);
+- **Gluon / CuTe DSL** — in-tree, high-performance JIT paths for key kernels
+- **Vendor libraries** — wrapped (FlashAttention, TensorRT-LLM, etc.);
   no in-tree C++ build
 - **PyTorch reference** — under `numerics/reference/`; never auto-selects
   over a real backend but always available as ground truth
@@ -153,10 +153,10 @@ from tokenspeed_kernel import (
 )
 ```
 
-Using the above platform and solution-agnostic public APIs can get the most
-value out of TokenSpeed-kernel; but one can also directly call into a
-specific solution under `ops/<family>/`, or manually `select_kernel` with
-targeted filters:
+Use the platform- and solution-agnostic public APIs above to get the most value
+from TokenSpeed-Kernel. You can also call a specific solution under
+`ops/<family>/` directly or invoke `select_kernel` manually with targeted
+filters:
 
 ```python
 from tokenspeed_kernel.selection import select_kernel, kernel_override
@@ -165,5 +165,5 @@ from tokenspeed_kernel.selection import select_kernel, kernel_override
 For platform checks:
 
 ```python
-from tokenspeed_kernel.platform  import current_platform
+from tokenspeed_kernel.platform import current_platform
 ```

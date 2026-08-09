@@ -619,8 +619,8 @@ def log_gpu_memory_summary(
 
     Weight groups are summed from the model's parameters and buffers (deduped
     by storage pointer). A draft model (speculative decoding) is summed
-    separately into its own row. KV cache / CUDA graphs / non-torch (context,
-    NCCL, DeepEP) are derived from the torch allocator and driver views, so the
+    separately into its own row. KV cache / CUDA graphs / non-PyTorch (context,
+    NCCL, DeepEP) are derived from the PyTorch allocator and driver views, so the
     summary is backend-agnostic. Best-effort: never raises into startup.
     """
     try:
@@ -672,7 +672,7 @@ def log_gpu_memory_summary(
         # the target's merged arena (its pool is a view), so dedupe to count once.
         kv_cache_gb = _kv_pool_bytes(kv_pool, draft_kv_pool) / GB
         # Allocated beyond the classified target+draft weights and the KV pool is
-        # activations + captured-graph private pools; non-torch is
+        # activations + captured-graph private pools; non-PyTorch is
         # context/NCCL/DeepEP.
         activations_and_graphs = max(
             0.0, allocated - weights_total - draft_gb - kv_cache_gb

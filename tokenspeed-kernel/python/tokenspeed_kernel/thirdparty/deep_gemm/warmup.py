@@ -22,7 +22,7 @@ def _warmup_m_values(max_tokens: int) -> list[int]:
     A cubin's JIT key includes ``block_m``, ``block_n`` and the ``swap_ab`` flag,
     all chosen by a C++ heuristic over ``(M, N, num_sms[, num_groups])`` that
     deep_gemm does NOT expose to Python (``get_best_config`` lives in ``_C.so``).
-    Modelling that selection from Python is unreliable -- the choice flips with M
+    Modeling that selection from Python is unreliable — the choice flips with M
     in ways that depend on ``swap_ab`` and (for batched GEMMs) the group count.
 
     Instead we sample M densely and let the real heuristic pick at each point,

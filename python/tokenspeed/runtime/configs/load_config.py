@@ -44,15 +44,15 @@ class LoadFormat(str, enum.Enum):
 class LoadConfig:
     """
     download_dir: Directory to download and load the weights, default to the
-        default cache directory of huggingface.
+        default cache directory of Hugging Face.
     load_format: The format of the model weights to load:
         "auto" will try to load the weights in the safetensors format and
-            fall back to the pytorch bin format if safetensors format is
+            fall back to the PyTorch binary format if safetensors format is
             not available.
-        "pt" will load the weights in the pytorch bin format.
+        "pt" will load the weights in the PyTorch binary format.
         "safetensors" will load the weights in the safetensors format.
-        "npcache" will load the weights in pytorch format and store
-            a numpy cache to speed up the loading.
+        "npcache" will load the weights in PyTorch format and store
+            a NumPy cache to accelerate loading.
         "dummy" will initialize the weights with random values, which is
             mainly for profiling.
     ignore_patterns: The list of patterns to ignore when loading the model.

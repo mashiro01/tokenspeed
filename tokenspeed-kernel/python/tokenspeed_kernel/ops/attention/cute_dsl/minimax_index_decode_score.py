@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-"""CuteDSL MiniMax M3 index decode score kernel.
+"""CuTe DSL MiniMax M3 index decode score kernel.
 
 The kernel computes decode-time index block scores with TMA + ``mma.sync``.
 ``mma.sync`` is used instead of tcgen05 because this score GEMM has a very
@@ -493,7 +493,7 @@ def minimax_index_decode_score(
     decode_query_len: int,
     enable_pdl: bool = False,
 ) -> None:
-    """Score visible 128-token blocks for decode via the CuteDSL kernel.
+    """Score visible 128-token blocks for decode via the CuTe DSL kernel.
 
     Args:
         index_q: ``[tokens, heads, head_dim]`` BF16 or FP8-E4M3 index queries;
@@ -543,7 +543,7 @@ def decode_score_supported(
     decode_query_len: int,
     max_blocks: int,
 ) -> bool:
-    """Whether the CuteDSL decode score kernel can serve this call.
+    """Whether the CuTe DSL decode score kernel can serve this call.
 
     Args:
         index_q: ``[tokens, heads, head_dim]`` index queries.

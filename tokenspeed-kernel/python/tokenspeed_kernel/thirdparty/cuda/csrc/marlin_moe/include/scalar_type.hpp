@@ -9,20 +9,20 @@
 namespace host {
 
 //
-//  ScalarType can represent a wide range of floating point and integer types,
+//  ScalarType can represent a wide range of floating-point and integer types;
 //  in particular it can be used to represent sub-byte data types (something
 //  that torch.dtype currently does not support).
 //
-//  The type definitions on the Python side can be found in: vllm/scalar_type.py
-//  these type definitions should be kept up to date with any Python API changes
+//  The type definitions on the Python side are in vllm/scalar_type.py. These
+//  definitions should be kept up to date with any Python API changes made
 //  here.
 //
 class ScalarType {
  public:
   enum NanRepr : uint8_t {
-    NAN_NONE = 0,                // nans are not supported
-    NAN_IEEE_754 = 1,            // nans are: exp all 1s, mantissa not all 0s
-    NAN_EXTD_RANGE_MAX_MIN = 2,  // nans are: exp all 1s, mantissa all 1s
+    NAN_NONE = 0,                // NaNs are not supported.
+    NAN_IEEE_754 = 1,            // NaNs have an all-ones exponent and a nonzero mantissa.
+    NAN_EXTD_RANGE_MAX_MIN = 2,  // NaNs have an all-ones exponent and mantissa.
 
     NAN_REPR_ID_MAX
   };
@@ -49,13 +49,13 @@ class ScalarType {
     return ScalarType(0, size_bits, false, bias);
   }
 
-  // IEEE 754 compliant floating point type
+  // IEEE 754-compliant floating-point type.
   static constexpr ScalarType float_IEEE754(uint8_t exponent, uint8_t mantissa) {
     assert(mantissa > 0 && exponent > 0);
     return ScalarType(exponent, mantissa, true, 0, false, NAN_IEEE_754);
   }
 
-  // IEEE 754 non-compliant floating point type
+  // Floating-point type that is not IEEE 754-compliant.
   static constexpr ScalarType float_(uint8_t exponent, uint8_t mantissa, bool finite_values_only, NanRepr nan_repr) {
     assert(nan_repr < NAN_REPR_ID_MAX);
     assert(mantissa > 0 && exponent > 0);
@@ -66,12 +66,12 @@ class ScalarType {
   uint8_t const exponent;  // size of the exponent field (0 for integer types)
   uint8_t const mantissa;  // size of the mantissa field (size of the integer
                            // excluding the sign bit for integer types)
-  bool const signed_;      // flag if the type supports negative numbers (i.e. has a
-                           // sign bit)
+  bool const signed_;      // Whether the type supports negative numbers (that is, has
+                           // a sign bit).
   int32_t const bias;      // stored values equal value + bias,
                            // used for quantized type
 
-  // Extra Floating point info
+  // Additional floating-point information.
   bool const finite_values_only;  // i.e. no +/-inf if true
   NanRepr const nan_repr;         // how NaNs are represented
                                   // (not applicable for integer types)
@@ -79,7 +79,7 @@ class ScalarType {
   using Id = int64_t;
 
  private:
-  // Field size in id
+  // Field size in the ID.
   template <typename T_>
   static constexpr size_t member_id_field_width() {
     using T = std::decay_t<T_>;
@@ -114,11 +114,11 @@ class ScalarType {
   }
 
  public:
-  // unique id for this scalar type that can be computed at compile time for
-  //  c++17 template specialization this is not needed once we migrate to
-  //  c++20 and can pass literal classes as template parameters
+  // Unique ID for this scalar type that can be computed at compile time for
+  // C++17 template specialization. This is unnecessary after migrating to
+  // C++20, which supports literal classes as template parameters.
   constexpr Id id() const {
-    static_assert(id_size_bits() <= sizeof(Id) * 8, "ScalarType id is too large to be stored");
+    static_assert(id_size_bits() <= sizeof(Id) * 8, "ScalarType ID is too large to be stored");
 
     auto or_and_advance = [](std::pair<Id, uint32_t> result, auto member) -> std::pair<Id, uint32_t> {
       auto [id, bit_offset] = result;
@@ -128,9 +128,9 @@ class ScalarType {
     return reduce_members(or_and_advance, std::pair<Id, uint32_t>{}).first;
   }
 
-  // create a ScalarType from an id, for c++17 template specialization,
-  //  this is not needed once we migrate to c++20 and can pass literal
-  //  classes as template parameters
+  // Create a ScalarType from an ID for C++17 template specialization. This is
+  // unnecessary after migrating to C++20, which supports literal classes as
+  // template parameters.
   static constexpr ScalarType from_id(Id id) {
     auto extract_and_advance = [id](auto result, auto member) {
       using T = decltype(member);
@@ -186,20 +186,18 @@ class ScalarType {
       max_exponent += 1;
     }
 
-    // adjust the exponent to match that of a double
-    //  for now we assume the exponent bias is the standard 2^(e-1) -1, (where e
-    //  is the exponent bits), there is some precedent for non-standard biases,
-    //  example `float8_e4m3b11fnuz` here: https://github.com/jax-ml/ml_dtypes
-    //  but to avoid premature over complication we are just assuming the
-    //  standard exponent bias until there is a need to support non-standard
-    //  biases
+    // Adjust the exponent to match that of a double. For now, assume the
+    // standard exponent bias, 2^(e-1) - 1, where e is the number of exponent
+    // bits. Nonstandard biases have precedent; for example, see
+    // `float8_e4m3b11fnuz` at https://github.com/jax-ml/ml_dtypes. To avoid
+    // premature overcomplication, use the standard exponent bias until a
+    // nonstandard bias is required.
     uint64_t exponent_bias = (uint64_t(1) << (exponent - 1)) - 1;
     uint64_t exponent_bias_double = (uint64_t(1) << 10) - 1;  // double e = 11
 
     uint64_t max_exponent_double = max_exponent - exponent_bias + exponent_bias_double;
 
-    // shift the mantissa into the position for a double and
-    // the exponent
+    // Shift the mantissa and exponent into their positions for a double.
     uint64_t double_raw = (max_mantissa << (52 - mantissa)) | (max_exponent_double << 52);
 
     return *reinterpret_cast<double*>(&double_raw);
@@ -226,9 +224,9 @@ class ScalarType {
     } else {
       assert(!is_signed() || size_bits() <= 64);
       if (is_signed()) {
-        // set the top bit to 1 (i.e. INT64_MIN) and the rest to 0
-        // then perform an arithmetic shift right to set all the bits above
-        // (size_bits() - 1) to 1
+        // Set the top bit to 1 (that is, INT64_MIN) and the rest to 0, then
+        // perform an arithmetic right shift to set every bit above
+        // (size_bits() - 1) to 1.
         return {INT64_MIN >> (64 - size_bits())};
       } else {
         return {int64_t(0)};
@@ -237,14 +235,12 @@ class ScalarType {
   }
 
  public:
-  // Max representable value for this scalar type.
-  // (accounting for bias if there is one)
+  // Maximum representable value for this scalar type, accounting for any bias.
   constexpr std::variant<int64_t, double> max() const {
     return std::visit([this](auto x) -> std::variant<int64_t, double> { return {x - bias}; }, _raw_max());
   }
 
-  // Min representable value for this scalar type.
-  // (accounting for bias if there is one)
+  // Minimum representable value for this scalar type, accounting for any bias.
   constexpr std::variant<int64_t, double> min() const {
     return std::visit([this](auto x) -> std::variant<int64_t, double> { return {x - bias}; }, _raw_min());
   }
@@ -252,16 +248,16 @@ class ScalarType {
 
  public:
   std::string str() const {
-    /* naming generally follows: https://github.com/jax-ml/ml_dtypes
-     * for floating point types (leading f) the scheme is:
+    /* Naming generally follows https://github.com/jax-ml/ml_dtypes.
+     * For floating-point types (leading f), the scheme is:
      *  `float<size_bits>_e<exponent_bits>m<mantissa_bits>[flags]`
-     *  flags:
-     *  - no-flags: means it follows IEEE 754 conventions
-     *  - f: means finite values only (no infinities)
-     *  - n: means nans are supported (non-standard encoding)
-     * for integer types the scheme is:
+     *  Flags:
+     *  - no flags: follows IEEE 754 conventions
+     *  - f: finite values only (no infinities)
+     *  - n: supports NaNs (nonstandard encoding)
+     * For integer types, the scheme is:
      *  `[u]int<size_bits>[b<bias>]`
-     *  - if bias is not present it means its zero
+     *  - An omitted bias is zero.
      */
     if (is_floating_point()) {
       auto ret =
@@ -292,7 +288,7 @@ class ScalarType {
 
 using ScalarTypeId = ScalarType::Id;
 
-// "rust style" names generally following:
+// "Rust-style" names generally follow:
 //   https://github.com/pytorch/pytorch/blob/6d9f74f0af54751311f0dd71f7e5c01a93260ab3/torch/csrc/api/include/torch/types.h#L60-L70
 static inline constexpr auto kS4 = ScalarType::int_(4);
 static inline constexpr auto kU4 = ScalarType::uint(4);
@@ -309,7 +305,7 @@ static inline constexpr auto kFE5M2 = ScalarType::float_IEEE754(5, 2);
 static inline constexpr auto kFE8M7 = ScalarType::float_IEEE754(8, 7);
 static inline constexpr auto kFE5M10 = ScalarType::float_IEEE754(5, 10);
 
-// Fixed width style names, generally following:
+// Fixed-width-style names generally follow:
 //  https://github.com/pytorch/pytorch/blob/6d9f74f0af54751311f0dd71f7e5c01a93260ab3/torch/csrc/api/include/torch/types.h#L47-L57
 static inline constexpr auto kInt4 = kS4;
 static inline constexpr auto kUint4 = kU4;
@@ -325,7 +321,7 @@ static inline constexpr auto kFloat8_e5m2 = kFE5M2;
 static inline constexpr auto kFloat16_e8m7 = kFE8M7;
 static inline constexpr auto kFloat16_e5m10 = kFE5M10;
 
-// colloquial names
+// Colloquial names.
 static inline constexpr auto kHalf = kFE5M10;
 static inline constexpr auto kFloat16 = kHalf;
 static inline constexpr auto kBFloat16 = kFE8M7;

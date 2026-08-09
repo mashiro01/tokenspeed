@@ -287,7 +287,7 @@ _MXFP8_1X32_FORMAT_SIGNATURES = frozenset(
 
 
 def has_flashinfer_mxfp8() -> bool:
-    """Whether the flashinfer cute-dsl MXFP8 (1,32) GEMM is usable here.
+    """Whether the FlashInfer CuTe DSL MXFP8 (1, 32) GEMM is usable here.
 
     Returns:
         True when running on an NVIDIA Blackwell (SM10x) GPU with a
@@ -328,7 +328,7 @@ if mm_mxfp8 is not error_fn:
         block_size: list[int] | None = None,
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """MXFP8 (1,32)-block ue8m0 GEMM via flashinfer's cute-dsl backend.
+        """MXFP8 (1,32)-block ue8m0 GEMM via FlashInfer's cute-dsl backend.
 
         Args:
             A: ``[M, K]`` float8_e4m3fn activations.
@@ -426,7 +426,7 @@ if mm_fp4 is not error_fn:
         enable_pdl: bool = False,
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # backend="cutlass" (not "auto") to skip flashinfer's cuDNN-graph plan compile.
+        # backend="cutlass" (not "auto") to skip FlashInfer's cuDNN-graph plan compile.
         output = mm_fp4(
             A,
             B,

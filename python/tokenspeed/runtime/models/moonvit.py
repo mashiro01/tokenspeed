@@ -227,7 +227,7 @@ def _make_vision_norm(norm_type: str, hidden_dim: int) -> nn.Module:
         return nn.LayerNorm(hidden_dim)
     if norm_type == "rmsnorm":
         return nn.RMSNorm(hidden_dim)
-    raise NotImplementedError(f"Not support norm_type: {norm_type}")
+    raise NotImplementedError(f"Unsupported norm_type: {norm_type}")
 
 
 def _get_vision_activation(name: str) -> nn.Module:
@@ -324,7 +324,7 @@ class MoonViTEncoderLayer(nn.Module):
         self.norm1 = _make_vision_norm(norm_type, hidden_dim)
 
         if mlp_type != "mlp2":
-            raise NotImplementedError(f"Not support mlp_type: {mlp_type}")
+            raise NotImplementedError(f"Unsupported mlp_type: {mlp_type}")
         self.mlp = MLP2(
             [hidden_dim, mlp_dim, hidden_dim],
             activation,
@@ -510,7 +510,7 @@ class Rope2DPosEmbRepeated(nn.Module):
     2. Before each forward pass, call ``get_freqs_cis_by_*`` to get the
        ``freqs_cis`` tensor for this iteration.
     3. During the forward pass, pass ``freqs_cis`` to each attention layer
-       and call ``apply`` just before each attention op. Rope is shared
+       and call ``apply`` just before each attention op. RoPE is shared
        across all attention layers and all heads.
 
     Refs:
@@ -637,7 +637,7 @@ class MoonVision3dPatchEmbed(nn.Module):
                 interpolation_mode=pos_emb_interpolation_mode,
             )
         else:
-            raise NotImplementedError(f"Not support pos_emb_type: {pos_emb_type}")
+            raise NotImplementedError(f"Unsupported pos_emb_type: {pos_emb_type}")
 
     def forward(self, x: torch.Tensor, grid_thws: torch.Tensor) -> torch.Tensor:
         """
@@ -700,8 +700,8 @@ class MoonViT3dEncoder(nn.Module):
 
         Returns the ``rope_freqs_cis`` / ``cu_seqlens`` tensors plus
         ``max_seqlen`` as a Python int (see ``MoonViTEncoderLayer.forward``).
-        ``max_seqlen`` is materialized numpy-side so the block loop never hits
-        a ``.item()`` host sync on cudagraph replay.
+        ``max_seqlen`` is materialized on the NumPy side so the block loop avoids
+        a ``.item()`` host synchronization during CUDA graph replay.
         """
         if device is None:
             device = self.final_layernorm.weight.device
@@ -814,7 +814,7 @@ class MoonViTMultiModalProjector(nn.Module):
         self.mm_projector_type = config.mm_projector_type
         if self.mm_projector_type not in {"patchmerger", "patchmergerv2"}:
             raise NotImplementedError(
-                f"Not support mm_projector_type: {self.mm_projector_type}"
+                f"Unsupported mm_projector_type: {self.mm_projector_type}"
             )
 
         # Hidden size after patch merging

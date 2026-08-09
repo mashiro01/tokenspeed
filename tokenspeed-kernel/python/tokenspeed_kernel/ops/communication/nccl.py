@@ -25,7 +25,7 @@
 # 1. We tried to use `cupy`, it calls NCCL correctly, but `cupy` itself
 #  often gets stuck when initializing the NCCL communicator.
 # 2. We tried to use `torch.distributed`, but `torch.distributed.all_reduce`
-#  contains many other potential cuda APIs, that are not allowed during
+#  contains many other potential CUDA APIs that are not allowed during
 #  capturing the CUDA graph. For further details, please check
 # https://discuss.pytorch.org/t/pytorch-cudagraph-with-nccl-operation-failed/ .
 #
@@ -386,11 +386,9 @@ class NCCLLibrary:
         comm: ncclComm_t,
         stream: cudaStream_t,
     ) -> None:
-        # `datatype` actually should be `ncclDataType_t`
-        # and `op` should be `ncclRedOp_t`
-        # both are aliases of `ctypes.c_int`
-        # when we pass int to a function, it will be converted to `ctypes.c_int`
-        # by ctypes automatically
+        # ``datatype`` and ``op`` correspond to ``ncclDataType_t`` and
+        # ``ncclRedOp_t``, respectively. Both are aliases of ``ctypes.c_int``,
+        # and ctypes converts Python integers automatically.
         self.NCCL_CHECK(
             self._funcs["ncclAllReduce"](
                 sendbuff, recvbuff, count, datatype, op, comm, stream
@@ -407,11 +405,9 @@ class NCCLLibrary:
         comm: ncclComm_t,
         stream: cudaStream_t,
     ) -> None:
-        # `datatype` actually should be `ncclDataType_t`
-        # and `op` should be `ncclRedOp_t`
-        # both are aliases of `ctypes.c_int`
-        # when we pass int to a function, it will be converted to `ctypes.c_int`
-        # by ctypes automatically
+        # ``datatype`` and ``op`` correspond to ``ncclDataType_t`` and
+        # ``ncclRedOp_t``, respectively. Both are aliases of ``ctypes.c_int``,
+        # and ctypes converts Python integers automatically.
         self.NCCL_CHECK(
             self._funcs["ncclReduceScatter"](
                 sendbuff, recvbuff, count, datatype, op, comm, stream
@@ -427,10 +423,8 @@ class NCCLLibrary:
         comm: ncclComm_t,
         stream: cudaStream_t,
     ) -> None:
-        # `datatype` actually should be `ncclDataType_t`
-        # which is an alias of `ctypes.c_int`
-        # when we pass int to a function, it will be converted to `ctypes.c_int`
-        # by ctypes automatically
+        # ``datatype`` corresponds to ``ncclDataType_t``, an alias of
+        # ``ctypes.c_int``. ctypes converts Python integers automatically.
         self.NCCL_CHECK(
             self._funcs["ncclAllGather"](
                 sendbuff, recvbuff, count, datatype, comm, stream

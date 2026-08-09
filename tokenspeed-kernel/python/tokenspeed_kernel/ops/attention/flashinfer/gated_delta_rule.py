@@ -25,7 +25,7 @@ Decode / MTP: single-token decode (``gdn_decode_step``) and multi-token
 speculative-verify decode (``gdn_decode_mtp``) on Hopper+ (SM90+).
 
 State layout convention (all three kernels): the recurrent state is K-last
-(``[N, H, V, K]``, v-major), matching flashinfer's native GDN decode/MTP
+(``[N, H, V, K]``, v-major), matching FlashInfer's native GDN decode/MTP
 layout -- this is also the layout the runtime's SSM state pool allocates, so
 no transpose is needed at any of these kernels' boundaries. This differs from
 the Triton FLA convention (``[N, H, K, V]``); the Triton ``gdn_chunk_prefill``
@@ -104,9 +104,9 @@ if platform.is_hopper_plus:
 
 
 def is_available() -> bool:
-    """Whether the flashinfer GDN chunk-prefill kernel can run on this platform."""
+    """Return whether the FlashInfer GDN chunk-prefill kernel can run here."""
     cuda_major = int(torch.version.cuda.split(".")[0]) if torch.version.cuda else 0
-    # flashinfer's gdn_prefill treats compute-capability major 10 as the
+    # FlashInfer's gdn_prefill treats compute-capability major 10 as the
     # Blackwell path (sm100 B200/GB200, sm103 B300), gated on CUDA>=13 and the
     # prefill kernel being present; it raises NotImplementedError otherwise.
     # Mirror that here so the caller does not commit to a crashing fast-path.
@@ -121,7 +121,7 @@ def is_supported(
     head_dim: int, dtype: torch.dtype, num_q_heads: int, num_v_heads: int
 ) -> bool:
     # bf16 is the verified path; fp16 is rejected (caller fails fast).
-    # flashinfer reads g/beta/state with max(num_q, num_v) heads; the runtime
+    # FlashInfer reads g/beta/state with max(num_q, num_v) heads; the runtime
     # supplies them with num_v heads, so num_v < num_q (e.g. Hk=32, Hv=16) reads
     # out of bounds. Only num_v >= num_q is safe (GVA or equal heads).
     return (
@@ -231,7 +231,7 @@ if is_available():
         if scale is None:
             scale = head_dim**-0.5
 
-        # initial_state is already K-last [N, H, V, K] (flashinfer-native);
+        # initial_state is already K-last [N, H, V, K] (FlashInfer-native);
         # only a dtype cast + contiguity are needed, no transpose.
         fi_initial_state = initial_state.float().contiguous()
 
@@ -239,7 +239,7 @@ if is_available():
         checkpoint_cu_starts = None
         if output_h:
             per_seq_lens = (cu_seqlens[1:] - cu_seqlens[:-1]).to(torch.int64)
-            # flashinfer-native checkpoint count: only full chunks emit a checkpoint.
+            # FlashInfer-native checkpoint count: only full chunks emit a checkpoint.
             per_seq_h_ckpts = per_seq_lens // CHUNK_SIZE
             total_h_ckpts = int(per_seq_h_ckpts.sum().item())
             H_state = fi_initial_state.shape[1]
@@ -283,8 +283,8 @@ if is_available():
         if not output_h:
             return GdnChunkPrefillResult(out=out, final_state=final_state)
 
-        # Return raw flashinfer checkpoints, K-last [total_fi, H, V, K]. The
-        # caller indexes directly using flashinfer-native offsets.
+        # Return raw FlashInfer checkpoints, K-last [total_fi, H, V, K]. The
+        # caller indexes them directly using FlashInfer-native offsets.
         return GdnChunkPrefillResult(
             out=out,
             final_state=final_state,
@@ -342,7 +342,7 @@ if is_decode_available():
         initial_state is the K-last [pool_size, HV, V, K] SSM state pool (same
         layout as gdn_chunk_prefill/gdn_decode_mtp -- no transpose needed at
         this boundary); initial_state_indices ([B]) selects each batch entry's
-        read row. ``-1`` marks CUDA-graph padding rows and is handled
+        read row. ``-1`` marks CUDA graph padding rows and is handled
         internally by flashinfer (skipped on the float32 path, redirected to a
         sacrificial pool row 0 on the bf16 fast path) -- no caller-side clamp
         needed. The post-step state is written to output_state_indices
@@ -351,7 +351,7 @@ if is_decode_available():
 
         Returns the [B, 1, HV, V] decode output (q.dtype).
         """
-        # Normalize decay inputs for FlashInfer's FP32 CuteDSL/DLPack boundary.
+        # Normalize decay inputs for FlashInfer's FP32 CuTe DSL/DLPack boundary.
         A_log = A_log.detach().float()
         dt_bias = dt_bias.detach().float()
         out, _ = _gated_delta_rule_decode_pretranspose(
@@ -440,7 +440,7 @@ if is_decode_available():
 
         Returns the [B, T, HV, V] decode output (q.dtype).
         """
-        # Normalize decay inputs for FlashInfer's FP32 CuteDSL/DLPack boundary.
+        # Normalize decay inputs for FlashInfer's FP32 CuTe DSL/DLPack boundary.
         A_log = A_log.detach().float()
         dt_bias = dt_bias.detach().float()
         K_dim = q.shape[-1]

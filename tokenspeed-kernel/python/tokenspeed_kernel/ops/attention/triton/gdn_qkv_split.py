@@ -100,9 +100,9 @@ def _fused_qkv_split_l2norm_kernel(  # noqa: E501
     qkv_dim,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """Split + per-head L2 normalisation of Q and K in one pass.
+    """Split + per-head L2 normalization of Q and K in one pass.
 
-    Used only when the sm100 GDN fast-path is active — the caller omits the
+    Used only when the SM100 GDN fast path is active—the caller omits the
     separate l2norm_fwd(query) / l2norm_fwd(key) passes.  V is written as-is.
     One program per token; per-head reduction is done inside BLOCK_SIZE.
     HEAD_Q must fit within BLOCK_SIZE (true for all Qwen3.5 configs).
@@ -168,7 +168,7 @@ def fused_qkv_split_gdn_prefill(
 
     Args:
         mixed_qkv: ``[T, qkv_dim]``, possibly strided.
-        fuse_l2norm: when True, Q and K are L2-normalised per head inside the
+        fuse_l2norm: when True, Q and K are L2-normalized per head inside the
             kernel (sm100 fast-path only — caller must not call l2norm_fwd
             separately).
     Returns:

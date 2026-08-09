@@ -407,7 +407,7 @@ def permute_param_layout_(
             )
 
     # if one of the dimensions is not set, set it to the opposite of the other
-    #  we can only do this since we asserted the parameter is 2D above
+    # This conversion is valid because the parameter was asserted to be 2D above.
     if curr_input_dim is None:
         if curr_output_dim is None:
             raise ValueError("either input or output dim must be set")
@@ -432,7 +432,7 @@ def permute_param_layout_(
             and param.packed_dim == perm[kwargs["packed_dim"]]
         ):
             raise ValueError(
-                "permute_param_layout_ currently doesn't support repacking"
+                "permute_param_layout_ does not currently support repacking"
             )
 
     param.data = param.data.permute(*perm)

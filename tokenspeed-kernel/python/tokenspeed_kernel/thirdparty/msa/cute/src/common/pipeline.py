@@ -269,7 +269,7 @@ class PipelineTmaUmma(PipelineTmaUmmaOg):
     @dsl_user_op
     def consumer_release_w_index(self, index: Int32, *, loc=None, ip=None):
         """
-        UMMA consumer release buffer empty, cta_group needs to be provided.
+        Release an empty UMMA consumer buffer. ``cta_group`` is required.
         """
         self.sync_object_empty.arrive(
             index, self.consumer_mask, self.cta_group, loc=loc, ip=ip
@@ -305,7 +305,7 @@ class PipelineUmmaAsync(PipelineUmmaAsyncOg):
     @dsl_user_op
     def producer_commit_w_index(self, index: Int32, *, loc=None, ip=None):
         """
-        UMMA producer commit buffer full, cta_group needs to be provided.
+        Commit a full UMMA producer buffer. ``cta_group`` is required.
         """
         self.sync_object_full.arrive(
             index, self.producer_mask, self.cta_group, loc=loc, ip=ip
@@ -383,7 +383,7 @@ class PipelineAsyncUmma(PipelineAsyncUmmaOg):
     @dsl_user_op
     def consumer_release_w_index(self, index: Int32, *, loc=None, ip=None):
         """
-        UMMA consumer release buffer empty, cta_group needs to be provided.
+        Release an empty UMMA consumer buffer. ``cta_group`` is required.
         """
         self.sync_object_empty.arrive(
             index, self.consumer_mask, self.cta_group, loc=loc, ip=ip

@@ -142,7 +142,7 @@ ensure_flashinfer_jit_cache
 # Step 4: Install tokenspeed-kernel
 # ============================================================
 echo "=== Step 4: Install tokenspeed-kernel ==="
-# Nightly flashinfer pins (X.Y.Z.devYYYYMMDD) never reach PyPI: pre-install
+# Nightly FlashInfer pins (X.Y.Z.devYYYYMMDD) never reach PyPI, so preinstall
 # the python wheel from the GitHub nightly release so tokenspeed-kernel's ==
 # pin resolves against the already-installed version instead of PyPI.
 FLASHINFER_PIN="$(grep -E '^flashinfer-python==' "${CUDA_REQ}" | head -n1 | tr -d '[:space:]')"
@@ -152,7 +152,7 @@ if [[ "${FLASHINFER_PIN_VERSION}" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]{8})$ ]
     NIGHTLY_BASE="https://github.com/flashinfer-ai/flashinfer/releases/download/${NIGHTLY_TAG}"
     NIGHTLY_WHEEL="$(cache_remote_wheel "${NIGHTLY_BASE}/flashinfer_python-${FLASHINFER_PIN_VERSION}-py3-none-any.whl")"
     # flashinfer-cubin must match too: runner images preinstall an older one
-    # and flashinfer's import-time version check refuses the mismatch.
+    # and FlashInfer's import-time version check refuses the mismatch.
     NIGHTLY_CUBIN_WHEEL="$(cache_remote_wheel "${NIGHTLY_BASE}/flashinfer_cubin-${FLASHINFER_PIN_VERSION}-py3-none-any.whl")"
     echo "Pre-installing nightly FlashInfer Python + cubin from GitHub release: ${NIGHTLY_TAG}"
     pip_install_with_retry pip3 install --break-system-packages --no-deps \

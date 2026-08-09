@@ -1104,7 +1104,7 @@ def nvidia_rsag_reduce_scatter(
     ), "Either tp_num_tokens or token_list_in_group must be provided"
     if token_list_in_group is None:
         token_list_in_group = rsag_get_token_dist(state, tp_num_tokens)
-    assert hidden_states.dtype == torch.bfloat16, "Only bfloat16 is supported for now"
+    assert hidden_states.dtype == torch.bfloat16, "Only BF16 is currently supported"
     total_num_tokens, local_num_tokens, local_token_offset = rsag_get_context(
         state, token_list_in_group
     )
@@ -1136,7 +1136,7 @@ def nvidia_rsag_all_gather(
     ), "Either tp_num_tokens or token_list_in_group must be provided"
     if token_list_in_group is None:
         token_list_in_group = rsag_get_token_dist(state, tp_num_tokens)
-    assert hidden_states.dtype == torch.bfloat16, "Only bfloat16 is supported for now"
+    assert hidden_states.dtype == torch.bfloat16, "Only BF16 is currently supported"
     total_num_tokens, local_num_tokens, local_token_offset = rsag_get_context(
         state, token_list_in_group
     )
@@ -1518,7 +1518,7 @@ def amd_rsag_reduce_scatter(
     ), "Either tp_num_tokens or token_list_in_group must be provided"
     if token_list_in_group is None:
         token_list_in_group = rsag_get_token_dist(state, tp_num_tokens)
-    assert hidden_states.dtype == torch.bfloat16, "Only bfloat16 is supported for now"
+    assert hidden_states.dtype == torch.bfloat16, "Only BF16 is currently supported"
     total_num_tokens, local_num_tokens, local_token_offset = rsag_get_context(
         state, token_list_in_group
     )
@@ -1562,7 +1562,7 @@ def amd_rsag_all_gather(
     ), "Either tp_num_tokens or token_list_in_group must be provided"
     if token_list_in_group is None:
         token_list_in_group = rsag_get_token_dist(state, tp_num_tokens)
-    assert hidden_states.dtype == torch.bfloat16, "Only bfloat16 is supported for now"
+    assert hidden_states.dtype == torch.bfloat16, "Only BF16 is currently supported"
 
     hidden_size_bak, comm_buff_bak = rsag_resize_hidden_if_needed(
         state, hidden_states.shape[-1]
@@ -2201,7 +2201,7 @@ def nvidia_rsag_all_gather_inner(
     local_hidden = hidden_list_in_group[state.rank_in_group]
     hidden_offset = sum(hidden_list_in_group[: state.rank_in_group])
 
-    assert hidden_states.dtype == torch.bfloat16, "Only bfloat16 is supported"
+    assert hidden_states.dtype == torch.bfloat16, "Only BF16 is supported"
     assert hidden_states.is_contiguous(), "hidden_states must be contiguous"
     # is_contiguous() does not imply 16-byte data_ptr alignment — e.g. a
     # contiguous slice of a larger tensor (outer[i] on a 3D tensor) can land

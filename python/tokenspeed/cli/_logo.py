@@ -44,7 +44,7 @@ _SPEED_LINES = (
     "███████ ██      ███████ ███████ ██████  ",
 )
 
-_TOKEN_STYLE = "\033[90m"  # bright black (grey).
+_TOKEN_STYLE = "\033[90m"  # bright black (gray).
 _SPEED_STYLE = "\033[94m"  # bright blue.
 _RESET = "\033[0m"
 

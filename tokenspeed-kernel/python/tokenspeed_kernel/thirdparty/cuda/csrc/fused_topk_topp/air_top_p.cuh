@@ -20,7 +20,7 @@
 
 // Standalone deterministic AIR Top-P radix algorithm.
 //
-// Derived from flashinfer/data/include/flashinfer/air_top_p.cuh (Apache 2.0,
+// Derived from FlashInfer's data/include/flashinfer/air_top_p.cuh (Apache 2.0,
 // FlashInfer team, 2026), which in turn ports TensorRT-LLM's AIR Top-P kernel.
 //
 // Adaptations for the fused top-k + top-p kernel here:

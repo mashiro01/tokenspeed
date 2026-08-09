@@ -213,7 +213,7 @@ class ModelExecutorConfig:
         model_is_mrope = bool(rope_parameters and "mrope_section" in rope_parameters)
 
         # Spec verify commits positions up to physical_context_len - 1 for a
-        # finished request lingering one overlap step. Rope cos/sin tables are
+        # finished request lingering one overlap step. RoPE cos/sin tables are
         # precomputed for the model's derived context length, so positions in
         # the pad read past them when context_len is set flush against the
         # model limit. The values only feed a dead request's garbage KV, but
@@ -308,7 +308,7 @@ class ModelExecutor:
         self.token_to_kv_pool = token_to_kv_pool
         # Every pool runs on the shared cache arena and publishes a runtime
         # contract; the per-group tables travel as CacheBatchMetadata. Fail
-        # fast here rather than at the first forward or, worse, a CUDA-graph
+        # fast here rather than at the first forward or, worse, a CUDA graph
         # capture-path assert: a missing contract means the model family has
         # no cache recipe yet, and an uncovered family means a backend that
         # never reads that group's tables.
@@ -507,7 +507,7 @@ class ModelExecutor:
             self.forward_step.prewarm_comm_states(batch_sizes=(1,))
             logger.info("Finished prewarming Triton RSAG communication states")
 
-        # Breakable prefill (extend) CUDA graphs, the extend-mode analogue of
+        # Breakable prefill (extend) CUDA graphs, the extend-mode analog of
         # the decode wrapper above; borrows the decode capture stream so all
         # graphs share one mempool-reuse domain.
         self.prefill_graph = PrefillGraph(
@@ -1529,7 +1529,7 @@ class ModelExecutor:
 
                 # Defensive clamp into the valid vocab range (kept from the
                 # pre-pack path). An out-of-range token id -- e.g. a stale/corrupt
-                # value surfaced by the intermittent spec-decode decode-state race
+                # value surfaced by the intermittent speculative-decoding state race
                 # -- would otherwise reach the detokenizer, whose HF
                 # tokenizer.decode raises a fatal OverflowError on ids outside
                 # [0, vocab) and tears down the whole server process tree.

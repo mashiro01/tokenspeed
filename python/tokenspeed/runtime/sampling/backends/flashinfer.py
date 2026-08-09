@@ -202,7 +202,7 @@ class FlashInferSamplingBackend(SamplingBackend):
         # Retract-resume note: if a request is retracted and later takes a
         # different pool slot on resume, _reset_slot re-seeds a fresh
         # Generator from sp.seed. Sampling stays deterministic given the same
-        # seed, and flashinfer's Philox path (seed + seq_len offset) already
+        # seed, and FlashInfer's Philox path (seed + seq_len offset) already
         # gives per-step uniqueness independent of the torch.Generator.
         self._cpu_generator_per_slot: list[torch.Generator | None] = [None] * pool_rows
         self._cpu_generator_per_slot[0] = self._capture_gen
@@ -232,7 +232,7 @@ class FlashInferSamplingBackend(SamplingBackend):
             (max_pad_bs,), dtype=torch.float32, device=config.device
         )
 
-        # Stub generator used during CUDA-graph capture/warm-up (no requests yet).
+        # Stub generator used during CUDA graph capture/warm-up (no requests yet).
         self._capture_gen = torch.Generator(device=config.device)
         self._capture_gen.manual_seed(config.random_seed)
 
@@ -568,7 +568,7 @@ class FlashInferSamplingBackend(SamplingBackend):
                     : effective_bs * n
                 ]
         # TP-rank sync: rank 0 wins on the full verify-output triple.
-        # Load-bearing: flashinfer top_k_renorm_prob has no is_deterministic
+        # Load-bearing: FlashInfer's top_k_renorm_prob has no is_deterministic
         # knob and produces non-bit-identical results across ranks (sub-ulp
         # FP accumulation order).
         # PDL still uses rank-0 outputs to keep ranks aligned. Without PDL,

@@ -23,7 +23,7 @@
 With a 128-multiple extent the registered rel_mha prefill/extend ops route
 to the tokenspeed-mha kernel compiled with ``is_varlen_q=True``, fed by the
 ported ShearingBias prepass (``TSMHA_REL_EXTEND=1`` default). Each case is
-pinned against the torch reference AND against the score_mod fallback route
+pinned against the PyTorch reference AND against the score_mod fallback route
 on identical inputs (flag patched off), so the two implementations guard
 each other. Unaligned ``seqlen_k - seqlen_q`` extends are covered
 explicitly: the sheared -inf pattern is the causal mask on diagonal blocks,
@@ -58,7 +58,7 @@ def _skip_unless_routable() -> None:
 
 
 def _ref_rel_attn(q, k, v, rel_logits, rel_extent, window_left, scale):
-    """Per-sequence torch reference. q [Sq,H,D], k/v [Sk,KV,D], rel [Sq,H,E]."""
+    """Per-sequence PyTorch reference. q [Sq,H,D], k/v [Sk,KV,D], rel [Sq,H,E]."""
     Sq, H, _ = q.shape
     Sk, KV, _ = k.shape
     k = k.repeat_interleave(H // KV, dim=1)
@@ -126,7 +126,7 @@ def _with_route(enabled: bool, fn):
 def test_tsmha_varlen_prefill(
     device: str, require, rel_extent: int, window_left: int
 ) -> None:
-    """Packed varlen prefill: tsmha route vs torch reference and score_mod."""
+    """Packed varlen prefill: tsmha route vs PyTorch reference and score_mod."""
     _require_fa4(require)
     _skip_unless_routable()
     q_lens = [128, 200, 65]

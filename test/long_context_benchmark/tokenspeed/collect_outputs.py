@@ -23,9 +23,9 @@ from pathlib import Path
 # Order matters: shorter -> longer
 LEN_ORDER = ["32k", "64k", "128k", "256k", "512k", "1024k"]
 
-# Speculative-decoding acceptance keys produced by different evalscope versions.
-# Newer evalscope[perf] (>= the version installed by this CI job) reports
-# "Avg Decoded Tokens/Iter". Older evalscope used "Decoded Tok/Iter".
+# Speculative-decoding acceptance keys produced by different EvalScope versions.
+# Newer `evalscope[perf]` (>= the version installed by this CI job) reports
+# "Avg Decoded Tokens/Iter". Older EvalScope versions used "Decoded Tok/Iter".
 # "Spec Decode Acceptance (%)" is a percent-form alternative on some builds.
 AR_KEYS = (
     "Avg Decoded Tokens/Iter",
@@ -37,7 +37,7 @@ AR_KEYS = (
 def _extract_ar(summary: dict, source: str) -> float:
     """Return MTP acceptance rate (avg decoded tokens per iter).
 
-    Prefers the new evalscope key, falls back to the old one. Treats the
+    Prefers the new EvalScope key, falls back to the old one. Treats the
     percent-form acceptance as `1 + pct/100` only if it's the sole signal
     available.  Warns (not silent zero) when no known key is present.
     """

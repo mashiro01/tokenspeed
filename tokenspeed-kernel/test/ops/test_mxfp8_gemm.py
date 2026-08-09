@@ -95,7 +95,7 @@ def _has_flashinfer_mxfp8() -> bool:
 
 requires_flashinfer_mxfp8 = pytest.mark.skipif(
     not _has_flashinfer_mxfp8(),
-    reason="flashinfer mm_mxfp8 requires SM100/103 and a flashinfer build with the API",
+    reason="FlashInfer mm_mxfp8 requires SM100/103 and a FlashInfer build with the API",
 )
 
 
@@ -155,7 +155,7 @@ def test_flashinfer_mxfp8_selected_with_online_quant(device: str) -> None:
         torch.randn(n, k, device=device, dtype=torch.bfloat16) * 0.02
     )
 
-    # Selection with no override resolves to the flashinfer kernel; a
+    # Selection with no override resolves to the FlashInfer kernel; a
     # solution pin recovers the Triton fallback.
     fp8 = torch.float8_e4m3fn
     sig = format_signature(

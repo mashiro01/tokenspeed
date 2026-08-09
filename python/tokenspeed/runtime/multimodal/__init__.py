@@ -20,7 +20,7 @@
 
 """Multimodal (VLM) runtime support.
 
-Per-item content hashing, pad-value substitution for MM-aware prefix caching,
-SHM pixel transport between gateway and worker, the budget-bucketed encoder
-CUDA-graph wrapper, and the M-RoPE helper.
+Per-item content hashing, pad-value substitution for multimodal-aware prefix
+caching, shared-memory pixel transport between the gateway and worker, the budget-bucketed encoder
+CUDA graph wrapper, and the M-RoPE helper.
 """

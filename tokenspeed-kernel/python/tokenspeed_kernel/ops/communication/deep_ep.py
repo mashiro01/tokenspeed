@@ -99,7 +99,7 @@ except ImportError:
 def _get_available_gpu_memory(gpu_id: int, empty_cache: bool = True) -> float:
     if torch.cuda.current_device() != gpu_id:
         logger.warning(
-            "current device is not %s, but %s, which may cause useless memory allocation for torch CUDA context.",
+            "Requested device is %s, but the current device is %s; this may cause unnecessary memory allocation for the PyTorch CUDA context.",
             gpu_id,
             torch.cuda.current_device(),
         )
@@ -635,10 +635,13 @@ class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
         topk_idx: torch.Tensor,
         use_fp8: bool = False,
     ):
-        """
-        # For H20, there will be an CUDA error: DeepEP/csrc/kernels/internode_ll.cu:337 'too many blocks in cooperative launch'.
-        # Please make sure to change DeepEP code in internode_ll.cu dispatch / combine as below first and then reinstall.
-        # More details refer: https://github.com/deepseek-ai/DeepEP/issues/15#issuecomment-2709715782
+        """Dispatch hidden states to their assigned experts.
+
+        On H20, the unpatched DeepEP kernel raises ``too many blocks in
+        cooperative launch`` at ``DeepEP/csrc/kernels/internode_ll.cu:337``.
+        Apply the patch below to the DeepEP dispatch/combine code in
+        ``internode_ll.cu``, then reinstall DeepEP. See
+        https://github.com/deepseek-ai/DeepEP/issues/15#issuecomment-2709715782.
 
         diff --git a/csrc/kernels/internode_ll.cu b/csrc/kernels/internode_ll.cu
         index 76ae2e2..8ecd08f 100644

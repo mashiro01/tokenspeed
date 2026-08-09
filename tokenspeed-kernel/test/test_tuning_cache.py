@@ -39,7 +39,7 @@ from tokenspeed_kernel.ops.tuning import (
 )
 
 requires_flashinfer = pytest.mark.skipif(
-    find_spec("flashinfer") is None, reason="requires flashinfer"
+    find_spec("flashinfer") is None, reason="requires FlashInfer"
 )
 
 
@@ -98,7 +98,7 @@ def test_set_autotune_process_group_sets_and_clears() -> None:
 
 
 def test_set_autotune_process_group_tolerates_missing_backend() -> None:
-    # Like autotune(), a no-op without flashinfer installed.
+    # Like autotune(), this is a no-op when FlashInfer is not installed.
     set_autotune_process_group(None)
 
 

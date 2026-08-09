@@ -534,7 +534,8 @@ def _launch_subprocesses(
         port_args = PortArgs.init_new(server_args)
         logger.info("server_args=%r", server_args)
 
-    # If using model from www.modelscope.cn, first download the model.
+    # If TOKENSPEED_USE_MODELSCOPE is enabled, download missing ModelScope
+    # models before loading them.
     server_args.model, server_args.tokenizer = prepare_model_and_tokenizer(
         server_args.model, server_args.tokenizer
     )
@@ -581,8 +582,8 @@ def _launch_subprocesses(
         scheduler_procs.append(proc)
 
     if server_args.node_rank >= 1:
-        # In multi-node cases, non-zero rank nodes do not need to run tokenizer or detokenizer,
-        # so they can just wait here.
+        # In multinode deployments, nonzero-rank nodes do not run the tokenizer
+        # or detokenizer and can wait here.
 
         for reader in scheduler_pipe_readers:
             data = reader.recv()

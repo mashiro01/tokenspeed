@@ -44,9 +44,9 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
     query_start_loc_ptr,
     batch_ptr,
     token_chunk_offset_ptr,
-    o_ptr,  # (dim, seqlen) - actually pointing to x_ptr
+    o_ptr,  # (dim, seqlen); aliases x_ptr
     # Matrix dimensions
-    batch: tl.int32,  # actually padded_batch
+    batch: tl.int32,  # padded_batch
     dim: tl.constexpr,
     seqlen: tl.int32,  # cu_seqlen
     num_cache_lines: tl.constexpr,
@@ -166,9 +166,9 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
                 conv_states_ptrs = prior_tokens - 3 * stride_conv_state_tok  # [BLOCK_N]
                 col0 = tl.load(conv_states_ptrs, mask_w, 0.0)
         else:
-            # prior-tokens are zeros
+            # Prior tokens are zero.
             if KERNEL_WIDTH >= 2:  # STRATEGY1
-                # first chunk and does not have prior-token, so just set to 0
+                # The first chunk has no prior token, so initialize it to zero.
                 col0 = tl.zeros((BLOCK_N,), dtype=x_ptr.dtype.element_ty)
             if KERNEL_WIDTH >= 3:  # STRATEGY1
                 col1 = tl.zeros((BLOCK_N,), dtype=x_ptr.dtype.element_ty)
@@ -178,13 +178,12 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
                 col3 = tl.zeros((BLOCK_N,), dtype=x_ptr.dtype.element_ty)
 
         # STEP 2:
-        # here prepare data for updating conv_state
+        # Prepare data for updating conv_state.
         if (
             state_len <= seqlen
         ):  # SMALL_CACHE=True (only move part of 'x' into conv_state cache)
-            # just read from 'x'
-            # copy 'x' data to conv_state
-            # load only 'x' data (and set 0 before 'x' if seqlen < state_len)
+            # Read from ``x`` and copy its data into conv_state. If seqlen is
+            # shorter than state_len, pad the preceding entries with zeros.
             idx_tokens_last = (seqlen - state_len) + tl.arange(
                 0, NP2_STATELEN
             )  # [BLOCK_M]
@@ -410,27 +409,27 @@ def causal_conv1d_fn(
     validate_data=False,
     **kwargs,
 ):
-    """support varlen + continuous batching when x is 2D tensor
+    """Support variable-length continuous batching when ``x`` is a 2D tensor.
 
     x: (dim,cu_seq_len)
-        cu_seq_len = total tokens of all seqs in that batch
-        sequences are concatenated from left to right for varlen
+        ``cu_seq_len`` is the total number of tokens across the batch. Variable-
+        length sequences are concatenated from left to right.
     weight: (dim, width)
     conv_states: (...,dim,width - 1) itype
-        updated inplace if provided
-        [it use `cache_indices` to get the index to the cache of conv_state for that sequence
+        Updated in place when provided. ``cache_indices`` identifies each
+        sequence's entry in the convolution-state cache.
 
-        conv_state[cache_indices[i]] for seq-i - to be used as initial_state when has_initial_state[i] = True
-             and after that conv_state[cache_indices[i]] need to be shift-left and updated with values from 'x'
+        ``conv_state[cache_indices[i]]`` provides the initial state for sequence
+        ``i`` when ``has_initial_state[i]`` is true. It is then shifted left and
+        updated with values from ``x``.
         ]
     query_start_loc: (batch + 1) int32
-        The cumulative sequence lengths of the sequences in
-        the batch, used to index into sequence. prepended by 0.
+        Cumulative sequence lengths for indexing into the batch, prefixed by 0.
         if
         x = [5, 1, 1, 1] <- continuous batching (batch=4)
         then
         query_start_loc = [0, 5, 6, 7, 8] <- the starting index of the next sequence; while the last value is
-           the ending index of the last sequence
+           the ending index of the final sequence
         [length(query_start_loc)-1 == batch]
         for example: query_start_loc = torch.Tensor([0,10,16,17]),
         x.shape=(dim,17)
@@ -444,7 +443,7 @@ def causal_conv1d_fn(
     bias: (dim,)
     activation: either None or "silu" or "swish" or True
     pad_slot_id: int
-        if cache_indices is passed, lets the kernel identify padded
+        If ``cache_indices`` is passed, this value lets the kernel identify padded
         entries that will not be processed,
         for example: cache_indices = [pad_slot_id, 1, 20, pad_slot_id]
         in this case, the kernel will not process entries at
@@ -536,12 +535,12 @@ def causal_conv1d_fn(
             ), "ERROR: `has_initial_state` is used, which needs also `conv_states`"
         assert weight.stride(1) == 1
         assert (dim, width) == weight.shape
-        assert is_channel_last, "Need to run in channel-last layout"
+        assert is_channel_last, "Channel-last layout is required"
 
     if metadata is None:
 
         def num_program(META, seqlens):
-            nums = -(-seqlens // META["BLOCK_M"])  # ceil-div, numpy array
+            nums = -(-seqlens // META["BLOCK_M"])  # Ceiling division, NumPy array.
             tot = int(nums.sum())
 
             mlist = np.repeat(np.arange(len(nums)), nums)
@@ -971,7 +970,7 @@ def causal_conv1d_update(
         and we are selecting the batch coords specified by conv_state_indices.
         Useful for a continuous batching scenario.
     pad_slot_id: int
-            if cache_indices is passed, lets the kernel identify padded
+            If ``cache_indices`` is passed, this value lets the kernel identify padded
             entries that will not be processed,
             for example: cache_indices = [pad_slot_id, 1 ,20 ,pad_slot_id]
             in this case, the kernel will not process entries at
@@ -1001,7 +1000,7 @@ def causal_conv1d_update(
             conv_state.stride(-2) == 1
         ), f"ERROR: expect contiguous along feat-dim of conv_state (currently stride={conv_state.stride()})"
         assert state_len >= width - 1
-        # when above happens, we don't shift-left to keep any records in conv_state
+        # This path preserves conv_state records without shifting them left.
         assert dim == conv_state.size(1)
         if conv_state_indices is None:
             assert conv_state.size(0) >= batch

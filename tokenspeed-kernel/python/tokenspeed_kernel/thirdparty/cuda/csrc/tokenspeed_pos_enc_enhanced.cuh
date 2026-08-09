@@ -122,7 +122,7 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
       sin.load(cos_sin_cache + (pos * rotary_dim) + (sin_offset + vec_idx));
     }
 
-    // 对于 <  k_head_dim对应的线程，执行q_rope
+    // Threads with tx * vec_size < head_dim apply q_rope.
     if (by < num_qo_heads && tx * vec_size < head_dim) {
       uint32_t qo_head_idx = by;
       DType* q_ptr = q + get_elem_offset_impl(idx, qo_head_idx, 0, q_stride_n, q_stride_h);
@@ -137,7 +137,7 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
     } else if (by >= num_qo_heads) {
       uint32_t kv_head_idx = by - num_qo_heads;
 
-      // 对于 <  k_head_dim对应的线程，执行save_k_cache和save_v_cache
+      // Threads with tx * vec_size < head_dim save both the K and V caches.
       if (tx * vec_size < head_dim) {
         DType* k_ptr = k + get_elem_offset_impl(idx, kv_head_idx, 0, k_stride_n, k_stride_h);
         DType* k_rope_ptr = k_rope + get_elem_offset_impl(idx, kv_head_idx, 0, k_rope_stride_n, k_rope_stride_h);
@@ -163,7 +163,8 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
                                                                v_buffer_stride_n, v_buffer_stride_h);
         }
       } else if constexpr (save_kv_cache) {
-        // 如果save_kv_cache， 对于 > k_head_dim 对应的线程，执行save_v_cache
+        // With save_kv_cache enabled, threads with tx * vec_size >= head_dim
+        // save only the V cache.
         DType* v_ptr = v + get_elem_offset_impl(idx, kv_head_idx, 0, v_stride_n, v_stride_h);
         vec_t<float, vec_size> v_vec;
         v_vec.cast_load(v_ptr + tx * vec_size);
@@ -240,7 +241,7 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedKernel(
 
 #pragma unroll 1
     for (uint32_t kv_head_idx = 0; kv_head_idx < num_kv_heads; ++kv_head_idx) {
-      // 对于 < k_head_dim对应的线程，执行save_k_cache和save_v_cache
+      // Threads with tx * vec_size < head_dim save both the K and V caches.
       if (tx * vec_size < head_dim) {
         DType* k_ptr = k + get_elem_offset_impl(idx, kv_head_idx, 0, k_stride_n, k_stride_h);
         DType* k_rope_ptr = k_rope + get_elem_offset_impl(idx, kv_head_idx, 0, k_rope_stride_n, k_rope_stride_h);
@@ -266,7 +267,8 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedKernel(
                                                                v_buffer_stride_n, v_buffer_stride_h);
         }
       } else if constexpr (save_kv_cache) {
-        // 如果save_kv_cache， 对于 > k_head_dim 对应的线程，执行save_v_cache
+        // With save_kv_cache enabled, threads with tx * vec_size >= head_dim
+        // save only the V cache.
         DType* v_ptr = v + get_elem_offset_impl(idx, kv_head_idx, 0, v_stride_n, v_stride_h);
         vec_t<float, vec_size> v_vec;
         v_vec.cast_load(v_ptr + tx * vec_size);
@@ -345,7 +347,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
         // operate on 16 Bytes at a time
         constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / 32);
         DISPATCH_V_HEAD_DIM(v_head_dim, V_HEAD_DIM, {
-          // 如果SAVE_KV_CACHE, 使用max(HEAD_DIM, V_HEAD_DIM)定义bdx
+          // With SAVE_KV_CACHE, derive bdx from max(HEAD_DIM, V_HEAD_DIM).
           constexpr uint32_t effective_head_dim =
               SAVE_KV_CACHE ? std::max((uint32_t)HEAD_DIM, (uint32_t)V_HEAD_DIM) : (uint32_t)HEAD_DIM;
           constexpr uint32_t bdx = (effective_head_dim + vec_size - 1) / vec_size;  // ceiling division

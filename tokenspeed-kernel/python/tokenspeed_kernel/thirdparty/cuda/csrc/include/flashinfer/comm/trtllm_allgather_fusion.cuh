@@ -164,7 +164,7 @@ class AllGatherFusedOp {
   __device__ __forceinline__ AllGatherFusedOp(AllGatherFusionParams<T> const& params)
       : m_params(params) {
     if constexpr (Pattern == AllGatherFusionPattern::kAllGatherfusedRMSFP8BlockWiseQuant) {
-      // 需要在这里load gamma吗
+      // TODO: determine whether gamma needs to be loaded here.
     }
   }
 
@@ -202,7 +202,7 @@ class AllGatherFusedOp {
         int x_global_offset = token_id * (m_params.q_lora_rank / VEC_SIZE) + x_offset_in_token;
         norm_out_x.store(reinterpret_cast<T*>(m_params.x_norm_out) + x_global_offset * VEC_SIZE);
 
-        // Apply FP8 BlockWise quantization if needed
+        // Apply FP8 block-wise quantization if needed.
         if constexpr (GetQuantType<Pattern> == QuantType::kFP8BlockWise) {
           vec_t<__nv_fp8_e4m3, VEC_SIZE> quant_out = block_quant_fp8(
               norm_out_x, reinterpret_cast<float*>(m_params.scale_out), m_params.scale_stride, token_id);
@@ -326,7 +326,7 @@ class AllGatherFusedOp {
     float scale;
     asm("div.full.f32 %0, %1, %2;" : "=f"(scale) : "f"(_absmax), "f"(FP8_E4M3_MAX));
 
-    // directly write scale to scale_out
+    // Write the scale directly to scale_out.
     if (tile_16.thread_rank() == 0) {
       int32_t col_idx = int32_t(access_id_in_token / 16);
       int32_t offset = col_idx * scale_stride + token_id;
@@ -391,7 +391,7 @@ __global__ __launch_bounds__(264, 1) void allgather_fusion_kernel_oneshot_lampor
     }
   }
   for (int idx = access_id; idx < clear_access; idx += access_stride) {
-    // Clear comm buffer that previous kernel used
+    // Clear the communication buffer used by the previous kernel.
     clear_vec.store(reinterpret_cast<T*>(comm.clear_buf) + idx * VEC_SIZE);
   }
   __syncthreads();
@@ -410,7 +410,8 @@ __global__ __launch_bounds__(264, 1) void allgather_fusion_kernel_oneshot_lampor
     fused_op(val, idx);
   }
 
-  // all-gather中, 每个rank上的Lamport buffer只存储一份完整的gathered tensor（tot_access = params.size / VEC_SIZE;）
+  // During all-gather, the Lamport buffer on each rank stores one complete copy of the gathered
+  // tensor (tot_access = params.size / VEC_SIZE).
   comm.update(params.size);
 
 #if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
@@ -652,7 +653,7 @@ cudaError_t allgather_fusion_op(AllGatherFusionParams<T> const& params,
       case AllGatherFusionPattern::kAllGatherfusedRMSFP8BlockWiseQuant:                        \
         return allgather_fusion_kernel_launcher<AllGatherFusionPattern::kAllGatherfusedRMSFP8BlockWiseQuant, T, NRanks>(params, launch_with_pdl); \
       default:                                                                                 \
-        FLASHINFER_CHECK(false, "Unsupported allgather fusion pattern");                       \
+        FLASHINFER_CHECK(false, "Unsupported all-gather fusion pattern");                     \
     }
 
   switch (params.nranks) {
@@ -670,7 +671,7 @@ cudaError_t allgather_fusion_op(AllGatherFusionParams<T> const& params,
       break;
     default:
       FLASHINFER_ERROR(
-          "allgather_fusion_kernel: unsupported ranks number! Supported ranks: 2, 4, 8, 16.");
+          "allgather_fusion_kernel: unsupported number of ranks. Supported values: 2, 4, 8, 16.");
   }
   #undef DISPATCH_PATTERN
 }

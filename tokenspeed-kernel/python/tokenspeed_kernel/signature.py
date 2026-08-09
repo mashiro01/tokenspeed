@@ -279,7 +279,7 @@ def __getattr__(name: str):
     # Canonical MXFP8 per-32-element block-scale format (UE8M0), shared by
     # the attention dispatchers and kernel registrations. Materialized
     # lazily (and cached in module globals) so this module stays free of
-    # runtime torch imports; the dtype constant is the only torch need.
+    # runtime PyTorch imports; the dtype constant is the only torch need.
     if name == "MXFP8_BLOCK_SCALE":
         import torch
 

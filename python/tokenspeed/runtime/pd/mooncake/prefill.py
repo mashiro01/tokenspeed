@@ -1147,7 +1147,7 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                             )
                     else:
                         # Dummy request means the decode instance is not used, so its status can be marked as success directly
-                        # Dummy request does not need to sync status to decode endpoint
+                        # Dummy requests do not synchronize status with the decode endpoint.
                         if kv_chunk.is_last and req.room in self.request_status:
                             self.update_status(req.room, TransferPoll.Success)
 
@@ -1265,7 +1265,7 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
 
         if bootstrap_room not in self.transfer_infos:
             # This means that the current rank is a dummy rank for this request,
-            # and it has already been marked as success, so there is no need to
+            # and it has already been marked successful, so there is no need to
             # add further chunks into the transfer queue.
             return
 

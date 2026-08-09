@@ -20,8 +20,8 @@
  * SOFTWARE.
  *
  * tvm_ffi binding for the MNNVL-structured one-shot allreduce fusion
- * (see include/flashinfer/comm/trtllm_mnnvl_allreduce_fusion.cuh, vendored/
- * adapted from flashinfer's trtllm_mnnvl_allreduce.cuh, Apache-2.0).
+ * (see include/flashinfer/comm/trtllm_mnnvl_allreduce_fusion.cuh, vendored and
+ * adapted from FlashInfer's trtllm_mnnvl_allreduce.cuh, Apache-2.0).
  */
 
 #include <string>

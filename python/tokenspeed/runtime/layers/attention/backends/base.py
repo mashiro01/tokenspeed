@@ -49,7 +49,7 @@ def init_backend_cuda_graph_state(
     is load-bearing for the state shed, so a TypeError raised from inside the
     backend's body must propagate rather than silently retry without specs.
 
-    Shared by the cuda-graph wrapper and by composite backends (hybrid) that
+    Shared by the CUDA graph wrapper and by composite backends (hybrid) that
     forward to user-selectable sub-backends with possibly narrow signatures.
     """
     params = inspect.signature(backend.init_cuda_graph_state).parameters
@@ -76,7 +76,7 @@ class AttentionBackend(ABC):
     cache_active_pages_must_be_real: bool = False
     uses_padded_decode_token_mask: bool = False
     supports_mla_projected_value_decode: bool = False
-    # Backend-owned cuda-graph cache-seqlens buffer the decode metadata views.
+    # Backend-owned CUDA graph cache-seqlens buffer that the decode metadata views.
     draft_seq_lens_attr: str = "cuda_graph_seq_lens"
 
     def __init__(self, config: BaseAttnConfig) -> None:
@@ -88,7 +88,7 @@ class AttentionBackend(ABC):
         self.is_draft = config.is_draft
         self.spec_num_tokens = config.speculative_num_draft_tokens
         self.cache_pool: CachePool | None = None
-        # True when this backend's CUDA-graph block-table (kv_indices) buffer is
+        # True when this backend's CUDA graph block-table (kv_indices) buffer is
         # aliased to a peer backend's (e.g. a drafter sharing the target's), so
         # the replay path skips rebuilding it — the peer already populates it.
         self._block_table_aliased = False
@@ -128,13 +128,16 @@ class AttentionBackend(ABC):
         """Init the metadata for a forward pass.
 
         When use_cuda_graph=True the backend should use its pre-allocated
-        cuda-graph buffers instead of the normal eager buffers.
+        CUDA graph buffers instead of the normal eager buffers.
         """
         raise NotImplementedError()
 
     def init_cuda_graph_state(self, max_bs: int):
-        """Init the global shared states for cuda graph. Backends own their
-        cache-seqlens buffer and copy the live lengths in at replay time."""
+        """Initialize the shared global state for CUDA graph capture.
+
+        Backends own their cache-seqlens buffer and copy the live lengths into
+        it at replay time.
+        """
         raise NotImplementedError()
 
     def advance_draft_forward_metadata(self, seq_lens: torch.Tensor) -> None:
@@ -158,7 +161,7 @@ class AttentionBackend(ABC):
         cache_group_ids: tuple[str, ...] = (),
         **kwargs,
     ):
-        """Init the metadata for a forward pass for capturing a cuda graph.
+        """Init the metadata for a forward pass for capturing a CUDA graph.
 
         ``cache_group_ids`` names the cache groups whose page tables arrive at
         replay; a group-aware backend (``uses_cache_groups``)
@@ -177,7 +180,7 @@ class AttentionBackend(ABC):
         block_tables: dict[str, torch.Tensor] | None = None,
         **kwargs,
     ):
-        """Update pre-allocated CUDA-graph metadata buffers in-place before replay.
+        """Update pre-allocated CUDA graph metadata buffers in-place before replay.
 
         Called instead of init_forward_metadata when use_cuda_graph=True, so
         that the captured kernels (which hold pointers into the pre-allocated
@@ -186,7 +189,7 @@ class AttentionBackend(ABC):
         (group_id -> [>=bs, cols]) for group-aware backends; a backend that
         captured group buffers must receive non-empty tables whenever bs > 0.
         Default: fall back to init_forward_metadata (correct but may not work
-        for all backends that use separate cuda-graph buffer pools).
+        for all backends that use separate CUDA graph buffer pools).
         """
         raise NotImplementedError(
             f"{type(self).__name__} must implement init_forward_metadata_replay_cuda_graph "

@@ -198,7 +198,7 @@ class DeepseekV3MLP(nn.Module):
         )
         if hidden_act != "silu":
             raise ValueError(
-                f"Unsupported activation: {hidden_act}. Only silu is supported for now."
+                f"Unsupported activation: {hidden_act}. Only the SiLU activation is currently supported."
             )
         self.act_fn = SiluAndMul()
         self._use_nvfp4_gemm_swiglu_nvfp4_quant = (
@@ -294,7 +294,7 @@ class DeepseekV3MoE(nn.Module):
             )
         if config.hidden_act != "silu":
             raise ValueError(
-                f"Unsupported activation: {config.hidden_act}. Only silu is supported for now."
+                f"Unsupported activation: {config.hidden_act}. Only the SiLU activation is currently supported."
             )
 
         self.gate = MoEGate(config=config, prefix=add_prefix("gate", prefix))
@@ -1760,11 +1760,10 @@ class DeepseekV3ForCausalLM(BaseCausalLM):
                 if weight_name not in name:
                     continue
                 # We have mlp.experts[0].gate_proj in the checkpoint.
-                # Since moe_loader handles the experts below,
-                # we need to skip here BEFORE we update the name, otherwise
-                # name will be updated to mlp.experts[0].gate_up_proj, which
-                # will then be updated below by moe_loader
-                # for mlp.experts[0].gate_gate_up_proj, which breaks load.
+                # moe_loader handles the experts below. Skip them before
+                # updating the name; otherwise, mlp.experts[0].gate_proj first
+                # becomes mlp.experts[0].gate_up_proj and then the invalid
+                # mlp.experts[0].gate_gate_up_proj, which breaks loading.
                 if ("mlp.experts." in name) and name not in params_dict:
                     continue
                 name = name.replace(weight_name, param_name)
@@ -1821,7 +1820,8 @@ class DeepseekV3ForCausalLM(BaseCausalLM):
                     weight_loader(param, loaded_weight, begin_size=begin_size)
                 else:
                     # Owned-expert weights were already consumed by ``moe_loader.load(...)`` above (matches() == True branch).
-                    # Anything reaching here that still looks like an expert weight is for an expert this rank does ot own under ep_size > 1.
+                    # Anything reaching here that still looks like an expert weight is for an
+                    # expert this rank does not own when ep_size > 1.
                     if ".mlp.experts." in name:
                         continue
                     if "q_a_proj" in name and name not in params_dict:

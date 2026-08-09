@@ -489,7 +489,7 @@ __device__ inline void dequant_fp8_scales<nv_bfloat162, host::kFE4M3fn.id()>(int
 template <>
 __device__ inline void dequant_fp8_scales<nv_bfloat162, host::kFE8M0fnu.id()>(int q, nv_bfloat162* frag_b) {
   // In this conversion, 2 ** -127 in FP8E8M0 would become 0 in BF16,
-  // but we assume that such a extreme value would not occur in real models.
+  // but we assume that such an extreme value would not occur in real models.
   int Out1 = (q & 0xFF00FF00) >> 1;
   q <<= 7;
   int Out2 = q & 0x7F807F80;

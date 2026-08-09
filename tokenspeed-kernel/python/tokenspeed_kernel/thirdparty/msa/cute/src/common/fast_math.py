@@ -12,7 +12,7 @@ def clz(x: Int32) -> Int32:
     #     if (1 << (31 - i)) & x:
     #         return Int32(i)
     # return Int32(32)
-    # Early exit is not supported yet
+    # Early exit is not yet supported.
     res = Int32(32)
     done = False
     for i in cutlass.range(32):

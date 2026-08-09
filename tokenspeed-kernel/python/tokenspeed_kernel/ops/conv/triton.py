@@ -41,7 +41,7 @@ Both kernels take explicit strides for the conv ring so channel-sliced views
 never read from or write to a real slot.
 
 No autotuning is used: block configurations come from static heuristics so
-the kernels stay CUDA-graph friendly.
+the kernels stay CUDA graph friendly.
 
 Weight taps are loaded once as a 2D ``[BLOCK_D, W_POW2]`` tile and selected
 per tap with an equality reduction instead of ``W`` separate 1D gathers at
@@ -303,7 +303,7 @@ def _inkling_ring_sconv_kernel(
 def select_prefill_config(T: int, D: int) -> tuple[int, int, int, int]:
     """Select ``(BLOCK_T, BLOCK_D, num_warps, num_stages)`` for prefill.
 
-    Static heuristic (no autotune) so the kernel stays CUDA-graph friendly.
+    Static heuristic (no autotune) so the kernel stays CUDA graph friendly.
     Swept on B200 across (T, D) in {512..8192} x {512, 6144}: a 32x128 tile
     with 8 warps wins or ties everywhere (D is the contiguous axis, so the
     wider channel block doubles the burst size; 4096x6144 drops 66 -> 56 us,

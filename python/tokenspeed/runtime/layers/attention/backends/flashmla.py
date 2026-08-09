@@ -99,7 +99,7 @@ class _ChunkedPrefillMetadata:
     max_chunk_len_per_loop: list
 
 
-# Shared across all flashinfer prefill wrappers used by FlashMLABackend.
+# Shared across all FlashInfer prefill wrappers used by FlashMLABackend.
 _global_workspace_buffer = None
 
 
@@ -169,7 +169,7 @@ class FlashMLABackend(MlaCacheGroupMixin, AttentionBackend):
                 "Use a non-FP8 KV cache."
             )
 
-        # Workspace buffer + flashinfer prefill wrappers (EXTEND path only).
+        # Workspace buffer and FlashInfer prefill wrappers (EXTEND path only).
         global _global_workspace_buffer
         if _global_workspace_buffer is None:
             _global_workspace_buffer = torch.empty(
@@ -425,7 +425,7 @@ class FlashMLABackend(MlaCacheGroupMixin, AttentionBackend):
         group_table: torch.Tensor | None = None,
         logical_page_size: int | None = None,
     ):
-        # EXTEND path — flashinfer ragged/paged prefill.
+        # EXTEND path: FlashInfer ragged/paged prefill.
         if extend_prefix_lens is None:
             raise RuntimeError(
                 "FlashMLABackend.init_forward_metadata requires "
@@ -442,7 +442,7 @@ class FlashMLABackend(MlaCacheGroupMixin, AttentionBackend):
 
         # Paged cache path needs two differently-shaped views of the LCM
         # full-history table:
-        #   * flashinfer paged prefill (plan page_size=1) walks a PER-TOKEN slot
+        #   * FlashInfer paged prefill (plan page_size=1) walks a PER-TOKEN slot
         #     table, so expand each token to its absolute latent slot.
         #   * chunked prefix replay (create_chunked_cache_kv_indices_paged) walks
         #     a PAGE table, deriving slot = page_id*P + pos%P in-kernel, so it
@@ -586,7 +586,7 @@ class FlashMLABackend(MlaCacheGroupMixin, AttentionBackend):
             and self.spec_num_tokens > 1
         )
         if not (decode_no_spec or is_target_verify or is_draft_extend):
-            raise RuntimeError(f"Not supported forward mode: {forward_mode}")
+            raise RuntimeError(f"Unsupported forward mode: {forward_mode}")
 
         # Seed before building the tile schedule: it is recorded against these
         # lengths, and the capture run reads them before any replay. Verify rows
@@ -630,7 +630,7 @@ class FlashMLABackend(MlaCacheGroupMixin, AttentionBackend):
         **kwargs,
     ):
         if forward_mode is None or not forward_mode.is_decode_or_idle():
-            raise RuntimeError(f"Not supported forward mode: {forward_mode}")
+            raise RuntimeError(f"Unsupported forward mode: {forward_mode}")
 
         # Verify rows span seq-N..seq-1; clamp so a request shorter than the
         # window does not resolve locations before its start. Width was baked
@@ -851,7 +851,7 @@ class FlashMLABackend(MlaCacheGroupMixin, AttentionBackend):
         save_kv_cache: bool = True,
     ):
         # q is whole Q [T, H, head_dim]; k is whole latent [T, 1, head_dim].
-        # flashinfer prefill_wrapper.run() requires q_nope / q_pe split, so
+        # FlashInfer's prefill_wrapper.run() requires a q_nope/q_pe split, so
         # slice views here (free) before handing off to the kernel.
         assert k is not None
 

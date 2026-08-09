@@ -20,7 +20,7 @@ on:
         required: false
         type: string
       dry_run:
-        description: "List matching runs without cancelling them"
+        description: "List matching runs without canceling them"
         required: false
         default: false
         type: boolean
@@ -191,7 +191,7 @@ jobs:
                 );
               } else if (scope === "all" && !dryRun) {
                 core.warning(
-                  "Cancelling " + matchingRuns.length +
+                  "Canceling " + matchingRuns.length +
                     " active run(s) across the repository.",
                 );
               }

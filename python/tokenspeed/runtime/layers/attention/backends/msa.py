@@ -187,7 +187,7 @@ class MSAAttnBackend(CacheGroupsMixin, AttentionBackend):
         page_table: torch.Tensor,
         forward_mode: ForwardMode,
         # Only consumed on the extend/mixed path; decode callers (e.g. the
-        # DFLASH draft and the cuda-graph wrapper's draft decode init) omit
+        # DFLASH draft and the CUDA graph wrapper's draft decode init) omit
         # them, so they must be optional.
         extend_seq_lens: torch.Tensor | None = None,
         extend_seq_lens_cpu: torch.Tensor | None = None,
@@ -483,7 +483,7 @@ class MSAAttnBackend(CacheGroupsMixin, AttentionBackend):
 
     def fill_block_decode_seq_lens(self, bs: int, block_seq_lens: torch.Tensor) -> None:
         """DFLASH: broadcast each request's block-end length to its
-        spec_num_tokens cuda-graph decode rows (uniform, non-causal).
+        spec_num_tokens CUDA graph decode rows (uniform, non-causal).
 
         Called by the drafter inside the captured graph so that on every replay
         the expanded seq_lens re-derive from the live draft length (which is
@@ -755,8 +755,8 @@ class MSAAttnBackend(CacheGroupsMixin, AttentionBackend):
         # max_context_len for a request near the context limit; without the
         # clamp the kernel reads page_table[:, >= max_num_pages] out of bounds
         # (CUDA illegal memory access). Mirrors fill_block_decode_seq_lens on the
-        # cuda-graph path (this eager path is taken by mixed prefill+decode
-        # batches even when cuda graphs are enabled).
+        # CUDA graph path (this eager path is taken by mixed prefill+decode
+        # batches even when CUDA graphs are enabled).
         expanded_seq_lens.view(bs, spec_num_tokens).copy_(
             seq_lens.clamp(spec_num_tokens, self.max_context_len)[:, None]
         )
@@ -889,7 +889,7 @@ class MSAHybridAttnBackend(AttentionBackend):
         record_kv_cache: bool | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        """Dispatch at the CUDA-graph break point using the live forward mode."""
+        """Dispatch at the CUDA graph break point using the live forward mode."""
         ambient = current_forward_ctx()
         if ambient is not None:
             forward_mode = ambient.forward_mode

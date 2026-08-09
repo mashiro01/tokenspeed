@@ -277,7 +277,7 @@ if platform.is_nvidia:
         # Scale tensors are padded derivations of M, so they are constrained
         # rather than tuned; the autotuner's default initializer handles their
         # dtype. Cold L2 matches the conditions this GEMM meets in a decode
-        # step, as in flashinfer's own CuteDSL tuning configs.
+        # step, as in FlashInfer's own CuTe DSL tuning configs.
         TUNING_CONFIG = TuningConfig(
             dynamic_tensor_specs=(
                 DynamicTensorSpec(

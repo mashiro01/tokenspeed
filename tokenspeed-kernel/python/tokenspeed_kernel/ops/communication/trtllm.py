@@ -284,7 +284,7 @@ if current_platform().is_nvidia:
             self.group = group
 
             logger.info(
-                f"TRT-LLM fusion workspace initialized for rank {rank}, "
+                f"TensorRT-LLM fusion workspace initialized for rank {rank}, "
                 f"world_size {world_size}, "
                 f"max_token_num {max_token_num}, "
                 f"hidden_dim {hidden_dim} "
@@ -307,7 +307,9 @@ if current_platform().is_nvidia:
                             self.ipc_handles, group=self.group
                         )
                 except Exception as e:
-                    logger.warning(f"Failed to cleanup TRT-LLM fusion workspace: {e}")
+                    logger.warning(
+                        f"Failed to clean up the TensorRT-LLM fusion workspace: {e}"
+                    )
                 finally:
                     self.workspace_tensor = None
                     self.ipc_handles = None
@@ -363,7 +365,7 @@ if current_platform().is_nvidia:
             or (_workspace_manager.use_fp32_lamport != target_use_fp32_lamport)
         ):
             logger.info(
-                "Re/initializing TRT-LLM fusion IPC workspace: "
+                "Initializing or reinitializing the TensorRT-LLM fusion IPC workspace: "
                 "world_size=%s rank=%s max_token_num=%s hidden_dim=%s use_fp32_lamport=%s "
                 "(prev max_token_num=%s hidden_dim=%s use_fp32_lamport=%s)",
                 world_size,
@@ -403,7 +405,7 @@ if current_platform().is_nvidia:
           2. mnnvl supports this shape ................. mnnvl (one-shot <=128
              tokens, two-shot 129..2048; device picks by token count)
           3. no IPC fallback (cross-node) ............. None (caller degrades:
-             the rmsnorm family runs unfused NCCL + torch epilogue, the rest
+             the rmsnorm family runs unfused NCCL + PyTorch epilogue, the rest
              raise loudly -- never a null workspace into the kernel)
           4. otherwise ................................ IPC
         Cross-node, workspace_tensor is None so only 2/3 apply -- mnnvl serves
@@ -472,7 +474,7 @@ if current_platform().is_nvidia:
         block_quant_fp8: bool,
         has_partial_norm_out: bool,
     ):
-        """Unfused NCCL + torch epilogue for the rmsnorm fusion family.
+        """Unfused NCCL + PyTorch epilogue for the rmsnorm fusion family.
 
         Cross-node groups have no IPC workspace, and the mnnvl kernel does not
         implement the block-quant / partial-out epilogues, so those calls land
@@ -530,7 +532,7 @@ if current_platform().is_nvidia:
         launch_with_pdl: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Use TRT-LLM fused allreduce + residual + RMS norm operation.
+        Use TensorRT-LLM fused allreduce + residual + RMS norm operation.
         """
         world_size = group.size()
         assert world_size > 1, "Single GPU, no need for allreduce fusion"
@@ -543,7 +545,7 @@ if current_platform().is_nvidia:
             hidden_dim=input_tensor.shape[-1],
             use_fp32_lamport=(input_tensor.dtype == torch.float32),
         ):
-            raise RuntimeError("TRT-LLM fusion workspace not available")
+            raise RuntimeError("TensorRT-LLM fusion workspace not available")
 
         token_num, hidden_dim = input_tensor.shape
 
@@ -715,7 +717,7 @@ if current_platform().is_nvidia:
             hidden_dim=input_tensor.shape[-1],
             use_fp32_lamport=(input_tensor.dtype == torch.float32),
         ):
-            raise RuntimeError("TRT-LLM fusion workspace not available")
+            raise RuntimeError("TensorRT-LLM fusion workspace not available")
 
         token_num, hidden_dim = input_tensor.shape
         residual_out = torch.empty_like(residual)
@@ -801,7 +803,7 @@ if current_platform().is_nvidia:
             hidden_dim=lane_dim,
             use_fp32_lamport=(lane.dtype == torch.float32),
         ):
-            raise RuntimeError("TRT-LLM fusion workspace not available")
+            raise RuntimeError("TensorRT-LLM fusion workspace not available")
 
         workspace = _ar_fusion_workspace(
             token_num,
@@ -862,7 +864,7 @@ if current_platform().is_nvidia:
         launch_with_pdl: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """
-        Use TRT-LLM fused reducescatter + residual + RMS norm operation.
+        Use TensorRT-LLM fused reducescatter + residual + RMS norm operation.
         """
         world_size = group.size()
         assert world_size > 1, "Single GPU, no need for reducescatter fusion"
@@ -875,7 +877,9 @@ if current_platform().is_nvidia:
             hidden_dim=input_tensor.shape[-1],
             use_fp32_lamport=(input_tensor.dtype == torch.float32),
         ):
-            raise RuntimeError("TRT-LLM reduce scatter fusion workspace not available")
+            raise RuntimeError(
+                "TensorRT-LLM reduce scatter fusion workspace not available"
+            )
 
         token_num, hidden_dim = input_tensor.shape
 
@@ -986,7 +990,7 @@ if current_platform().is_nvidia:
         torch.Tensor | None,
     ]:
         """
-        Use TRT-LLM fused allgather + dual RMS norm + optional FP8 quantization.
+        Use TensorRT-LLM fused allgather + dual RMS norm + optional FP8 quantization.
         """
         world_size = group.size()
         assert world_size > 1, "Single GPU, no need for allgather fusion"
@@ -1006,7 +1010,7 @@ if current_platform().is_nvidia:
             hidden_dim=hidden_dim,
             use_fp32_lamport=(qkv.dtype == torch.float32),
         ):
-            raise RuntimeError("TRT-LLM fusion workspace not available")
+            raise RuntimeError("TensorRT-LLM fusion workspace not available")
 
         q_lora_rank = weight_q_a.shape[0]
         kv_lora_rank = weight_kv_a.shape[0]

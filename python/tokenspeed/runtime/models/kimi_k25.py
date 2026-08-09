@@ -102,7 +102,7 @@ class KimiK25ForConditionalGeneration(torch.nn.Module):
                 target_dtype = self.language_model.dtype
                 self.vision = self.vision.to(dtype=target_dtype)
 
-            # image_encoder may be swapped to a cudagraph wrapper during startup.
+            # image_encoder may be replaced with a CUDA graph wrapper during startup.
             self.vision_embedder = VisionEmbedder(encoder_mapping=mapping.vision)
             self.image_encoder = self.vision.embed_media
         else:
@@ -219,7 +219,7 @@ class KimiK25ForConditionalGeneration(torch.nn.Module):
 
         Language weights are streamed to the language model while the
         checkpoint iterator is being consumed, so mmap-backed tensors are
-        materialised one shard at a time and the checkpoint prefetch window
+        materialized one shard at a time and the checkpoint prefetch window
         (see CheckpointPrefetcher) can pace itself on real consumption. Only
         the small vision weights are buffered; they are loaded after the
         language stream is exhausted.

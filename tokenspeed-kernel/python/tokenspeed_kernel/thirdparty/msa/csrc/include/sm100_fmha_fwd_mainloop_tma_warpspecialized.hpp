@@ -152,7 +152,7 @@ private:
 template <class Element_, class ElementQK_, class ElementPV_, class TileShapeQK_,
           class TileShapePV_, class StrideQ_, class StrideK_, class StrideV_, class Mask_,
           // shape here is QG K H
-          // and referes to the two softmax warps
+          // and refers to the two softmax warps
           // (2, 1, 1) means that they are stacked (best for large Q since it loads the least K/V)
           // (1, 2, 1) means they sit side by side (best for small Q / large K)
           class ThreadShape = Shape<_2, _1, _1>,
@@ -285,14 +285,14 @@ struct Sm100FmhaFwdMainloopTmaWarpspecialized {
   using CollectiveMmaQK = typename cutlass::gemm::collective::CollectiveBuilder<
       cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp, Element, StrideQ, Alignment, Element,
       StrideK, Alignment, ElementQK, TileShapeQK, ClusterShape,
-      cutlass::gemm::collective::StageCount<3> /* we change it later anyways*/,
+      cutlass::gemm::collective::StageCount<3> /* changed later */,
       cutlass::gemm::KernelTmaWarpSpecialized1SmSm100>::CollectiveOp;
 
   using CollectiveMmaPV = typename cutlass::gemm::collective::CollectiveBuilder<
       cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp,
       // the stride for A does not matter since we do not load from smem at all
       Element, StrideK, Alignment, Element, StrideV, Alignment, ElementPV, TileShapePV,
-      ClusterShape, cutlass::gemm::collective::StageCount<3> /* we change it later anyways*/,
+      ClusterShape, cutlass::gemm::collective::StageCount<3> /* changed later */,
       cutlass::gemm::KernelTmaWarpSpecialized1SmSm100>::CollectiveOp;
 
   using SmemLayoutQ =

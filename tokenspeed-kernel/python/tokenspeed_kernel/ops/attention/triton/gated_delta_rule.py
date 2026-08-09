@@ -27,7 +27,7 @@ is natively ``[N, H, K, V]``, so this wrapper (not the ``.jit`` kernel itself)
 transposes K-last -> FLA on the way in and FLA -> K-last on the way out.
 
 ``gdn_decode_step``/``gdn_decode_mtp`` (below) are the portable fallback for
-flashinfer's Hopper+-only decode/MTP kernels (see
+FlashInfer's Hopper+-only decode/MTP kernels (see
 ``flashinfer/gated_delta_rule.py``): same K-last state-pool contract, but the
 ``.jit`` kernel itself addresses the pool K-last directly (no transpose --
 the state pool is large and mutated in place every decode step, so a
@@ -117,7 +117,7 @@ def triton_gdn_chunk_prefill(
 
 
 # ===-----------------------------------------------------------------------===#
-# GDN decode / MTP (K-last, portable fallback for flashinfer's Hopper+ kernels)
+# GDN decode / MTP (K-last, portable fallback for FlashInfer's Hopper+ kernels)
 # ===-----------------------------------------------------------------------===#
 
 
@@ -159,7 +159,7 @@ def _fused_gdn_decode_update_kernel(
     derive directly from the constexpr dims). h0_source is the K-last
     ``[pool_size, HV, V, K]`` SSM state pool (matches gdn_chunk_prefill's
     contract); h0_indices ([B]) selects each batch entry's read row, ``-1``
-    skipped (state contribution treated as zero -- mirrors flashinfer's
+    skipped (state contribution treated as zero -- mirrors FlashInfer's
     float32 legacy decode path; output for that batch entry is undefined).
 
     T=1 is a plain decode step; T>1 is an MTP verify step. Three independent,
@@ -169,7 +169,7 @@ def _fused_gdn_decode_update_kernel(
       dual-index paging remap).
     - CACHE_INTERMEDIATE_STATES: after EVERY step, write to the batch-scoped
       ``intermediate_states_buffer[i_n, step]`` (``[B, T, HV, V, K]``,
-      K-last -- matches flashinfer's MTP intermediate-state-buffer convention).
+      K-last -- matches FlashInfer's MTP intermediate-state-buffer convention).
     - HAS_PER_TOKEN_OUTPUT_STATE_INDICES: after EVERY step, write directly to
       the pool row ``per_token_output_state_indices[i_n, step]`` (``[B, T]``),
       matching FlashInfer 0.6.15's ``ssm_state_indices`` contract.

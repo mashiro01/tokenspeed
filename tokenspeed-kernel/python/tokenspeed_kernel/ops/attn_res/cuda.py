@@ -31,7 +31,7 @@ from tokenspeed_kernel.signature import format_signatures
 platform = current_platform()
 
 # Register only when the compiled kernel is actually loadable, so a Blackwell box
-# with a missing/failed build degrades to the torch fallback via select_kernel
+# with a missing/failed build degrades to the PyTorch fallback via select_kernel
 # instead of crashing on the first call.
 _HAS_CUDA_KERNEL = False
 if platform.is_nvidia and platform.is_blackwell:

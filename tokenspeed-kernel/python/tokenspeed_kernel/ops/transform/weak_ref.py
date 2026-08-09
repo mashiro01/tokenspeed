@@ -18,10 +18,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Non-owning tensor view for CUDA-graph break closures.
+"""Non-owning tensor view for CUDA graph break closures.
 
 ``weak_ref_tensor(t)`` returns a tensor aliasing ``t``'s memory WITHOUT owning
-its storage (``at::from_blob`` with a no-op deleter). A breakable-CUDA-graph
+its storage (``at::from_blob`` with a no-op deleter). A breakable-CUDA graph
 break closure that holds such a view does not pin ``t``'s mempool block, so the
 graph pool can recycle blocks across segments and captures -- graph memory
 drops from sum-over-buckets of break inputs back to ~peak-live. Correctness

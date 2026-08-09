@@ -42,7 +42,7 @@ eval:
   # --repeats 3 samples each of the 198 questions 3x and averages, shrinking the
   # per-run stddev by ~sqrt(3). At the 0.7 threshold this drops the noise-only
   # failure rate from ~11% to ~2%.
-  # --eval-batch-size 64 lifts evalscope's client-side concurrency from 16 to 64
+  # --eval-batch-size 64 raises EvalScope's client-side concurrency from 16 to 64.
   # (server's max_num_seqs=160, so still 2.5x headroom). At batch=16 the server
   # was pinned at 13-16 in-flight requests with page_ratio=0.00-0.01, leaving
   # most decode capacity idle. Higher concurrency also lets the prefix cache

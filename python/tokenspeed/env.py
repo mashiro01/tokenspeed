@@ -135,9 +135,9 @@ def get_cuda_info() -> dict[str, object]:
 
         return cuda_info
     elif is_rocm_build():
-        cuda_info = {"ROCM available": torch.cuda.is_available()}
+        cuda_info = {"ROCm available": torch.cuda.is_available()}
 
-        if cuda_info["ROCM available"]:
+        if cuda_info["ROCm available"]:
             cuda_info.update(_get_gpu_info())
             cuda_info.update(_get_cuda_version_info())
 
@@ -269,13 +269,13 @@ def _get_cuda_driver_version() -> dict[str, str]:
             versions = set(output.strip().splitlines())
             versions.discard("name, value")
             if not versions:
-                return {"ROCM Driver Version": "Not Available"}
+                return {"ROCm Driver Version": "Not Available"}
             ver = versions.pop()
             ver = ver.replace('"Driver version", ', "").replace('"', "")
 
-            return {"ROCM Driver Version": ver}
+            return {"ROCm Driver Version": ver}
         except (OSError, subprocess.SubprocessError):
-            return {"ROCM Driver Version": "Not Available"}
+            return {"ROCm Driver Version": "Not Available"}
     else:
         return {"CUDA Driver Version": "Not Available"}
 

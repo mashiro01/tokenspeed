@@ -61,15 +61,16 @@ logger = get_colorful_logger(__name__)
 
 # Vision-embedding cache capacity. L1 lives in GPU VRAM; the optional L2 lives in
 # host DRAM and catches L1 evictions so duplicate images skip the tower even past
-# the VRAM working set. Both are whole-MiB env overrides. L2 defaults to 0
-# (disabled): the host tier is opt-in. NOTE both knobs are PER ENCODE PROCESS (per
-# TP rank): at encode TP>1, every co-located rank allocates its own L1+L2, so
-# budget host DRAM as tp_size * EMBED_CACHE_DRAM_MB.
+# the VRAM working set. Both are environment overrides expressed in whole MiB.
+# L2 defaults to 0 (disabled), so the host tier is opt-in. Both settings apply
+# to each encoding process (one per TP rank). When encoding TP > 1, every
+# colocated rank allocates its own L1 and L2; budget host DRAM as
+# ``tp_size * EMBED_CACHE_DRAM_MB``.
 def _embedding_cache_bytes(env_field) -> int:
-    """Whole-MiB env field -> bytes.
+    """Convert a whole-MiB environment field to bytes.
 
     EnvField handles parsing and defaults; negative capacities are rejected here
-    with an env-named error.
+    with an error that names the environment variable.
     """
     mb = env_field.get()
     if mb < 0:

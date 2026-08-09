@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""flashinfer TRTLLM-Gen SiTU MoE vs the portable K3 reference.
+"""Compare FlashInfer TRTLLM-GEN SiTU MoE with the portable K3 reference.
 
 Exercises the full in-repo chain -- the weight preprocessor (concatenated
 [gate|up] loader layout -> shuffled TRTLLM [up|gate]) and the registered
@@ -46,9 +46,9 @@ def _situ_runtime_reason() -> str | None:
     if not torch.cuda.is_available():
         return "requires CUDA"
     if not (10, 0) <= torch.cuda.get_device_capability() <= (10, 3):
-        return "flashinfer TRTLLM-Gen SiTU targets the sm_100 family"
+        return "FlashInfer TRTLLM-GEN SiTU targets the sm_100 family"
     if find_spec("flashinfer") is None:
-        return "requires flashinfer"
+        return "requires FlashInfer"
     from tokenspeed_kernel.ops.moe.flashinfer.trtllm_mxfp4 import (
         situ_moe_unavailable_reason,
     )

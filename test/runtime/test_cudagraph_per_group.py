@@ -1,4 +1,4 @@
-"""Per-group CUDA-graph pad, capture, and replay core-logic tests.
+"""Per-group CUDA graph pad, capture, and replay core-logic tests.
 
 CPU-only (plain tensors, no graph capture): covers the wrapper's flat
 placeholder + padding helpers and the MHA backend's flat capture/replay
@@ -32,7 +32,7 @@ class _TorchCase(unittest.TestCase):
         try:
             import torch
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch: {exc}")
+            self.skipTest(f"requires PyTorch: {exc}")
         self.torch = torch
 
 

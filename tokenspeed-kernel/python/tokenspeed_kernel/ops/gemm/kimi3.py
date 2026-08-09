@@ -187,7 +187,7 @@ def _validate_inputs(
         raise ValueError(f"Kimi K3 projection K mismatch: {k} != {weight_k}")
     if (k, n) not in _KIMI3_SHAPES:
         raise ValueError(
-            "Kimi K3 projection only supports 7168->3584 or 3584->7168, "
+            "Kimi K3 projection supports only 7168->3584 or 3584->7168, "
             f"got {k}->{n}"
         )
     if hidden_states.dtype != torch.bfloat16 or weight.dtype != torch.bfloat16:
@@ -766,7 +766,7 @@ def _mm_out_dtype_supported() -> bool:
     """Whether ``torch.mm`` accepts ``out_dtype`` (BF16 in, FP32 out).
 
     Exposed by torch >= 2.8 as the cublasLt BF16xBF16->FP32 epilogue; probed
-    once so older torch falls back to the CUDA-kernel/torch paths untouched.
+    once so older torch falls back to the CUDA-kernel/PyTorch paths untouched.
     """
     try:
         a = torch.empty(1, 2, dtype=torch.bfloat16, device="cuda")

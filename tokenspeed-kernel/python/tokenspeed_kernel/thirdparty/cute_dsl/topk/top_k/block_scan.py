@@ -72,12 +72,12 @@ def block_prefix_sum_kernel(
     barrier_id=1,
     need_total_sum=False,
 ):
-    """Block prefix sum kernel in CuTe DSL"""
+    """Compute a block-wide prefix sum in CuTe DSL."""
     # Thread and warp id
     warp_id = tidx // 32
     lane_id = tidx % 32
 
-    # Currently, we only support num_warps > 1, will support num_warps <= 1 logic later.
+    # TODO: Add support for num_warps <= 1.
     assert (
         num_threads % 32 == 0
     ), "num_threads must be divisible by 32, but got {}".format(num_threads)

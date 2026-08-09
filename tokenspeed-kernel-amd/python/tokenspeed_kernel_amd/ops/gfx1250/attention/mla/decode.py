@@ -366,7 +366,7 @@ def _mla_decode_fwd_kernel(
     )
     acc = gl.zeros([BLOCK_M, KV_LORA_RANK], dtype=gl.float32, layout=cfg.PV_WMMA_LAYOUT)
 
-    # context length for this particular sequences
+    # Context length for this sequence.
     context_len = seq_len - num_tokens_per_seq
 
     # compute the length of the longest sequence prefix spanned by any
@@ -382,9 +382,8 @@ def _mla_decode_fwd_kernel(
     # actual sequence length
     max_seq_prefix_len = gl.minimum(max_seq_prefix_len, seq_len)
 
-    # calculate the number of tiles that need to be processed to
-    # cover the longest sequence prefix (due to causal masking, tiles beyond
-    # this prefix can be skipped)
+    # Calculate the number of tiles needed to cover the longest sequence prefix.
+    # Tiles beyond this prefix can be skipped because of causal masking.
     num_tiles = cdiv_fn(max_seq_prefix_len, TILE_SIZE)
 
     seq_offset = split_kv_id * tiles_per_split * TILE_SIZE + offs_seq_t
@@ -443,8 +442,8 @@ def _mla_decode_fwd_kernel(
         # m_j : (BLOCK_M,)
         m_j = gl.maximum(M, gl.max(S, axis=1))
 
-        # For sliding window there's a chance the max is -inf due to masking of
-        # the entire row. In this case we need to set m_j 0 to avoid NaN
+        # With a sliding window, masking may make the row maximum negative infinity.
+        # Set m_j to zero in that case to avoid NaNs.
         m_j = gl.where(m_j > float("-inf"), m_j, 0.0)
 
         # P : (BLOCK_M, TILE_SIZE,)
@@ -729,7 +728,9 @@ def gluon_mla_decode_gfx1250(
     latent rank 512, RoPE head dimension 64, and page size 64.
     """
     if logit_cap != 0.0:
-        raise NotImplementedError("gluon MLA decode gfx1250 does not support logit_cap")
+        raise NotImplementedError(
+            "Gluon MLA decode on gfx1250 does not support logit_cap"
+        )
     if q.ndim != 4 or q.shape[1] != 1:
         raise ValueError(
             "q must be [batch, 1, num_q_heads, kv_lora_rank + "
@@ -744,7 +745,7 @@ def gluon_mla_decode_gfx1250(
     is_fp8 = q.dtype in fp8_dtypes
     if kv_lora_rank != 512 or qk_rope_head_dim != 64:
         raise NotImplementedError(
-            "gluon MLA decode gfx1250 requires kv_lora_rank=512 and "
+            "Gluon MLA decode on gfx1250 requires kv_lora_rank=512 and "
             f"qk_rope_head_dim=64, got {kv_lora_rank} and {qk_rope_head_dim}"
         )
     if qk_nope_head_dim <= 0:

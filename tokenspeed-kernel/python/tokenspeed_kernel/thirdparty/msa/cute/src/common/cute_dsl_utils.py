@@ -101,7 +101,7 @@ def load_cubin_module_data_patched(cubin_data, filepath):
 def cute_compile_patched(*args, **kwargs):
     """A patched version of cute.compile.
 
-    Behaviour:
+    Behavior:
     - Dumps SASS to a file if ``CUTE_CUBIN_PATH`` is set.
     - Logs JIT compile wall time at DEBUG level via the ``minimax`` logger,
       tagged with the kernel's class name when available.  Enable with
@@ -169,7 +169,10 @@ def assume_tensor_aligned(t):
 def to_cute_tensor(
     t, assumed_align=16, leading_dim=-1, fully_dynamic=False, enable_tvm_ffi=True
 ):
-    """Convert torch tensor to cute tensor for TVM FFI. leading_dim=-1 defaults to t.ndim-1."""
+    """Convert a PyTorch tensor to a CuTe tensor for TVM FFI.
+
+    ``leading_dim=-1`` defaults to ``t.ndim - 1``.
+    """
     tensor = from_dlpack(
         t.detach(), assumed_align=assumed_align, enable_tvm_ffi=enable_tvm_ffi
     )
@@ -181,7 +184,9 @@ def to_cute_tensor(
 
 
 def to_cute_aux_tensor(t, enable_tvm_ffi=True):
-    """Convert torch tensor to cute tensor for TVM FFI, tailored to FlexAttention aux tensors.
+    """Convert a PyTorch tensor to a CuTe tensor for TVM FFI.
+
+    This variant is tailored to FlexAttention auxiliary tensors.
     This allows the user to specify alignment and leading dimension for aux tensors used in
     custom score_mod callables.
     """

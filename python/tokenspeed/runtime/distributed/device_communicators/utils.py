@@ -43,20 +43,21 @@ def _ignore_resource_tracker_register(*args, **kwargs) -> None:
 
 def in_the_same_node_as(pg: ProcessGroup, source_rank: int = 0) -> list[bool]:
     """
-    This is a collective operation that returns if each rank is in the same node
-    as the source rank. It tests if processes are attached to the same
-    memory system (shared access to shared memory).
+    Return whether every rank is on the same node as the source rank.
+
+    This collective operation tests whether the processes share a memory system
+    and can access the same shared-memory segments.
     """
     if torch.distributed.get_backend(pg) == torch.distributed.Backend.NCCL:
         raise ValueError("in_the_same_node_as should be tested with a non-NCCL group.")
-    # local rank inside the group
+    # Local rank within the group.
     rank = torch.distributed.get_rank(group=pg)
     world_size = torch.distributed.get_world_size(group=pg)
 
-    # local tensor in each process to store the result
+    # Local tensor in which each process stores the result.
     is_in_the_same_node = torch.tensor([0] * world_size, dtype=torch.int32)
 
-    # global ranks of the processes in the group
+    # Global ranks of the processes in the group.
     ranks = torch.distributed.get_process_group_ranks(pg)
 
     magic_message = b"magic_message"
@@ -65,7 +66,7 @@ def in_the_same_node_as(pg: ProcessGroup, source_rank: int = 0) -> list[bool]:
     try:
         with contextlib.suppress(OSError):
             if rank == source_rank:
-                # create a shared memory segment
+                # Create a shared-memory segment.
                 shm = shared_memory.SharedMemory(create=True, size=128)
                 shm.buf[: len(magic_message)] = magic_message
                 torch.distributed.broadcast_object_list(
@@ -73,13 +74,13 @@ def in_the_same_node_as(pg: ProcessGroup, source_rank: int = 0) -> list[bool]:
                 )
                 is_in_the_same_node[rank] = 1
             else:
-                # try to open the shared memory segment
+                # Try to open the shared-memory segment.
                 recv = [None]
                 torch.distributed.broadcast_object_list(
                     recv, src=ranks[source_rank], group=pg
                 )
                 name = recv[0]
-                # fix to https://stackoverflow.com/q/62748654/9191338
+                # Work around https://stackoverflow.com/q/62748654/9191338.
                 # Python incorrectly tracks shared memory even if it is not
                 # created by the process. The following patch is a workaround.
                 with patch(
@@ -97,7 +98,7 @@ def in_the_same_node_as(pg: ProcessGroup, source_rank: int = 0) -> list[bool]:
 
     torch.distributed.barrier(group=pg)
 
-    # clean up the shared memory segment
+    # Clean up the shared-memory segment.
     with contextlib.suppress(OSError):
         if rank == source_rank and shm:
             shm.unlink()

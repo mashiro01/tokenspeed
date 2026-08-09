@@ -188,7 +188,7 @@ class TestInklingGate(unittest.TestCase):
         with torch.no_grad():
             gate.weight.normal_(0, 0.5)
             gate.bias.normal_(0, 0.1)
-            # Identity scale keeps the torch reference below exact.
+            # Identity scale keeps the PyTorch reference below exact.
             gate.global_scale.fill_(1.0)
         x = torch.randn(64, text.hidden_size, dtype=torch.bfloat16, device="cuda")
 

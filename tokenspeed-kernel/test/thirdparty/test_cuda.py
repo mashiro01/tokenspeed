@@ -38,7 +38,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _torch_rope_neox(query, key, positions, cos_sin_cache, head_size):
-    """Pure-torch NeoX-style RoPE reference (slow but correct)."""
+    """Pure-PyTorch NeoX-style RoPE reference (slow but correct)."""
     nnz = query.shape[0]
     q = query.view(nnz, -1, head_size).float()
     k = key.view(nnz, -1, head_size).float()
@@ -106,7 +106,7 @@ class TestApplyRopeWithCosSinCacheInplace:
         return positions, query, key, cos_sin_cache
 
     def test_outofplace_correctness(self):
-        """Out-of-place RoPE matches torch reference."""
+        """Verify that out-of-place RoPE matches the PyTorch reference."""
         from tokenspeed_kernel.thirdparty.cuda import (
             apply_rope_with_cos_sin_cache_inplace as tk_rope,
         )
@@ -196,7 +196,7 @@ class TestApplyRopeWithCosSinCacheInplace:
         assert torch.equal(output_k, k_ip)
 
     def test_correctness(self):
-        """Matches torch reference."""
+        """Verify that the output matches the PyTorch reference."""
         from tokenspeed_kernel.thirdparty.cuda import (
             apply_rope_with_cos_sin_cache_inplace as tk_rope,
         )
@@ -277,7 +277,7 @@ class TestDsv3RouterGemm:
         assert out.dtype == torch.float32
 
     def test_correctness(self):
-        """Matches torch reference."""
+        """Verify that the output matches the PyTorch reference."""
         from tokenspeed_kernel.thirdparty.cuda import dsv3_router_gemm as tk_gemm
 
         hidden, weights = self._make_inputs()
@@ -307,7 +307,7 @@ class TestDsv3RouterGemm:
 
     @pytest.mark.parametrize("num_tokens", [1, 8, 16])
     def test_correctness_varied_tokens(self, num_tokens):
-        """Matches torch ref at various token counts."""
+        """Verify the PyTorch reference at various token counts."""
         from tokenspeed_kernel.thirdparty.cuda import dsv3_router_gemm as tk_gemm
 
         hidden, weights = self._make_inputs(num_tokens=num_tokens)
@@ -319,7 +319,7 @@ class TestDsv3RouterGemm:
         assert cos_sim > 0.99, f"cosine similarity {cos_sim} < 0.99"
 
     def test_large_batch_correctness(self):
-        """Matches torch ref at num_tokens=64."""
+        """Verify the PyTorch reference when num_tokens=64."""
         from tokenspeed_kernel.thirdparty.cuda import dsv3_router_gemm as tk_gemm
 
         hidden, weights = self._make_inputs(num_tokens=64)
@@ -464,7 +464,7 @@ class TestRoutingFlash:
     """routing_flash
 
     Fused softmax + top-k + correction bias + zero-expert masking.
-    Only supports num_experts in {384, 576, 768, 896}.
+    Supports ``num_experts`` values of 384, 576, 768, and 896.
 
     Signature:
       routing_flash(input, correction_bias, topk_indices, topk_weights,
@@ -507,7 +507,7 @@ class TestRoutingFlash:
         assert wts.shape == (16, self.TOPK)
 
     def test_correctness(self):
-        """Matches torch reference."""
+        """Verify that the output matches the PyTorch reference."""
         from tokenspeed_kernel.thirdparty.cuda import routing_flash as tk_route
 
         inp, bias, idx, wts = self._make_inputs()

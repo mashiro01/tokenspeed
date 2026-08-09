@@ -28,7 +28,7 @@ SO files are looked up in:
 Set TOKENSPEED_MLA_FMHA_BINARY_SO to override with a custom .so path.
 
 Note on LSE layout: the binary kernel writes LSE in (1, h_k, h_r, total_q)
-layout (row-major), which differs from the CuteDSL backend's (total_q, h_q).
+layout (row-major), which differs from the CuTe DSL backend's (total_q, h_q).
 The caller (mla_prefill) allocates the binary-layout buffer and reshapes the
 result to (total_q, h_q) before returning.
 """

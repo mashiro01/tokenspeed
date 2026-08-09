@@ -217,7 +217,7 @@ def triton_minimax_sigmoid_bias_topk(
     """Fused single-kernel routing via the minimax biased-topk Triton kernel.
 
     The ungrouped biased-sigmoid case is exactly minimax routing with one
-    expert group; the multi-launch torch reference costs ~3x on NVIDIA
+    expert group; the multi-launch PyTorch reference costs ~3x on NVIDIA
     (40us vs 13us at [1, 896] topk=16). ``hidden_states`` is only shape-
     validated by the kernel wrapper, so the logits stand in for it.
     """

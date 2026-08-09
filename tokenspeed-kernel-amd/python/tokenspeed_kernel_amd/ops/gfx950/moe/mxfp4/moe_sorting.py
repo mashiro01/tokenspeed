@@ -24,7 +24,7 @@
 Produces the block-aligned sorted routing metadata the package prefill stage
 kernels consume. It launches entirely on the *caller's* CUDA stream and
 performs **no** device-to-host synchronization, so the whole prefill path is
-CUDA-graph capturable.
+CUDA graph capturable.
 
 The routing buffers are sized to the worst case and padding is marked with
 sentinels: ``sorted_expert_ids`` padding blocks are ``-1`` and

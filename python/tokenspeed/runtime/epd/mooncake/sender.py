@@ -43,7 +43,7 @@ class MooncakeEmbeddingSender:
 
     ``poll`` / ``clear`` / ``failure_exception`` are status-only (they touch
     only the manager's status maps). ``send`` queues one contiguous embedding
-    tensor described by scalar fields, keeping this class free of any torch
+    tensor described by scalar fields, keeping this class free of any PyTorch
     dependency.
     """
 

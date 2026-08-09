@@ -78,8 +78,9 @@ class Fp8LinearMethod(LinearMethodBase):
     the model weights are loaded.
 
     Limitations:
-    1. Only support per-tensor quantization due to torch._scaled_mm support.
-    2. Only support float8_e4m3fn data type due to the limitation of
+    1. Only per-tensor quantization is supported, because that is what
+       torch._scaled_mm supports.
+    2. Only the float8_e4m3fn data type is supported, because of the limitation of
        torch._scaled_mm (https://github.com/pytorch/pytorch/blob/2e48b39603411a41c5025efbe52f89560b827825/aten/src/ATen/native/cuda/Blas.cpp#L854-L856)
 
     Args:
@@ -281,8 +282,8 @@ class Fp8LinearMethod(LinearMethodBase):
             ):
                 N, K = layer.weight.shape
                 if N >= 128 and K >= 128 and K % 32 == 0:
-                    # Swizzle the e8m0 scales once into the F8_128x4 layout the
-                    # flashinfer cute-dsl GEMM consumes; the Triton fallback
+                    # Swizzle the E8M0 scales once into the F8_128x4 layout that
+                    # FlashInfer's CuTe DSL GEMM consumes; the Triton fallback
                     # cannot read this layout, so apply() pins the kernel.
                     layer.weight_scale_inv.data = swizzle_mxfp8_scale(
                         layer.weight_scale_inv.data, N, K

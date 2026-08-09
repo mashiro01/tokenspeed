@@ -21,9 +21,9 @@
 """Incremental detokenization state machine and helpers.
 
 This module hosts the pure state machine used by AsyncLLM's inline
-detokenizer path. Everything here is tokenizer-agnostic — callers
-pass a HuggingFace-shaped tokenizer (with a ``batch_decode`` method)
-plus a ``BatchTokenIDOut`` and a mutable ``decode_status`` dict. The
+detokenizer path. Everything here is tokenizer-agnostic: callers pass a
+tokenizer compatible with the Hugging Face API, including a ``batch_decode``
+method, plus a ``BatchTokenIDOut`` and a mutable ``decode_status`` dictionary. The
 state machine mutates ``decode_status`` in place and returns the
 per-request incremental output strings to emit.
 
@@ -44,7 +44,7 @@ from tokenspeed.runtime.utils.env import envs
 from tokenspeed.runtime.utils.text import find_printable_text
 
 # Maximum number of request states that the detokenizer can hold.
-# When exceeded, the oldest entries are evicted. Default: 65536 (1<<16).
+# When exceeded, the oldest entries are evicted. Default: 65,536 (1 << 16).
 DETOKENIZER_MAX_STATES = envs.TOKENSPEED_DETOKENIZER_MAX_STATES.get()
 
 
@@ -66,8 +66,8 @@ class LimitedCapacityDict(OrderedDict):
 
     Only inserting a *new* key at capacity triggers eviction — updating an
     existing key is a size-preserving operation and must never drop the
-    oldest entry. Production detokenizer code writes `self.decode_status[rid]
-    = s` only on the new-request path, so this guard is defensive for any
+    oldest entry. Production detokenizer code writes ``self.decode_status[rid]
+    = s`` only on the new-request path, so this guard is defensive for any
     future caller that uses the dict for updates.
     """
 
@@ -77,7 +77,7 @@ class LimitedCapacityDict(OrderedDict):
 
     def __setitem__(self, key: Any, value: Any) -> None:
         if key not in self and len(self) >= self.capacity:
-            # Remove the oldest element (first item in the dict)
+            # Remove the oldest element (the first item in the dictionary).
             self.popitem(last=False)
         super().__setitem__(key, value)
 
@@ -95,7 +95,7 @@ def trim_matched_stop(
       the output is truncated at the first occurrence of the stop
       string.
     - When ``matched`` is an ``int`` and ``output`` is a ``list``
-      (the raw-token id path), the last id is dropped.
+      (the raw-token ID path), the last ID is dropped.
     Any other shape combination returns ``output`` unchanged.
     """
     if no_stop_trim or not finished_reason:
@@ -164,8 +164,8 @@ def incremental_decode_batch(
     incremental output strings to emit (one per request in the batch).
 
     Raises RuntimeError if a request disappears from ``decode_status``
-    mid-call, which happens when the capacity-limited dict evicts an
-    earlier rid during a later rid's assignment in the first loop.
+    mid-call, which happens when the capacity-limited dictionary evicts an
+    earlier request ID during a later request ID's assignment in the first loop.
     """
     bs = len(recv_obj.rids)
 
@@ -221,9 +221,9 @@ def incremental_decode_batch(
         except KeyError:
             raise RuntimeError(
                 f"Decode status not found for request {recv_obj.rids[i]}. "
-                "It may be due to the request being evicted from the decode status due to memory pressure. "
-                "Please increase the maximum number of requests by setting "
-                "the TOKENSPEED_DETOKENIZER_MAX_STATES environment variable to a bigger value than the default value. "
+                "The request may have been evicted from the decode status because of memory pressure. "
+                "Set the TOKENSPEED_DETOKENIZER_MAX_STATES environment variable "
+                "to a value greater than the default maximum number of requests. "
                 f"The current value is {DETOKENIZER_MAX_STATES}."
             )
         new_text = read_texts[i][len(surr_texts[i]) :]

@@ -33,14 +33,14 @@ from tokenspeed_kernel._triton import (
     triton,
 )
 
-# iris does plain ``import triton`` at module load time; route those bindings
-# to the vendored ``tokenspeed_triton`` so iris and tokenspeed-kernel share a
-# single triton distribution. See
+# Iris uses a plain ``import triton`` at module load time; route those bindings
+# to the vendored ``tokenspeed_triton`` so Iris and TokenSpeed-Kernel share a
+# single Triton distribution. See
 # :func:`redirect_triton_to_tokenspeed_triton` for details.
 with redirect_triton_to_tokenspeed_triton():
     import iris  # noqa: E402
 
-    # Pre-import every iris kernel module that does ``import triton`` at module
+    # Preimport every Iris kernel module that uses ``import triton`` at module
     # load time (the CCL APIs above lazy-import them at call time, when the
     # redirect is no longer active).
     import iris.ccl.triton  # noqa: E402
@@ -133,7 +133,7 @@ class IrisRSAG(object):
         self.dtype = torch.bfloat16
         self.world_size = group.size()
 
-        # Heap holds in/out flat buffers plus iris bookkeeping; over-provision
+        # The heap holds flat input/output buffers plus Iris bookkeeping; overprovision
         # similarly to ``IrisAllReduce`` to leave room for ring/spinlock flags.
         if heap_size is None:
             buf_bytes = max_tokens * hidden_size * self.dtype.itemsize
@@ -151,7 +151,7 @@ class IrisRSAG(object):
 
         assert self._ctx.get_num_ranks() == dist.get_world_size(), (
             f"Iris world size {self._ctx.get_num_ranks()} "
-            f"!= torch world size {dist.get_world_size()}"
+            f"!= PyTorch world size {dist.get_world_size()}"
         )
         assert self.rank_in_group == self._ctx.get_rank(), (
             f"rank mismatch: rank_in_group={self.rank_in_group}, "
@@ -191,9 +191,9 @@ class IrisRSAG(object):
     @staticmethod
     def _pick_block_n(hidden_size: int) -> int:
         # Pick the largest power-of-two block that divides hidden_size, capped
-        # at 256. This keeps the iris kernel on its no-mask fast path and
+        # at 256. This keeps the Iris kernel on its unmasked fast path and
         # still produces enough tiles (world_size * hidden/block_n) to fill
-        # ``comm_sms`` SMs on supported AMD chips.
+        # the ``comm_sms`` SMs on supported AMD chips.
         for cand in (256, 128, 64, 32, 16):
             if hidden_size % cand == 0:
                 return cand
@@ -204,7 +204,7 @@ class IrisRSAG(object):
         # required so that block-distribution (DISTRIBUTION=1) hands rank r
         # exactly the K tiles spanning rows [r*local, (r+1)*local) in the
         # reduce-scatter kernel. ``all_gather`` is rank-agnostic on tile order
-        # so the same config is fine.
+        # so the same configuration works.
         return _IrisConfig(
             block_size_m=local_num_tokens,
             block_size_n=self._pick_block_n(hidden_size),
@@ -342,7 +342,7 @@ class IrisAllReduce(object):
             all_reduce_distribution=1,
         )
 
-        # Heap holds two flat buffers of ``max_numel * itemsize`` plus iris
+        # The heap holds two flat buffers of ``max_numel * itemsize`` plus Iris
         # bookkeeping; we leave generous headroom (~16 MiB) for internal
         # workspaces such as ring/spinlock flags.
         if heap_size is None:
@@ -431,9 +431,9 @@ class IrisAllReduce(object):
             first: First contiguous tensor to reduce in place.
             second: Second contiguous tensor to reduce in place.
             op: Reduction operation. Only ``SUM`` is supported.
-            safe: Return cloned outputs when true; otherwise return the input
+            safe: Return cloned outputs when ``True``; otherwise return the input
                 tensors after their in-place reductions.
-            async_op: Must be false; asynchronous execution is unsupported.
+            async_op: Must be ``False``; asynchronous execution is unsupported.
 
         Returns:
             The two reduced tensors, in the same order as the inputs.
@@ -820,7 +820,7 @@ def iris_stage_one_shot_allreduce_two_kernel(
     second_mask = (combined_offsets >= FIRST_NUMEL) & combined_mask
 
     # The masks are disjoint, so their sum forms the logical concatenation in
-    # symmetric memory without allocating or copying a temporary torch.Tensor.
+    # symmetric memory without allocating or copying a temporary ``torch.Tensor``.
     local = tl.load(
         first_input_ptr + combined_offsets,
         mask=first_mask,

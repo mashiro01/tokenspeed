@@ -33,7 +33,7 @@ if not torch.cuda.is_available():
 @pytest.mark.parametrize("T", [1, 4])
 @pytest.mark.parametrize("H", [16, 128])
 def test_matches_cat_cast(T, H):
-    """Bitwise vs torch cat + cast; q_pe as the strided slice the absorb
+    """Bitwise versus PyTorch cat + cast; q_pe as the strided slice the absorb
     path produces (a column window of the packed q projection)."""
     torch.manual_seed(T * 100 + H)
     nope_dim, pe_dim = 512, 64

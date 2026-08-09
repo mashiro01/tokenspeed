@@ -188,10 +188,11 @@ def build_kimi_k3_cache_fields(
 ) -> tuple[CacheFieldSpec, ...]:
     """Build target fields from the Kimi-K3 model configuration."""
     tp_size = _require_positive_int("tp_size", tp_size)
-    # fp8_e4m3 is the memory-lean default (matches the Blackwell tokenspeed_mla
-    # kernels). bf16 is the Hopper path: FlashMLA has no SM90 dense-fp8 MLA
-    # kernel, so on SM90 the MLA layers run bf16 (flashinfer ragged prefill +
-    # bf16 FlashMLA decode), mirroring how vLLM/sglang serve K3 on Hopper.
+    # fp8_e4m3 is the memory-efficient default (matching the Blackwell
+    # tokenspeed_mla kernels). BF16 is the Hopper path: FlashMLA has no SM90
+    # dense-FP8 MLA
+    # kernel, so on SM90 the MLA layers run BF16 (FlashInfer ragged prefill and
+    # BF16 FlashMLA decode), mirroring how vLLM and SGLang serve K3 on Hopper.
     if mla_cache_dtype not in (torch.float8_e4m3fn, torch.bfloat16):
         raise ValueError(
             "Kimi-K3 cache requires mla_cache_dtype in "

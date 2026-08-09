@@ -25,7 +25,7 @@ prefill-side manager it binds to lives in
 :mod:`tokenspeed.runtime.epd.mooncake.prefill`.
 
 Wire-frame dataclasses live in :mod:`tokenspeed.runtime.epd.entities`: they
-are pure data plus codecs and import no torch, so the protocol contract stays
+are pure data plus codecs and import no PyTorch, so the protocol contract stays
 importable and unit-testable on CPU.
 """
 

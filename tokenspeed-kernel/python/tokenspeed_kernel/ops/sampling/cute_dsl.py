@@ -18,19 +18,19 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""CuTe DSL based sampling kernels.
+"""CuTe DSL-based sampling kernels.
 
 Wraps the upstream CuTe DSL ``ArgmaxKernel`` (derived from the Quack library and
-ported through TensorRT-LLM) so the sampling public API can register it
+ported through TensorRT-LLM) so the public sampling API can register it
 without touching the third-party module directly.
 
 Exports two entry points:
 
 * :func:`argmax`: drop-in replacement for ``torch.argmax(logits, dim=-1)``.
-  Returns int64 indices written by the kernel directly — no post-kernel cast
+  Returns INT64 indices written by the kernel directly, without a post-kernel cast
   on the hot path. Transparently falls back to ``torch.argmax`` when the CuTe
   DSL kernel is unavailable or its preconditions are not met
-  (dtype/N/alignment/SM-version).
+  (data type, N, alignment, or SM version).
 * :func:`argmax_pair`: row-wise ``(max_value, argmax_index)`` packed as a
   single ``(M, 2)`` float32 tensor. The kernel writes the max value and index
   into two separate tensors; this entry point assembles them back into the
@@ -84,14 +84,14 @@ _VOCAB_SIZE_ALIGNMENT = 32
 
 
 def _ts_supported_arch() -> bool:
-    """Gate: only NVIDIA Hopper/Blackwell run the CuTe DSL kernel.
+    """Return whether the platform can run the CuTe DSL kernel.
 
-    * Vendor must be NVIDIA — AMD ROCm and any future vendor get the torch
+    * The vendor must be NVIDIA; AMD ROCm and any future vendor use the PyTorch
       fallback (CuTe DSL has no ROCm backend).
     * SM range ``[9.0, 12.0)``: ``redux.sync.max.f32`` exists from Blackwell
       (sm_100/sm_103); we run on Hopper too via the shuffle path. ``sm_120+``
-      is excluded — upstream TRT-LLM reports CUTLASS DSL JIT instability there.
-    * If platform detection itself raises (e.g. CPU-only host with no GPU),
+      is excluded — upstream TensorRT-LLM reports CUTLASS DSL JIT instability there.
+    * If platform detection itself raises, for example on a CPU-only host,
       treat it as unsupported and let callers fall back transparently.
     """
     try:
@@ -186,7 +186,7 @@ def _supports_cute(N: int, dtype: torch.dtype) -> bool:
 
 
 def _convert_to_cute(t: torch.Tensor):
-    """Wrap a torch tensor as a CuTe DSL tensor with a CUDA-graph-safe view."""
+    """Wrap a PyTorch tensor as a CuTe DSL tensor with a CUDA graph-safe view."""
     return from_dlpack(
         CUDAGraphCompatibleWrapper(t.detach()), assumed_align=16
     ).mark_compact_shape_dynamic(mode=0, stride_order=(0, 1))
@@ -259,7 +259,7 @@ def _argmax_torch_fallback(
     *,
     out: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-torch implementation of :func:`argmax`.
+    """Pure-PyTorch implementation of :func:`argmax`.
 
     Selected at import time on non-NVIDIA / unsupported-SM hosts (AMD ROCm,
     CPU-only, sm_80, sm_120+, missing ``nvidia-cutlass-dsl``). Also reached
@@ -280,7 +280,7 @@ def _argmax_pair_torch_fallback(
     *,
     out: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-torch implementation of :func:`argmax_pair`.
+    """Pure-PyTorch implementation of :func:`argmax_pair`.
 
     Selected at import time on non-NVIDIA / unsupported-SM hosts, and reached
     per-call from the cute path when the input fails the kernel's
@@ -379,7 +379,7 @@ def _argmax_pair_cute(
         _validate_argmax_pair_out(logits, out)
 
     if not logits.is_cuda or M == 0 or not _supports_cute(N, logits.dtype):
-        # Reuse the pure-torch packing path; pass our pre-allocated buffer so
+        # Reuse the pure-PyTorch packing path; pass our pre-allocated buffer so
         # the caller-supplied ``out`` is honored.
         return _argmax_pair_torch_fallback(logits, out=out)
 

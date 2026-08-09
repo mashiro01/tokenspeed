@@ -260,7 +260,7 @@ class DFlashMLP(nn.Module):
             tp_group=mapping.dense.tp_group,
         )
         if getattr(config, "hidden_act", "silu") != "silu":
-            raise ValueError("DFlash only supports silu activation.")
+            raise ValueError("DFlash only supports the SiLU activation.")
         self.act_fn = SiluAndMul()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

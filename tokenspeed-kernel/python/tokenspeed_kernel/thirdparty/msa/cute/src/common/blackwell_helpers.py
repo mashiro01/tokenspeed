@@ -540,8 +540,8 @@ def gemm_ptx_partial(
             asm_dialect=llvm.AsmDialect.AD_ATT,
         )
     else:
-        # For TS gemm, somehow tCrA.iterator.toint() returns 0 no matter what, so we need to
-        # explicitly pass in the tA_addr for correctness.
+        # For the TokenSpeed GEMM, tCrA.iterator.toint() always returns 0. Pass
+        # tA_addr explicitly to preserve the correct address.
         tA_addr = tCrA[None, None, 0].iterator.toint() if tA_addr is None else tA_addr
         input_args = [
             # Int32(cute.arch.make_warp_uniform(tCrA[None, None, 0].iterator.toint())).ir_value(),

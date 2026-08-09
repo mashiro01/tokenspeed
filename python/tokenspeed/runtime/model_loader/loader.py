@@ -69,7 +69,7 @@ def device_loading_context(
     module: torch.nn.Module, target_device: torch.device
 ) -> Generator[torch.nn.Module]:
     if target_device.type == "cpu":
-        # If target is CPU, no need to move anything
+        # CPU targets require no device transfer.
         yield module
         return
 
@@ -92,7 +92,7 @@ def device_loading_context(
             if name in original_device_states:
                 original_device: torch.device = original_device_states[name]
                 if original_device.type == "cpu":
-                    # `torch.empty_like` does not support `pin_memory` argument
+                    # ``torch.empty_like`` does not accept a ``pin_memory`` argument.
                     cpu_data = torch.empty_strided(
                         size=p.data.size(),
                         stride=p.data.stride(),
@@ -222,7 +222,7 @@ class DefaultModelLoader(BaseModelLoader):
 
         if envs.TOKENSPEED_USE_MODELSCOPE.is_set():
             # download model from ModelScope hub,
-            # lazy import so that modelscope is not required for normal use.
+            # Lazy import so that ModelScope is not required for normal use.
             from modelscope.hub.snapshot_download import snapshot_download
 
             if not os.path.exists(model):
@@ -346,9 +346,9 @@ class DefaultModelLoader(BaseModelLoader):
                 lambda name: weight_name_filter(source.prefix + name),
             )
         if self.load_config.load_format == LoadFormat.NPCACHE:
-            # Currently np_cache only support *.bin checkpoints
+            # np_cache currently supports only *.bin checkpoints.
             if use_safetensors:
-                raise ValueError("np_cache only supports PyTorch checkpoint shards.")
+                raise ValueError("np_cache supports only PyTorch checkpoint shards.")
             weights_iterator = np_cache_weights_iterator(
                 source.model_or_path,
                 self.load_config.download_dir,
@@ -611,8 +611,8 @@ class ShardedStateLoader(BaseModelLoader):
             filepaths = glob.glob(pattern)
             if not filepaths:
                 raise ValueError(
-                    f"Could not find checkpoint files '{pattern}', only "
-                    f"pre-sharded checkpoints are currently supported!"
+                    f"Could not find checkpoint files matching '{pattern}'; only "
+                    f"pre-sharded checkpoints are currently supported"
                 )
             state_dict = self._filter_subtensors(model.state_dict())
             for path in filepaths:

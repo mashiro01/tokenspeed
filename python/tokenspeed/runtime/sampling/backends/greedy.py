@@ -53,7 +53,7 @@ def _verify_chain_greedy_torch(
     batch_size: int,
     num_draft_tokens: int,
 ) -> None:
-    """Pure-torch equivalent of tokenspeed_kernel.verify_chain_greedy.
+    """Pure-PyTorch equivalent of tokenspeed_kernel.verify_chain_greedy.
 
     Used on non-CUDA devices and when the CUDA kernel is unavailable.
     """
@@ -124,7 +124,7 @@ class GreedySamplingBackend(SamplingBackend):
     """Greedy-only backend: argmax for single-step, chain-greedy verify for
     multi-step verification. No flashinfer / min_p / penalty machinery, no
     coin buffers. Verify uses the fused CUDA kernel when available; falls
-    back to a pure-torch implementation otherwise (CPU, ROCm, etc.).
+    back to a pure-PyTorch implementation otherwise (CPU, ROCm, etc.).
 
     sampling_info is ignored for single-step (always argmax). verify() also
     treats every request as greedy — stochastic verification is not
@@ -141,7 +141,7 @@ class GreedySamplingBackend(SamplingBackend):
         # Pre-allocated int32 buffer for ``sample``'s argmax output: lets the
         # cute_dsl kernel write int32 token ids directly, skipping the
         # ``.to(torch.int32)`` cast and its elementwise launch in the
-        # CUDA-graph-captured hot path.
+        # CUDA graph-captured hot path.
         self._sample_token_buf = torch.empty(
             (config.max_bs,), dtype=torch.int32, device=config.device
         )

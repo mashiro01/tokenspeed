@@ -950,16 +950,18 @@ def gluon_mla_prefill_gfx950(
     ``[total_tokens, num_heads, 128]``.
     """
     if logit_cap != 0.0:
-        raise NotImplementedError("gluon MLA prefill gfx950 does not support logit_cap")
+        raise NotImplementedError(
+            "Gluon MLA prefill on gfx950 does not support logit_cap"
+        )
     if q.dim() != 3 or k.dim() != 3 or v.dim() != 3:
         raise ValueError("q, k, v must be 3D [tokens, heads, head_dim]")
     if q.shape[-1] != 192 or k.shape[-1] != 192:
         raise ValueError(
-            f"gluon MLA prefill requires qk_head_dim=192, got {q.shape[-1]}"
+            f"Gluon MLA prefill requires qk_head_dim=192, got {q.shape[-1]}"
         )
     if v.shape[-1] != 128:
         raise ValueError(
-            f"gluon MLA prefill requires v_head_dim=128, got {v.shape[-1]}"
+            f"Gluon MLA prefill requires v_head_dim=128, got {v.shape[-1]}"
         )
     if q.shape[1] % k.shape[1] != 0:
         raise ValueError(

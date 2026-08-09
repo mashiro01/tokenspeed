@@ -169,7 +169,7 @@ class MHAPoolSlabLayoutTest(unittest.TestCase):
                 MHATokenToKVPool,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.MHATokenToKVPool = MHATokenToKVPool
 
@@ -392,7 +392,7 @@ class MLAPoolAllocationHookTest(unittest.TestCase):
                 MLATokenToKVPool,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.MLATokenToKVPool = MLATokenToKVPool
 
@@ -512,7 +512,7 @@ class CachePoolFieldBindingTest(unittest.TestCase):
                 qwen_gdn_cache_fields,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         self.torch = torch
         self.pool_cls = HybridMHATokenToKVPool
         self.mha_pool_cls = MHATokenToKVPool

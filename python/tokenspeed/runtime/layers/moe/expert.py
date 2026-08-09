@@ -128,7 +128,7 @@ class MoELayer(torch.nn.Module):
         self.ep_rank, self.ep_size = ep_rank, ep_size
 
         if tp_size > 1 and ep_size > 1:
-            raise ValueError("Mixed TP and EP is not supported yet.")
+            raise ValueError("Mixed TP and EP are not yet supported.")
 
         if num_experts % self.ep_size:
             raise ValueError(

@@ -95,8 +95,8 @@ def _make_config() -> SamplingBackendConfig:
 
 
 def _sp(rid_suffix: str, **overrides) -> SamplingParams:
-    """Build a normalized SamplingParams with an rid-specific seed. The
-    rid suffix drives the seed so per-test sp values stay distinct even
+    """Build normalized SamplingParams with a request-ID-specific seed. The
+    request ID suffix drives the seed so per-test values stay distinct even
     when only temperature differs."""
     defaults = dict(
         temperature=1.0,
@@ -134,7 +134,7 @@ class TestGreedyNoPoolState(unittest.TestCase):
 
 
 class TestFlashInferFlipDetection(unittest.TestCase):
-    """flashinfer's pool-indexed scalar buffers are core scheduler state.
+    """FlashInfer's pool-indexed scalar buffers are core scheduler state.
     These tests pin flip semantics down at the Python state-machine level
     (no kernel invocation needed)."""
 

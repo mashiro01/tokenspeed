@@ -25,7 +25,7 @@ class SelectPageTableTest(unittest.TestCase):
         try:
             self.MHAAttnBackend, self.MHADecodeMetadata = _import_backend()
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch + tokenspeed_kernel: {exc}")
+            self.skipTest(f"requires PyTorch and tokenspeed_kernel: {exc}")
         import torch
 
         self.torch = torch
@@ -104,7 +104,7 @@ class ValidatePagedCacheGroupIdsTest(unittest.TestCase):
                 validate_paged_cache_group_ids,
             )
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch: {exc}")
+            self.skipTest(f"requires PyTorch: {exc}")
         self.nn = nn
         self.PagedAttention = PagedAttention
         self.validate = validate_paged_cache_group_ids
@@ -166,13 +166,13 @@ class ValidatePagedCacheGroupIdsTest(unittest.TestCase):
 
 class GptOssGroupIdTest(unittest.TestCase):
     """PagedAttention built by GptOssAttention must carry group_id == layer_type.
-    Constructing the model layer needs torch/model deps, so skip otherwise."""
+    Constructing the model layer needs PyTorch/model deps, so skip otherwise."""
 
     def test_paged_attention_group_id_equals_layer_type(self):
         try:
             from tokenspeed.runtime.layers.paged_attention import PagedAttention
         except (ImportError, ModuleNotFoundError) as exc:
-            self.skipTest(f"needs torch: {exc}")
+            self.skipTest(f"requires PyTorch: {exc}")
         layer = PagedAttention(
             num_heads=4,
             head_dim=8,

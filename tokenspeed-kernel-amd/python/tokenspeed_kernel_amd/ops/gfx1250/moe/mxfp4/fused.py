@@ -625,7 +625,7 @@ def create_descriptor(
         )
 
     if cfg.WITH_W_MX_SCALE:
-        # We need to use padded shape in TDM to make sure it loads all the preshuffled data
+        # Use the padded TDM shape to load all preshuffled data.
         N_PADDED = (N + PRESHUFFLE_FACTOR - 1) // PRESHUFFLE_FACTOR * PRESHUFFLE_FACTOR
         K_SCALE = (K + SCALE_BLOCK - 1) // SCALE_BLOCK
         K_SCALE_PADDED = (K_SCALE + SCALE_KWIDTH - 1) // SCALE_KWIDTH * SCALE_KWIDTH
@@ -1723,12 +1723,12 @@ def _matmul(
     DTYPE_W: gl.constexpr = get_scaled_dot_format_string(W.dtype.element_ty)
 
     if GatherIndx is not None:
-        # In triton_kernels, when indices exceed int32 range, they are upcasted to int64. TDM Gather doesn't
-        # support int64 indices. Only int16 or int32 are supported. In that case, we need to fall back to
-        # AsyncCopy. Fortunately in the GPT-OSS example, we don't need to upcast.
+        # triton_kernels upcasts indices beyond the INT32 range to INT64. TDM
+        # Gather supports only INT16 and INT32 indices, so fall back to
+        # AsyncCopy. The GPT-OSS configuration does not require upcasting.
         gl.static_assert(
             not UPCAST_INDICES,
-            "TDM Gather doesn't support int64 indices. Only int16 or int32 are supported.",
+            "TDM Gather supports only INT16 and INT32 indices.",
         )
 
     index_type: gl.constexpr = gl.int64 if UPCAST_INDICES else gl.int32
@@ -2706,7 +2706,7 @@ def gluon_mxfp_ragged_matmul(
     n_expts_act=None,
     **extra_kwargs,
 ) -> torch.Tensor:
-    """Tokenspeed-style wrapper around ``matmul`` for routed MoE calls."""
+    """TokenSpeed-style wrapper around ``matmul`` for routed MoE calls."""
     del x_global_scale
     if out_dtype is None:
         out_dtype = x.dtype if x.dtype.is_floating_point else torch.bfloat16

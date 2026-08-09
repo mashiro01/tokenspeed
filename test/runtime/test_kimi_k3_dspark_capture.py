@@ -81,7 +81,7 @@ def test_latent_rope_rotates_the_tail_without_self_assignment() -> None:
     """The rope tail slices to a view of the latent, so it must be copied out.
 
     Rotating in place and writing back onto the same storage is a
-    self-assignment torch rejects outright -- which is exactly how this failed
+    self-assignment that PyTorch rejects outright, which is how this failed
     on the first real launch.
     """
     from tokenspeed.runtime.layers.rotary_embedding import get_rope

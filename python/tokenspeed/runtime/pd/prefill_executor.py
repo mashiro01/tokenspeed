@@ -359,7 +359,7 @@ class DisaggPrefillExecutor:
         there is nothing to tear down on this side."""
         self.kv_manager.abort_room(
             bootstrap_info.bootstrap_room,
-            f"EPD: prefill aborted request {request_id} (embedding receive timed out)",
+            f"EPD: prefill aborted request '{request_id}' (embedding receive timed out)",
         )
 
     def execute(self, op):

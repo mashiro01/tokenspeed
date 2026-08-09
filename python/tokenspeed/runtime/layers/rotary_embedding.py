@@ -145,10 +145,10 @@ class RotaryEmbedding(torch.nn.Module):
 
     def _compute_inv_freq(self, base: int | float) -> torch.Tensor:
         """Compute the inverse frequency."""
-        #  To exactly match the HF implementation, we need to
-        # use CPU to compute the cache and then move it to GPU. However, we
-        # create the cache on GPU for faster initialization. This may cause
-        # a slight numerical difference between the HF implementation and ours.
+        # An exact match with the Hugging Face implementation would require
+        # computing the cache on the CPU before moving it to the GPU. Computing
+        # it directly on the GPU initializes faster but can introduce slight
+        # numerical differences.
         inv_freq = 1.0 / (
             base
             ** (
@@ -206,10 +206,9 @@ class RotaryEmbedding(torch.nn.Module):
 class LinearScalingRotaryEmbedding(RotaryEmbedding):
     """RotaryEmbedding extended with linear scaling.
 
-    It supports multiple scaling factors. Since multiple LoRA adapters may have
-    different scaling factors, we need multiple cos/sin caches. In this way,
-    instead of running rotary embedding kernel per lora, we can run multiple
-    lora in a batched way.
+    It supports multiple scaling factors. Because LoRA adapters can use different
+    scaling factors, each factor has its own cosine/sine cache. This allows a
+    single batched rotary-embedding kernel to process multiple LoRA adapters.
 
     In addition to that, we also keep the cos/sin cache for the scaling factor
     of 1 (default) at all times.
@@ -358,7 +357,7 @@ def _yarn_find_correction_range(
     high = math.ceil(
         _yarn_find_correction_dim(high_rot, dim, base, max_position_embeddings)
     )
-    return max(low, 0), min(high, dim - 1)  # Clamp values just in case
+    return max(low, 0), min(high, dim - 1)  # Clamp the bounds to valid dimensions.
 
 
 def _yarn_linear_ramp_mask(
@@ -467,9 +466,7 @@ class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
         super().__init__()
 
         if is_neox_style is False:
-            raise ValueError(
-                "`Phi3LongRoPEScaledRotaryEmbedding` only supports neox_style."
-            )
+            raise ValueError("`Phi3LongRoPEScaledRotaryEmbedding` requires neox_style.")
 
         self.rotary_dim = rotary_dim
         self.head_size = head_size

@@ -50,22 +50,22 @@ class Fp8Config(QuantizationConfig):
         super().__init__(ignored_layers=ignored_layers)
         self.is_checkpoint_fp8_serialized = is_checkpoint_fp8_serialized
         if is_checkpoint_fp8_serialized:
-            log_info_on_rank0(logger, "Detected fp8 checkpoint.")
+            log_info_on_rank0(logger, "Detected FP8 checkpoint.")
         if activation_scheme not in ACTIVATION_SCHEMES:
             raise ValueError(f"Unsupported activation scheme {activation_scheme}")
         self.activation_scheme = activation_scheme
         if weight_block_size is not None:
             if not is_checkpoint_fp8_serialized:
                 raise ValueError(
-                    "The block-wise quantization only supports fp8-serialized checkpoint for now."
+                    "Block-wise quantization requires an FP8-serialized checkpoint."
                 )
             if len(weight_block_size) != 2:
                 raise ValueError(
-                    f"The quantization block size of weight must have 2 dimensions, but got {len(weight_block_size)} dimensions."
+                    f"The weight quantization block size must have two dimensions, but it has {len(weight_block_size)}."
                 )
             if activation_scheme != "dynamic":
                 raise ValueError(
-                    f"The block-wise quantization only supports dynamic activation scheme for now, but got {activation_scheme} activation scheme."
+                    f"Block-wise quantization requires the dynamic activation scheme, but received {activation_scheme}."
                 )
         self.weight_block_size = weight_block_size
         self.scale_fmt = scale_fmt.lower() if scale_fmt is not None else None

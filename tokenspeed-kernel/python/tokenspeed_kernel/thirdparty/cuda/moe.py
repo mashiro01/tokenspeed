@@ -64,7 +64,7 @@ def moe_finalize_fuse_shared(
         out[t] = Σ_k w[t, k] * gemm2_out[permuted_idx(t, k)]
                + Σ_s w[t, top_k + s] * shared_output[s, t]
 
-    Replaces the flashinfer built-in finalize kernel + the native
+    Replaces the built-in FlashInfer finalize kernel and the native
     ``routed + shared`` tensor add. The caller is responsible for ensuring
     ``shared_output`` is ready on the current stream (e.g. via
     ``current_stream.wait_stream(alt_stream)``).
@@ -76,7 +76,7 @@ def moe_finalize_fuse_shared(
 
     Args:
         gemm2_out: ``[total_num_padded_tokens, hidden_dim_padded]`` bf16 —
-            raw permuted MoE output when the flashinfer runner was called
+            raw permuted MoE output when the FlashInfer runner was called
             with ``do_finalize=False``.
         expanded_idx_to_permuted_idx: ``[num_tokens * top_k]`` int32 —
             permute map (``-1`` means "drop this slot").

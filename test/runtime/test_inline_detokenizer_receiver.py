@@ -24,22 +24,22 @@ Drive the ``AsyncLLM._inline_detokenize_one`` helper and the
 ``BatchTokenIDOut`` dispatch branch. They verify:
 
 1. Flag-off regression — ``BatchTokenIDOut`` still flows through the
-   raw-token path and produces an out_dict with an empty ``text``.
-2. Flag-on inline emit — out_dict gains a ``text`` key populated by
+   raw-token path and produces an ``out_dict`` with an empty ``text`` value.
+2. Flag-on inline emit — ``out_dict`` gains a ``text`` key populated by
    the per-request ``IncrementalDetokenizer`` and matches the shape
    the ``BatchStrOut`` branch produces byte-for-byte.
 3. Per-request lifecycle — the inline detokenizer is lazily created
-   per rid, persists across frames for the same rid, and is
-   independent between rids.
+   per request ID, persists across frames for that request, and is
+   independent across requests.
 4. Subprocess-vs-inline text parity — for a given sequence of
    frames, the cumulative ``state.text`` accumulated through the
    inline path equals what ``incremental_decode_batch`` would emit
    character-for-character.
-5. Stream vs non-stream ``output_ids`` shape, stop trimming
+5. Streaming vs nonstreaming ``output_ids`` shape, stop trimming
    pass-through, and finish-reason propagation.
 
-A ``_StubTokenizerManager`` bypasses ZMQ / ModelConfig / HF-tokenizer
-bring-up so the tests can exercise the exact production code path
+A ``_StubTokenizerManager`` bypasses ZMQ, ``ModelConfig``, and Hugging Face
+tokenizer initialization so the tests can exercise the exact production code path
 without GPU or network.
 """
 
@@ -83,7 +83,7 @@ _GPT2_TOKENIZER = "gpt2"
 
 
 class _StubTokenizerManager(AsyncLLM):
-    """Bypass ZMQ + ModelConfig + HF bring-up for unit tests.
+    """Bypass ZMQ, ModelConfig, and Hugging Face initialization for unit tests.
 
     We only need the pieces touched by
     ``OutputProcessor.handle_batch_output`` and
@@ -110,7 +110,7 @@ class _StubTokenizerManager(AsyncLLM):
         self.log_requests = False
         # Build a tiny ServerArgs-shaped object so the branch conditions in
         # ``handle_batch_output`` keep working without loading the real
-        # ServerArgs dataclass (which pulls torch through ModelConfig).
+        # ServerArgs dataclass (which pulls in PyTorch through ModelConfig).
         self.server_args = types.SimpleNamespace(
             enable_inline_detokenizer=enable_inline_detokenizer,
             stream_output=stream_output,
@@ -193,7 +193,7 @@ def _batch_token_id_out(
 
 
 class _StubReqObj:
-    """Minimal stand-in for GenerateReqInput used by ``_handle_batch_output``."""
+    """Minimal stand-in for ``GenerateReqInput`` used by ``_handle_batch_output``."""
 
     def __init__(
         self,
@@ -239,9 +239,9 @@ class TestFlagOffRegression(unittest.TestCase):
     the flag off, the inline helper is never invoked and no
     ``inline_detokenizer`` is lazily created on the request state.
 
-    (The pre-existing raw-token path for ``--skip-tokenizer-init`` requires
+    (The existing raw-token path for ``--skip-tokenizer-init`` requires
     ``recv_obj.output_ids`` to be populated by the scheduler; we don't
-    exercise that path here — it isn't changed by this PR.)
+    exercise that path here because this change does not affect it.)
     """
 
     def test_flag_off_receiver_does_not_take_inline_branch(self):
@@ -251,7 +251,7 @@ class TestFlagOffRegression(unittest.TestCase):
         _register(mgr, state)
 
         # Populate output_ids so the raw-token fallback path doesn't crash;
-        # we only care that the inline branch is NOT taken.
+        # We only care that the inline branch is not taken.
         tokens = tok.encode("hello world")
         recv = _batch_token_id_out(
             ["r1"],
@@ -263,7 +263,7 @@ class TestFlagOffRegression(unittest.TestCase):
 
         out = state.collector.take()
         self.assertIsNotNone(out)
-        # The inline detokenizer does NOT run on this path (the assertion
+        # The inline detokenizer does not run on this path (the assertion
         # this test exists for). What's emitted is the raw-token out_dict,
         # which since the D.1-regression hotfix carries an empty ``text``
         # key — matching the pre-D.1 BatchStrOut shape that subprocess
@@ -362,7 +362,7 @@ class TestInlineBasicEmit(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# output_ids stream-vs-non-stream shape parity.
+# output_ids streaming-vs-nonstreaming shape parity.
 # ---------------------------------------------------------------------------
 
 
@@ -470,11 +470,11 @@ class TestStopTrimmingPassThrough(unittest.TestCase):
         self.assertEqual(out["text"], source)
 
     def test_matched_int_with_no_stop_trim_preserves_last_token(self):
-        # Gap fill for ``matched=int`` (stop-token) case. The two places
+        # Cover the ``matched=int`` (stop-token) case. The two places
         # ``trim_matched_stop`` fires inside the inline branch both take a
         # different code path for ``matched=int`` than for ``matched=str``:
         #   1. ``read_ids = trim_matched_stop(s.decode_ids[surr:], finish,
-        #      no_stop_trim)`` — on the id-list side, matched=int drops the
+        #      no_stop_trim)`` — on the ID-list side, matched=int drops the
         #      last token from ``read_ids`` before ``batch_decode``, which
         #      shortens the resulting text by whatever that token contributes.
         #   2. ``trim_matched_stop(s.decoded_text + new_text, ...)`` — on
@@ -597,7 +597,7 @@ def _run_inline_path(
     We read ``state.text`` before and after each frame and use the delta.
     This matches what an OpenAI streaming client would observe.
 
-    Same deep-copy dance as ``_run_subprocess_path``: the state machine
+    Use the same deep-copy approach as ``_run_subprocess_path``: the state machine
     aliases the frame's ``decode_ids`` list on the first frame and extends
     it in place afterward, so shield the caller's fixture from mutation.
     """
@@ -632,7 +632,7 @@ class TestSubprocessVsInlineParity(unittest.TestCase):
     """For identical frame sequences the two paths must emit identical text.
 
     The per-frame emits are compared byte-for-byte; the cumulative text is
-    compared too. Every drift between inline and subprocess behavior would
+    also compared. Any drift between inline and subprocess behavior would
     surface here.
     """
 
@@ -711,7 +711,7 @@ class TestSubprocessVsInlineParity(unittest.TestCase):
         )
 
     def test_parity_unfinished_streaming_does_not_trim(self):
-        # Streaming (no finish yet) must NOT apply stop trimming.
+        # Streaming (no finish yet) must not apply stop trimming.
         source = "prefix STOP more"
         ids = self.tok.encode(source)
         self._assert_parity(
@@ -723,10 +723,10 @@ class TestSubprocessVsInlineParity(unittest.TestCase):
 
     def test_parity_emoji_per_token(self):
         # 4-byte UTF-8 emoji per-token streaming. Exercises a different
-        # partial-byte shape than CJK: the emoji codepoint is split
-        # across ~4 byte-level BPE tokens (one per UTF-8 byte) and
+        # partial-byte shape than CJK: the emoji code point is split
+        # across approximately four byte-level BPE tokens (one per UTF-8 byte), and
         # ``find_printable_text`` has to defer every intermediate frame
-        # until the full codepoint arrives. Any drift between the inline
+        # until the full code point arrives. Any drift between the inline
         # path's offset bookkeeping and the subprocess path's surfaces
         # here because the defer-then-commit timing has to match
         # byte-for-byte.
@@ -820,7 +820,7 @@ class TestSeedHandling(unittest.TestCase):
         )
         state.collector.take()
 
-        # Second frame passes a misleading decoded_texts which MUST be ignored
+        # The second frame passes misleading decoded_texts, which must be ignored
         # because the detokenizer is already initialized.
         mgr.output_processor.handle_batch_output(
             _batch_token_id_out(
@@ -836,12 +836,12 @@ class TestSeedHandling(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Logprob / meta field pass-through through the inline branch.
+# Log-probability and metadata fields passed through the inline branch.
 # ---------------------------------------------------------------------------
 
 
 class _LogprobReqObj(_StubReqObj):
-    """Request object that asks for output logprobs in a given dialect so
+    """Request object that asks for output log probabilities in a given dialect so
     ``_handle_batch_output`` invokes ``convert_logprob_style`` on the recv_obj.
 
     ``fmt="vllm"`` sets ``sampling_params["logprobs"]=0`` (the output processor
@@ -872,9 +872,10 @@ def _mk_logprob_state(*, rid: str = "r1", fmt: str = "vllm") -> ReqState:
 
 
 class TestInlineLogprobPassThrough(unittest.TestCase):
-    """Verify the sampled-token output logprob arrays on a ``BatchTokenIDOut``
-    flow through the inline branch of ``_handle_batch_output`` into ``meta_info``
-    — in BOTH dialects, selected per request, from the same wire arrays.
+    """Verify sampled-token log-probability arrays from one wire representation.
+
+    The arrays must flow through the inline ``_handle_batch_output`` branch into
+    ``meta_info`` for both request-selected dialects.
     """
 
     @classmethod
@@ -911,7 +912,7 @@ class TestInlineLogprobPassThrough(unittest.TestCase):
     def test_sglang_format(self):
         meta = self._run("sglang")
         # SGLang shape: "output_token_logprobs" is a list of (val, idx, text)
-        # tuples (text None when not decoding); no vLLM "logprobs" key.
+        # tuples (``text`` is ``None`` when not decoding); no vLLM "logprobs" key.
         self.assertIn("output_token_logprobs", meta)
         self.assertNotIn("logprobs", meta)
         self.assertEqual([e[0] for e in meta["output_token_logprobs"]], [-0.5, -0.6])

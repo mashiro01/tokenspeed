@@ -116,7 +116,7 @@ void trtllm_allgather_fusion(TensorView allgather_in, int64_t world_size,
         TVM_FFI_ICHECK_EQ(scale_out.value().stride(1) % 4, 0)
             << "scale_out stride(1) must be a multiple of 4 for TMA alignment";
       }
-      TVM_FFI_ICHECK(use_oneshot) << "kAllGatherfusedRMSFP8BlockWiseQuant only supports oneshot mode now!";
+      TVM_FFI_ICHECK(use_oneshot) << "kAllGatherfusedRMSFP8BlockWiseQuant currently only supports oneshot mode.";
     }
     params.trigger_completion_at_end = trigger_completion_at_end;
     params.stream = get_stream(allgather_in.device());

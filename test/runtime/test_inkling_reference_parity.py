@@ -1,9 +1,9 @@
-"""Inkling full-model numerical parity: engine vs independent torch reference.
+"""Inkling full-model numerical parity: engine vs independent PyTorch reference.
 
 Strategy: ``initialize_dummy_weights`` seeds each parameter with a fixed
 per-parameter generator (values depend only on numel + dtype), so an
 in-process replica of the model initialized the same way holds *identical*
-weights to the engine subprocess's copy. A pure-torch reference forward —
+weights to the engine subprocess's copy. A pure-PyTorch reference forward —
 written independently from the architecture spec, consuming the replica's
 parameters — then predicts the engine's outputs exactly (up to bf16 kernel
 noise):
@@ -239,8 +239,8 @@ class TestInklingReferenceParity(unittest.TestCase):
             result = out if isinstance(out, dict) else out[0]
             engine_ids = result["output_ids"][-DECODE_STEPS:]
             meta = result["meta_info"]
-            # List of (logprob, token_id, ...) per generated token. (Prompt
-            # logprobs are not supported by the engine yet.)
+            # List of (logprob, token_id, ...) tuples for each generated token.
+            # The engine does not yet support prompt log probabilities.
             output_lps = meta["output_token_logprobs"]
         finally:
             engine.shutdown()

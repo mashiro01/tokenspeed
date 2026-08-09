@@ -21,7 +21,7 @@
 """The DeepEP low-latency expert compute: two masked grouped GEMMs around the
 masked UE8M0 activation quantizer. Runs the padded ``[experts, capacity, ...]``
 layouts the low-latency apply path builds, minus the all-to-all legs, against a
-dequantized torch reference.
+dequantized PyTorch reference.
 
 Scales are powers of two throughout, because on sm100+ DeepGEMM's only FP8
 kernel reads scales as UE8M0 and silently misreads anything else.

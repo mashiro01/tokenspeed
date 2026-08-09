@@ -49,8 +49,8 @@ async def execute_warmups(warmup_names: list[str], tokenizer_manager: AsyncLLM):
 
 @warmup("voice_chat")
 async def voice_chat(tokenizer_manager: AsyncLLM):
-    # this warms up the fused_moe triton kernels and caches them
-    # if we don't do this we break real time inference for voice chat
+    # Warm up and cache the fused_moe Triton kernels. Without this warmup,
+    # real-time voice-chat inference can fail.
     for i in tqdm.trange(1, 512):
         size = i * 4
         generate_req_input = GenerateReqInput(

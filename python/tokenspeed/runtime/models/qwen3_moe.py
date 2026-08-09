@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Inference-only Qwen3 MoE model compatible with HuggingFace weights."""
+"""Inference-only Qwen3 MoE model compatible with Hugging Face weights."""
 
 from __future__ import annotations
 

@@ -91,10 +91,10 @@ except ImportError:
     )
 
 """
-A Multi-Head Latent Attention (MLA) example with FP16 data type for the NVIDIA Blackwell SM100 architecture using CUTE DSL
+A multi-head latent attention (MLA) example using FP16 on the NVIDIA Blackwell SM100 architecture with CuTe DSL.
 
-This example demonstrates an implementation of inference of multi-head latent attention using a TMA + Blackwell
-SM100 TensorCore warp-specialized persistent kernel. The implementation integrates the (Qc + Qr)*(Kc + Kr)^T
+This example implements multi-head latent attention inference using a TMA + Blackwell
+SM100 Tensor Core warp-specialized persistent kernel. The implementation integrates the (Qc + Qr)*(Kc + Kr)^T
 matrix multiplication, softmax normalization, and softmax((Qc + Qr)*(Kc + Kr)^T)*Vc into a single kernel.
 The kernel provides support for page table storage and variable-length KV cache sequences. It implements KV splitting
 functionality to minimize latency when processing long KV sequences.
@@ -117,7 +117,7 @@ To run this example:
       --is_var_seq --is_var_split_kv                                     \
       --is_persistent
 
-The above example runs Multi-Head Latent Attention (MLA) with the following configuration:
+The command above runs multi-head latent attention (MLA) with the following configuration:
 - Batch size: 4
 - Sequence length of Q: 1
 - Sequence length of K: 1024
@@ -126,10 +126,10 @@ The above example runs Multi-Head Latent Attention (MLA) with the following conf
 - Number of heads: up to 128
 - Data types: Float16 (input), Float16 (output), Float32 (accumulation and LSE)
 
-It utilizes page table storage for the KV cache and enables both variable-length KV cache sequences
+It uses page table storage for the KV cache and supports variable-length KV cache sequences
 and variable split KV processing with persistent scheduling.
 
-To collect performance with NCU profiler:
+To collect performance data with the NVIDIA Nsight Compute (ncu) profiler:
 
 .. code-block:: bash
 
@@ -153,7 +153,7 @@ Constraints for this example:
 * Input query modes should be (NumHeads, LatentDim/RopeDim, SeqLenQ, BatchSize)
 * Input kv latent/rope modes should be (SeqLenK, LatentDim/RopeDim, BatchSize)
 * Query sequence length must be positive
-* Only supports 2-CTA instructions
+* Supports only 2-CTA instructions
 * Variable sequence length requires page table storage enabled
 """
 
@@ -176,7 +176,7 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
         num_heads: int = 128,
         seq_len_q: int = 1,
     ):
-        """Initializes the configuration for a Blackwell Multi-Head Latent Attention (MLA) kernel.
+        """Initializes the configuration for a Blackwell multi-head latent attention (MLA) kernel.
 
         :param acc_dtype: Data type for accumulation S and O
         :type acc_dtype: Type[cutlass.Numeric]
@@ -287,7 +287,7 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
         """Set up configurations and parameters for the MLA kernel operation.
 
         This method initializes and configures various attributes required for the
-        execution of the multi-head latent attention kernel, mainly about the pipeline stages:
+        execution of the multi-head latent attention kernel, focusing on the pipeline stages:
 
         - Sets up staging parameters for Q, K, V inputs and accumulator data
         - Configures pipeline stages for softmax, correction, and epilogue operations
@@ -325,7 +325,7 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
         stream: cuda.CUstream,
         use_pdl: cutlass.Constexpr = False,
     ):
-        """Execute the Multi-Head Latent Attention operation on the provided tensors.
+        """Execute the multi-head latent attention operation on the provided tensors.
 
         The method handles:
         1. Initialization of workspace for split-KV buffers
@@ -364,7 +364,7 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
         :param stream: The CUDA stream to execute the kernel on
         :type stream: cuda.CUstream
 
-        :raises TypeError: If tensor data types don't match or aren't supported
+        :raises TypeError: If tensor data types do not match or are unsupported
         """
 
         # setup static attributes before smem/grid/tma computation
@@ -863,7 +863,7 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
         tile_sched_params: MLAStaticTileSchedulerParams,
         SharedStorage: cutlass.Constexpr,
     ):
-        """The device split_kv kernel implementation of the Multi-Head Latent Attention.
+        """The device split_kv kernel implementation of multi-head latent attention.
 
         This kernel coordinates multiple specialized warps to perform different phases of the MLA computation:
         1. Load warp: Loads Q/C latent/rope data from global memory to shared memory using TMA
@@ -1403,7 +1403,7 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
         cache_seqs: cute.Tensor,
         block_split_kvs: cute.Tensor,
     ):
-        """The reduction kernel for Multi-Head Latent Attention (MLA) that combines intermediate results
+        """The reduction kernel for multi-head latent attention (MLA) that combines intermediate results
         from multiple split_kv blocks into final outputs.
 
         :param mO: Output tensor for storing final results
@@ -1820,7 +1820,7 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
         k_tile_count -= 1
         while k_tile_count > 0:
             # {$nv-internal-release begin}
-            # Keep state values explicit for CuteDSL AST lowering.
+            # Keep state values explicit for CuTe DSL AST lowering.
             # {$nv-internal-release end}
             load_q_producer_state, load_kv_producer_state, load_pt_consumer_state = (
                 self.load_tma_qk_one_k_tile(
@@ -2710,7 +2710,7 @@ class BlackwellMultiHeadLatentAttentionForwardFP16:
                     if cutlass.const_expr(self.is_causal):
                         # Spec-decoding (MTP) causal mask: row r's effective K
                         # bound is K - (S_q - 1) + q_tok(r). With fold factor F
-                        # the M tile is [F sub_q_tok][num_heads heads].
+                        # the M tile contains F sub-query-token groups across num_heads heads.
                         if cutlass.const_expr(self.fold_sq_factor > 1):
                             qk_row = tTR_tS[i][0]
                             q_tok = (
@@ -3729,7 +3729,7 @@ def run(
     use_cold_l2: bool,
     **kwargs,
 ):
-    """Execute Multi-Head Latent Attention (MLA) on Blackwell architecture and validate results.
+    """Execute multi-head latent attention (MLA) on Blackwell architecture and validate results.
 
     This function creates random input tensors for query latent/rope, compressed latent/rope, and value,
     then performs the complete MLA computation pipeline. It supports configurable data types, tiling parameters,
@@ -3817,7 +3817,7 @@ def run(
     print(f"  skip_ref_check: {skip_ref_check}")
     print(f"  use_cold_l2: {use_cold_l2}")
 
-    # Prepare pytorch tensors: Q, K, V (random from 0 to 2) and O (all zero)
+    # Prepare PyTorch tensors: Q, K, V (random from 0 to 2) and O (all zero)
     if not torch.cuda.is_available():
         raise RuntimeError("GPU is required to run this example!")
 
@@ -3897,7 +3897,7 @@ def run(
         # Create dtype torch tensor (gpu)
         torch_tensor_gpu = torch_tensor_cpu.cuda()
 
-        # Create f32 torch tensor (cpu)
+        # Create an FP32 PyTorch tensor on the CPU.
         f32_torch_tensor = torch_tensor_cpu.to(dtype=torch.float32)
 
         # Create dtype cute tensor (gpu)
@@ -3947,7 +3947,9 @@ def run(
         max_seq_len = seq_len_k if not is_var_seq else torch.max(cache_seqs_ref)
         page_count = ceil_div(max_seq_len, page_size)
         page_table_ref = torch.empty([batch_size, page_count], dtype=torch.int32)
-        # use transposed index for page table to make sure the value is in bound of `batch_size * seq_len_block`. In practice, the value could be any positive values. This setting is only for testing purpose.
+        # Use a transposed index for the page table so the value stays within the bounds of
+        # `batch_size * seq_len_block`. In practice the value can be any positive value; this
+        # setting is only for testing purposes.
         for b in range(batch_size):
             for j in range(page_count):
                 page_table_ref[b, j] = b + j * batch_size
@@ -4516,7 +4518,7 @@ if __name__ == "__main__":
         "--rope_dim",
         type=int,
         default=64,
-        help="Rope dimension of Q/C",
+        help="RoPE dimension of Q/C",
     )
 
     parser.add_argument(

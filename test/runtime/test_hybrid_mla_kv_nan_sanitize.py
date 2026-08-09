@@ -20,7 +20,7 @@
 
 """``LayerMappedKVPool.set_mla_kv_buffer`` layer remap + write pass-through.
 
-Context (the Kimi-K3 CUDA-graph "!!!" bug): under the prefill breakable graph,
+Context (the Kimi-K3 CUDA graph "!!!" bug): under the prefill breakable graph,
 the dummy-batch capture (out_cache_loc == the reserved ``dummy_kv_slot``)
 writes NaN K/V. The paged MLA decode kernel then reads that shared dummy slot
 through the zero-padded block-table entries and computes ``q·k`` *before* the

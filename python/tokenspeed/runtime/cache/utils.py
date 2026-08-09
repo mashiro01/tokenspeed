@@ -128,7 +128,7 @@ def set_mla_kv_buffer_per_loc_kernel(
         mask=loc_mask[:, None],
     )
 
-    # Rope tile: [BLOCK_LOC, rope_dim]
+    # RoPE tile: [BLOCK_LOC, rope_dim]
     rope_offs = tl.arange(0, rope_dim)
     src_rope = tl.load(
         cache_k_rope_ptr + loc_indices[:, None] * rope_stride + rope_offs[None, :],
@@ -168,8 +168,8 @@ def set_mla_kv_buffer_triton(
     nope_dim = cache_k_nope.size(-1)
     rope_dim = cache_k_rope.size(-1)
     # Clamp to a value representable by both source and destination. K3's
-    # latent source can be bf16 while the Paged cache cache is fp8; using only the
-    # source bound would overflow back to a non-finite fp8 encoding on store.
+    # latent source can be BF16 while the paged cache is FP8; using only the
+    # source bound would overflow back to a non-finite FP8 encoding on store.
     float_maxes = [
         torch.finfo(t.dtype).max
         for t in (cache_k_nope, kv_buffer)
@@ -320,7 +320,7 @@ def get_mla_kv_buffer_per_loc_kernel(
         mask=loc_mask[:, None],
     )
 
-    # Rope tile: [BLOCK_LOC, rope_dim]
+    # RoPE tile: [BLOCK_LOC, rope_dim]
     rope_offs = tl.arange(0, rope_dim)
     src_rope = tl.load(
         kv_buffer_ptr + locs[:, None] * buffer_stride + nope_dim + rope_offs[None, :],

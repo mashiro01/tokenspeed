@@ -166,20 +166,21 @@ class ServerArgs:
     metrics_reporters: list[str] | None = None
     app_key: str | None = None
 
-    # API related
+    # API-related settings.
     api_key: str | None = None
     enable_cache_report: bool = False
     kv_events_config: str | None = None
 
-    # RL online weight sync (always on / ungated). NOTE: these endpoints can
-    # overwrite model weights, reload checkpoints from disk, and pause/abort
+    # Online RL weight synchronization is always enabled. These endpoints can
+    # overwrite model weights, reload checkpoints from disk, pause or abort
     # serving, and are exposed on the public control port. See
-    # runtime/engine/weight_transfer/ and runtime/entrypoints/vllm_compat_http.py.
+    # ``runtime/engine/weight_transfer/`` and
+    # ``runtime/entrypoints/vllm_compat_http.py``.
     weight_transfer_config: str | None = None
-    # Port for the in-engine RL control-plane HTTP app (weight sync + pause/resume
-    # + memory occupation, both the native and SGLang-compatible dialects). Set by
-    # the ``ts serve`` orchestrator (allocated + proxied by the sidecar); None
-    # disables the in-engine app.
+    # Port for the in-engine RL control-plane HTTP app (weight synchronization,
+    # pause/resume, and memory management in both the native and SGLang-compatible
+    # dialects). The ``ts serve`` orchestrator sets this port, and the sidecar
+    # allocates and proxies it. ``None`` disables the in-engine app.
     rl_control_port: int | None = None
     # Version identifier for the model weights. Stamped into every generation
     # response's meta_info so RL trainers know which policy version produced each
@@ -280,7 +281,7 @@ class ServerArgs:
     speculative_num_draft_tokens: int | None = None
     eagle3_layers_to_capture: str | None = None
     # Logprob support flags — all OFF by default. Enabling extends the
-    # captured CUDA-graph footprint; requests asking for logprobs on a
+    # captured CUDA graph footprint; requests asking for logprobs on a
     # server started without the matching flag will receive empty logprobs.
     enable_output_logprobs: bool = False
 
@@ -473,7 +474,11 @@ class ServerArgs:
 
         # Set CUDA graph max capture size.
         if self.max_cudagraph_capture_size is None:
-            # Based on detailed statistics, when serving TP1/TP2 models on lower-end GPUs with HBM<25G, you can either disable CUDA graph or set max_cudagraph_capture_size to a very small value to reduce graph memory overhead, with almost no impact on performance. TP4/TP8 serving still needs CUDA graph for high performance, and 80 is enough for lower-end GPUs.
+            # Measurements show that when serving TP1/TP2 models on lower-end GPUs with less
+            # than 25 GB of HBM, either disabling CUDA graphs or setting
+            # max_cudagraph_capture_size to a very small value reduces graph memory overhead
+            # with almost no effect on performance. TP4/TP8 serving still needs CUDA graphs for
+            # high performance, and 80 is enough on lower-end GPUs.
             if gpu_mem is not None and gpu_mem < 25_000:
                 if self.mapping.world_size < 4:
                     self.max_cudagraph_capture_size = 8
@@ -784,7 +789,7 @@ class ServerArgs:
         ):
             if self.mapping.has_attn_dp:
                 raise ValueError(
-                    "Not supported when "
+                    "This configuration is unsupported: "
                     f"{self.disaggregation_mode=} {self.load_balance_method=} "
                     f"{self.mapping.attn.dp_size=}"
                 )
@@ -979,12 +984,12 @@ class ServerArgs:
             ],
             help="The format of the model weights to load. "
             '"auto" will try to load the weights in the safetensors format '
-            "and fall back to the pytorch bin format if safetensors format "
+            "and fall back to the PyTorch binary format if safetensors format "
             "is not available. "
-            '"pt" will load the weights in the pytorch bin format. '
+            '"pt" will load the weights in the PyTorch binary format. '
             '"safetensors" will load the weights in the safetensors format. '
-            '"npcache" will load the weights in pytorch format and store '
-            "a numpy cache to speed up the loading. "
+            '"npcache" will load the weights in PyTorch format and store '
+            "a NumPy cache to accelerate loading. "
             '"dummy" will initialize the weights with random values.',
         )
         parser.add_argument(
@@ -1199,7 +1204,8 @@ class ServerArgs:
             "--stream-interval",
             type=int,
             default=ServerArgs.stream_interval,
-            help="The interval (or buffer size) for streaming in terms of the token length. A smaller value makes streaming smoother, while a larger value makes the throughput higher",
+            help="The streaming interval (or buffer size), measured in tokens. Smaller values "
+            "make streaming smoother; larger values increase throughput.",
         )
         parser.add_argument(
             "--stream-output",
@@ -1224,7 +1230,7 @@ class ServerArgs:
             "--download-dir",
             type=str,
             default=ServerArgs.download_dir,
-            help="Model download directory for huggingface.",
+            help="Model download directory for Hugging Face.",
         )
         parser.add_argument(
             "--base-gpu-id",
@@ -1432,12 +1438,14 @@ class ServerArgs:
             type=str,
             choices=["normal", "low_latency", "auto"],
             default=ServerArgs.deepep_mode,
-            help="Select the mode when enable DeepEP MoE, could be `normal`, `low_latency` or `auto`. Default is `auto`, which means `low_latency` for decode batch and `normal` for prefill batch.",
+            help="The mode used when DeepEP MoE is enabled: `normal`, `low_latency`, or "
+            "`auto`. The default is `auto`, which selects `low_latency` for decode batches "
+            "and `normal` for prefill batches.",
         )
         parser.add_argument(
             "--disable-flashinfer-cutlass-moe-fp4-allgather",
             action="store_true",
-            help="Disable flashinfer cutlass MoE FP4 allgather.",
+            help="Disable FlashInfer CUTLASS MoE FP4 all-gather.",
         )
 
         # Multi-node distributed serving
@@ -1507,7 +1515,7 @@ class ServerArgs:
             "(cutedsl_kda > flashkda > fla). Named backends are NVIDIA-specific: "
             "'fla' uses the portable FLA scan, 'flashkda' uses the optional "
             "FlashKDA library (source build, SM90+), and 'cutedsl_kda' uses the "
-            "CuteDSL KDA AOT kernel (prebuilt, sm_103a). Decode is unaffected.",
+            "CuTe DSL KDA AOT kernel (prebuilt, sm_103a). Decode is unaffected.",
         )
         parser.add_argument(
             "--drafter-attention-backend",
@@ -1583,7 +1591,7 @@ class ServerArgs:
             default=ServerArgs.deepseek_v4_mega_moe_max_num_tokens,
             help=(
                 "DeepSeek V4 MegaMoE staging-buffer cap on tokens per forward "
-                "(0 = derive from chunked-prefill / cuda-graph budgets)."
+                "(0 = derive from chunked-prefill / CUDA graph budgets)."
             ),
         )
         parser.add_argument(
@@ -1707,7 +1715,7 @@ class ServerArgs:
             "--enable-output-logprobs",
             action="store_true",
             default=ServerArgs.enable_output_logprobs,
-            help="Enable per-token sampled-token logprobs. OFF by default; enabling extends the captured CUDA-graph footprint. Requests asking for logprobs on a server without this flag receive empty logprobs.",
+            help="Enable per-token sampled-token logprobs. OFF by default; enabling extends the captured CUDA graph footprint. Requests asking for logprobs on a server without this flag receive empty logprobs.",
         )
         parser.add_argument(
             "--eagle3-layers-to-capture",
@@ -1743,7 +1751,8 @@ class ServerArgs:
         parser.add_argument(
             "--disable-cuda-graph-padding",
             action="store_true",
-            help="Disable cuda graph when padding is needed. Still uses cuda graph when padding is not needed.",
+            help="Do not pad batches to a captured CUDA graph size; use eager execution "
+            "when no graph matches the exact batch size.",
         )
         parser.add_argument(
             "--disable-autotune",
@@ -1796,7 +1805,7 @@ class ServerArgs:
         parser.add_argument(
             "--disable-prefill-graph",
             action="store_true",
-            help="Disable cuda graph for prefill.",
+            help="Disable CUDA graph capture for prefill.",
         )
         parser.add_argument(
             "--prefill-graph-max-tokens",
@@ -1907,7 +1916,8 @@ class ServerArgs:
             help="Enable expert parallelism by automatically setting ep_size to world_size.",
         )
 
-        # Specify different parallel strategies, different combinations correspond to different communication groups and weight partitioning, as well as different communication methods
+        # Parallel strategies. Each combination selects a different set of communication
+        # groups, a different weight partitioning, and a different communication method.
         parser.add_argument(
             "--attn-tp-size",
             type=int,
@@ -2001,7 +2011,10 @@ class ServerArgs:
             type=str,
             default="null",
             choices=["null", "prefill", "decode", "encode"],
-            help='Used for PD/EPD disaggregation. "prefill" for prefill-only server, "decode" for decode-only server, and "encode" for a vision-tower-only server that ships image embeddings to a prefill server. If not specified, it is not disaggregated',
+            help='Used for PD/EPD disaggregation. "prefill" runs a prefill-only server, '
+            '"decode" runs a decode-only server, and "encode" runs a vision-tower-only '
+            "server that ships image embeddings to a prefill server. If unset, the server "
+            "is not disaggregated.",
         )
         parser.add_argument(
             "--comm-fusion-max-num-tokens",
@@ -2184,7 +2197,7 @@ class PortArgs:
         # DP attention. Use TCP + port to handle both single-node and multi-node.
         if server_args.mapping.nnodes == 1 and server_args.dist_init_addr is None:
             # Only use default port fallback when dp_size == 1
-            # For dp_size > 1, we need explicit dist_init_addr to avoid port conflicts
+            # An explicit dist_init_addr prevents port conflicts when dp_size > 1.
             if server_args.mapping.has_attn_dp:
                 raise ValueError(
                     f"When dp_size > 1 (dp_size={server_args.mapping.attn.dp_size}), you must provide --dist-init-addr. "

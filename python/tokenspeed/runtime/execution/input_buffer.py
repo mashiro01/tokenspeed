@@ -65,7 +65,7 @@ class InputBuffers:
         self.all_extends_mid_chunk = False
 
         with torch.device(device):
-            # Initialise buffers to the *padding* values the captured graph
+            # Initialize buffers to the *padding* values the captured graph
             # expects for padded rows (input_ids=1, positions=0, req_pool=0,
             # seq_lens=1, out_cache_loc=dummy_kv_slot). Each iteration overwrites
             # the active prefix [:total_tokens]; fill_input_buffers refreshes the
@@ -87,7 +87,7 @@ class InputBuffers:
                 (max_bs,), state_write_padding_pool_index, dtype=torch.int64
             )
             self.seq_lens_buf = torch.ones((max_bs,), dtype=torch.int32)
-            # Initialise to dummy_kv_slot so that padding positions (never
+            # Initialize to dummy_kv_slot so that padding positions (never
             # written by compute_out_cache_loc) always point to the reserved
             # dummy KV slot and never corrupt real KV cache entries.
             self.out_cache_loc_buf = torch.full(

@@ -1,13 +1,13 @@
 /*
  * Copyright (c) 2026 LightSeek Foundation
  *
- * Vendored from flashinfer/attention/cascade.cuh (Apache-2.0):
+ * Vendored from FlashInfer's flashinfer/attention/cascade.cuh (Apache-2.0):
  *   https://github.com/flashinfer-ai/flashinfer
  * with two additions:
  *   1. ``lse_scale_log2`` / ``lse_scale_inv`` runtime args so callers can pass
  *      LSE in any base; the kernel rebases to log2 internally (PTX-native
  *      ``ex2.approx``) and rebases back at store. Default callers pass natural
- *      log (LN→log2 via lse_scale_log2 = log2(e)); flashinfer-style log2 callers
+ *      log (LN→log2 via lse_scale_log2 = log2(e)); FlashInfer-style log2 callers
  *      pass lse_scale_log2 = 1.0.
  *   2. PDL via ``griddepcontrol.{wait,launch_dependents}`` + the matching
  *      cudaLaunchAttributeProgrammaticStreamSerialization attribute, so

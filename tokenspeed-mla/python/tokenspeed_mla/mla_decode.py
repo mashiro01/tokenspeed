@@ -415,7 +415,7 @@ def tokenspeed_mla_decode(
         Currently this is effective for the FP8 kernel path.
     enable_pdl : bool
         When True, enables Programmatic Dependent Launch (PDL) on the
-        underlying CuTe DSL decode kernel. Tokenspeed callers wire this from
+        underlying CuTe DSL decode kernel. TokenSpeed callers wire this from
         ``pdl_enabled()`` so ``--disable-pdl`` propagates through to the
         kernel binary; ``use_pdl`` is part of the kernel cache key.
     return_lse : bool

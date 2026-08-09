@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 """
-CuteDSL MLA attention backend for TokenSpeed scheduling.
+CuTe DSL MLA attention backend for TokenSpeed scheduling.
 
 Uses CuTe DSL JIT-compiled kernels for MLA decode and prefill on Blackwell SM100 GPUs:
 - tokenspeed_mla_decode for decode/verify
@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# CuteDSL decode workspace. The kernel's own `get_workspace_size` formula is
+# CuTe DSL decode workspace. The kernel's own `get_workspace_size` formula is
 #   B * H * q_len * split_kv * (D + 1) * (acc_dtype.width // 8)   (bytes)
 # and `B * split_kv <= num_SMs`, so a closed-form upper bound (Float32 acc) is
 #   num_SMs * H * q_len * (D + 1) * 4
@@ -83,7 +83,7 @@ def get_cutedsl_workspace_buffer(
     kv_lora_rank: int,
     q_len_capacity: int = _CUTEDSL_INITIAL_Q_LEN_CAPACITY,
 ) -> torch.Tensor:
-    """Get or grow the per-device CuteDSL workspace buffer."""
+    """Get or grow the per-device CuTe DSL workspace buffer."""
     num_sms = get_num_sm(device)
     required = num_sms * num_heads_per_tp * q_len_capacity * (kv_lora_rank + 1) * 4
 
@@ -118,7 +118,7 @@ class CuteDSLMLADecodeMetadata:
 
 
 class CuteDSLMLABackend(AttentionBackend):
-    """CuteDSL MLA attention backend for Blackwell SM100 GPUs.
+    """CuTe DSL MLA attention backend for Blackwell SM100 GPUs.
 
     Decode uses CuTe DSL JIT-compiled kernels via tokenspeed_mla_decode().
     Prefill uses CuTe DSL FMHA kernel via tokenspeed_mla_prefill().
@@ -209,7 +209,7 @@ class CuteDSLMLABackend(AttentionBackend):
         """Mark this MLA backend as a Kimi-K3 Paged cache contract sub-backend.
 
         Called by the registry when the backend is constructed for the
-        Kimi-K3 LCM contract path. Enables grouped CUDA-graph
+        Kimi-K3 LCM contract path. Enables grouped CUDA graph
         capture/replay with stable full-attention block-table and write-location
         buffers. ``logical_page_size`` is accepted for signature uniformity with
         the other contract sub-backends; this backend derives its page geometry
@@ -217,7 +217,7 @@ class CuteDSLMLABackend(AttentionBackend):
         """
         del logical_page_size
         if self.is_draft:
-            # The CuteDSL draft keeps its batch-ordered page table. Only target
+            # The CuTe DSL draft keeps its batch-ordered page table. Only target
             # forwards consume scheduler cache-group metadata.
             return
         self._cache_contract_bound = True
@@ -354,7 +354,7 @@ class CuteDSLMLABackend(AttentionBackend):
         Plain decode writes one location (position ``seq-1``); speculative
         target-verify writes ``q_len_per_req`` trailing positions
         (``seq-q_len .. seq-1``), flattened request-major to match the query
-        layout. ``out`` (CUDA-graph replay): write the locations in place into
+        layout. ``out`` (CUDA graph replay): write the locations in place into
         the persistent buffer the graph recorded — same ``data_ptr`` — instead
         of allocating a fresh tensor. No host sync on either path.
         """
@@ -725,7 +725,7 @@ class CuteDSLMLABackend(AttentionBackend):
             )
         if forward_mode.is_extend_or_mixed():
             raise NotImplementedError(
-                f"tokenspeed_mla CUDA graph capture not supported for {forward_mode}"
+                f"TokenSpeed-MLA CUDA graph capture is not supported for {forward_mode}"
             )
 
         max_blocks = self._calc_padded_blocks(self.max_context_len)
@@ -787,7 +787,7 @@ class CuteDSLMLABackend(AttentionBackend):
         cache_metadata = kwargs.get("cache_metadata")
         if forward_mode is not None and forward_mode.is_extend_or_mixed():
             raise NotImplementedError(
-                f"tokenspeed_mla CUDA graph replay not supported for {forward_mode}"
+                f"TokenSpeed-MLA CUDA graph replay is not supported for {forward_mode}"
             )
 
         metadata = self.decode_cuda_graph_metadata[bs]
@@ -936,7 +936,7 @@ class CuteDSLMLABackend(AttentionBackend):
             )
             softmax_scale = k_scale * layer.scaling
 
-        # Prepare KV cache: [num_pages, page_size, kv_cache_dim] (3D for CuteDSL)
+        # Prepare KV cache: [num_pages, page_size, kv_cache_dim] (3D for CuTe DSL)
         k_cache = token_to_kv_pool.get_key_buffer(layer.layer_id)
         if self.data_type != k_cache.dtype:
             k_cache = k_cache.to(self.data_type)
@@ -944,7 +944,7 @@ class CuteDSLMLABackend(AttentionBackend):
 
         if not CuteDSLMLABackend._logged_decode:
             logger.info(
-                "CuteDSL MLA decode kernel invoked (tokenspeed_mla_decode, query_dtype=%s, kv_dtype=%s)",
+                "CuTe DSL MLA decode kernel invoked (tokenspeed_mla_decode, query_dtype=%s, kv_dtype=%s)",
                 query.dtype,
                 kv_cache.dtype,
             )
@@ -994,7 +994,7 @@ class CuteDSLMLABackend(AttentionBackend):
                 step_counter.record_cache()
 
         head_dim = self.qk_nope_head_dim + self.qk_rope_head_dim
-        # The CuteDSL FMHA prefill kernel assumes packed (contiguous) Q/K/V; its
+        # The CuTe DSL FMHA prefill kernel assumes packed (contiguous) Q/K/V; its
         # TMA descriptors ignore input strides. On the BF16 (NoPE, e.g. Kimi-K3)
         # path V arrives as a non-contiguous slice ``kv[..., qk_nope:]`` of the
         # fused kv_b_proj output (its stride skips the interleaved k_nope block),
@@ -1005,7 +1005,7 @@ class CuteDSLMLABackend(AttentionBackend):
         k = k.reshape(-1, self.num_local_heads, head_dim).contiguous()
         v = v.reshape(-1, self.num_local_heads, self.v_head_dim).contiguous()
 
-        # CuteDSL FMHA MLA: if Q is FP8, ensure K/V match. `.to()` is a no-op
+        # CuTe DSL FMHA MLA: if Q is FP8, ensure K/V match. `.to()` is a no-op
         # when the source dtype already matches.
         if q.dtype == torch.float8_e4m3fn:
             k = k.to(torch.float8_e4m3fn)
@@ -1013,7 +1013,7 @@ class CuteDSLMLABackend(AttentionBackend):
 
         if not CuteDSLMLABackend._logged_prefill:
             logger.info(
-                "CuteDSL MLA prefill kernel invoked (tokenspeed_mla_prefill, "
+                "CuTe DSL MLA prefill kernel invoked (tokenspeed_mla_prefill, "
                 f"q_dtype={q.dtype})"
             )
             CuteDSLMLABackend._logged_prefill = True

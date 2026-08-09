@@ -18,10 +18,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""``ts serve`` orchestrator: spawn smg gateway + gRPC engine, tag logs, probe
+"""``ts serve`` orchestrator: spawn SMG gateway + gRPC engine, tag logs, probe
 readiness, and tear down gateway-first on shutdown.
 
-``ts serve`` is the full serving command; today its internals are the smg
+``ts serve`` is the full serving command; today its internals are the SMG
 gateway plus the gRPC engine servicer. ``ts serve --headless`` is engine-only:
 nothing else is spawned here — an external frontend such as ``smg serve
 --backend tokenspeed --connection-mode zmq`` binds the msgpack ZMQ sockets and
@@ -75,11 +75,11 @@ KIMI_K3_TOOL_CALL_PARSER = "kimi_k3"
 DEFAULT_SMG_LOG_LEVEL = "warn"
 GRPC_MAX_MESSAGE_BYTES_ENV = "TOKENSPEED_GRPC_MAX_MESSAGE_BYTES"
 DEFAULT_GRPC_MAX_MESSAGE_BYTES = "536870912"
-# smg routing policy for ``ts serve``. Distinct from DEFAULT_REASONING_PARSER,
+# SMG routing policy for ``ts serve``. Distinct from DEFAULT_REASONING_PARSER,
 # which happens to share the "passthrough" string but configures an unrelated
 # flag (--reasoning-parser).
 DEFAULT_SMG_POLICY = "passthrough"
-# smg reliability knobs we always want disabled when launched under
+# SMG reliability knobs we always want disabled when launched under
 # ts serve. These are tokenspeed-internal defaults: not surfaced via
 # the ts CLI, not routed through split_argv.
 _DEFAULT_SMG_DISABLE_FLAGS = (
@@ -161,7 +161,7 @@ def _gateway_args_with_default_reasoning_parser(gateway_args: list[str]) -> list
 
 
 def _gateway_args_with_smg_disable_defaults(gateway_args: list[str]) -> list[str]:
-    """Append the smg reliability-disable switches if they are not already there."""
+    """Append the SMG reliability-disable switches if they are not already there."""
     result = list(gateway_args)
     for flag in _DEFAULT_SMG_DISABLE_FLAGS:
         if flag not in result:
@@ -170,9 +170,9 @@ def _gateway_args_with_smg_disable_defaults(gateway_args: list[str]) -> list[str
 
 
 def _gateway_args_with_default_policy(gateway_args: list[str]) -> list[str]:
-    """Front smg's single backend with the ``passthrough`` routing policy.
+    """Front SMG's single backend with the ``passthrough`` routing policy.
 
-    ``ts serve`` always orchestrates exactly one engine endpoint, so smg's binary
+    ``ts serve`` always orchestrates exactly one engine endpoint, so SMG's binary
     default (``cache_aware``) is pure overhead here: it runs the load-aware worker
     monitor and subscribes to the engine's KV events (``SubscribeKvEvents``).
     Against engines that predate that RPC the subscription surfaced as
@@ -180,11 +180,12 @@ def _gateway_args_with_default_policy(gateway_args: list[str]) -> list[str]:
     policy (smg#1797) forwards every request to the single healthy worker with no
     load balancing, load monitoring, or KV-event subscription.
 
-    Default-when-unset: an explicit operator ``--policy`` is preserved.
+    The passthrough default is injected only when the operator did not pass
+    ``--policy``; an explicit value is preserved.
 
-    NOTE: ``--policy`` is whitelisted by smg's clap ``value_parser`` — a gateway
+    ``--policy`` is allowlisted by SMG's Clap ``value_parser``. A gateway
     that predates smg#1797 rejects ``passthrough`` and fails to start. This
-    injection therefore requires a bundled ``tokenspeed-smg`` that ships smg#1797;
+    injection therefore requires a bundled ``tokenspeed-smg`` that includes smg#1797;
     the pin in ``python/pyproject.toml`` must be bumped to such a release in
     lockstep with this default.
     """
@@ -200,22 +201,22 @@ _TOKENIZER_CACHE_FLAGS = (
 
 
 def _gateway_args_with_default_tokenizer_cache(gateway_args: list[str]) -> list[str]:
-    """Default smg tokenizer caches (L0 + L1) ON for gateway-fronted launches.
+    """Default SMG tokenizer caches (L0 + L1) ON for gateway-fronted launches.
 
     For agentic / chat-completions traffic with a shared system prompt + history,
     L1 prefix-caching at special-token boundaries cuts TTFT by ~30% (verified
-    end-to-end on mm25). smg's own clap defaults leave both layers OFF.
+    end-to-end on mm25). SMG's own Clap defaults leave both layers OFF.
 
     Opt-out: operators can pass ``--no-tokenizer-cache-enable-l0`` and/or
     ``--no-tokenizer-cache-enable-l1`` to ``ts serve``. The ``--no-`` form is
-    intercepted here (smg's clap doesn't accept it natively) and prevents the
+    intercepted here (SMG's Clap does not accept it natively) and prevents the
     positive injection for that layer.
     """
     result = list(gateway_args)
     for flag in _TOKENIZER_CACHE_FLAGS:
         no_flag = "--no-" + flag[2:]
         if no_flag in result:
-            # Operator opted out: strip the --no- marker (smg rejects it)
+            # Operator opted out: strip the --no- marker (SMG rejects it)
             # and skip the positive injection for this layer.
             while no_flag in result:
                 result.remove(no_flag)
@@ -232,11 +233,11 @@ def _gateway_args_with_default_log_level(gateway_args: list[str]) -> list[str]:
 
 
 def _gateway_args_with_default_prometheus_port(gateway_args: list[str]) -> list[str]:
-    """Bind the smg Prometheus exporter to a freshly allocated free port.
+    """Bind the SMG Prometheus exporter to a freshly allocated free port.
 
-    smg's own default (``29000``) — and any *fixed* port — collides when
+    SMG's own default (``29000``) — and any *fixed* port — collides when
     multiple ``ts serve`` instances share a host, or when a previous run
-    left the port in ``TIME_WAIT`` (smg binds without ``SO_REUSEADDR``, so
+    left the port in ``TIME_WAIT`` (SMG binds without ``SO_REUSEADDR``, so
     the bind panics with ``AddrInUse`` even though no process holds it).
     A dead metrics server makes the gateway exit during startup, the
     tokenizer registration job never runs, and the first request surfaces
@@ -328,9 +329,9 @@ def _is_kimi_k3_model(model_id: str | None) -> bool:
 def _args_with_default_model_parsers(
     engine_args: list[str], gateway_args: list[str]
 ) -> tuple[list[str], list[str]]:
-    """Apply model-family parser defaults before smg gateway defaults.
+    """Apply model-family parser defaults before SMG gateway defaults.
 
-    Reasoning parser defaults must be visible to both processes: smg extracts
+    Reasoning parser defaults must be visible to both processes: SMG extracts
     reasoning_content after generation, while the engine uses the same parser
     name to defer json_schema grammars past the reasoning channel.
     """
@@ -402,7 +403,7 @@ def _args_with_default_model_parsers(
 def _prewarm_hf_tokenizer(model_id: str) -> None:
     """Download tokenizer and chat-template assets before the gateway boots.
 
-    smg fires its ``AddTokenizer`` job asynchronously after the engine
+    SMG fires its ``AddTokenizer`` job asynchronously after the engine
     reports SERVING. On fast runners (e.g. b300) the first eval request
     can race that fetch and fail with ``tokenizer_not_found``. Pulling
     tokenizer files into the HF cache up front keeps the registration
@@ -465,10 +466,10 @@ async def _start_control_server(
 ) -> bool:
     """Start the control HTTP server in a daemon thread and wait for it to bind.
 
-    Runs uvicorn alongside smg without blocking the orchestrator event loop.
+    Runs Uvicorn alongside SMG without blocking the orchestrator event loop.
     Returns True once the server is accepting connections, or False if it
     failed to bind (e.g. the port is already in use) or did not come up within
-    ``timeout`` seconds. Non-fatal: the smg gateway runs independently.
+    ``timeout`` seconds. Non-fatal: the SMG gateway runs independently.
     """
     import threading
 
@@ -574,7 +575,7 @@ async def run_smg(
         try:
             loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
-            pass  # Windows: signal handlers via asyncio aren't supported. Out of scope.
+            pass  # Windows does not support these signal handlers through asyncio.
 
     try:
         engine_port = get_free_port()

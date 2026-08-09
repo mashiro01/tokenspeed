@@ -841,7 +841,7 @@ def gdn_chunk_prefill(
         beta: Beta gate shaped ``[1, total_tokens, num_v_heads]``.
         scale: Attention scale. ``None`` lets the implementation use its default.
         initial_state: Recurrent state, K-last: ``[batch, num_v_heads,
-            head_v_dim, head_dim]``. This matches flashinfer's native GDN
+            head_v_dim, head_dim]``. This matches FlashInfer's native GDN
             decode/MTP layout (and the runtime's SSM state pool); backends
             whose own math is FLA-native (e.g. Triton) transpose internally.
         cu_seqlens: Cumulative sequence lengths for variable-length prefill.
@@ -949,7 +949,7 @@ def gdn_decode_step(
         initial_state: SSM state pool, K-last ``[pool_size, num_v_heads,
             head_v_dim, head_dim]`` (matches the runtime's SSM state pool).
         initial_state_indices: Per-batch read row, shaped ``[B]``. ``-1``
-            marks CUDA-graph padding; handled internally, no caller clamp
+            marks CUDA graph padding; handled internally, no caller clamp
             needed.
         scale: Attention scale. ``None`` lets the implementation use its default.
         output_state_indices: Per-batch write row, shaped ``[B]``. ``None``
@@ -3228,10 +3228,10 @@ def _prefill_plan(
 ) -> dict:
     """Shared extend-mode planning over a prefill operator's registry entries.
 
-    FP8 currently prefers "prewrite" because the cache write and downcast
-    path is easier to fuse. Other dtypes use "postwrite" only when a
-    matching prefill kernel with at least performant priority exists;
-    otherwise they use "prewrite".
+    FP8 currently prefers ``prewrite`` because the cache-write and downcast
+    path is easier to fuse. Other data types use ``postwrite`` only when a
+    matching prefill kernel with at least ``Priority.PERFORMANT`` priority
+    exists; otherwise, they use ``prewrite``.
     """
     if dtype == torch.float8_e4m3fn:
         return {"extend_mode": "prewrite"}

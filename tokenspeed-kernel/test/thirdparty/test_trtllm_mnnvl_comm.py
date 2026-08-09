@@ -18,11 +18,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""MNNVL-structured one-shot AR fusion: NVLS multicast payload store +
-Lamport rotation, with the vendored FusedOp epilogues (incl. the Kimi-K3
-patterns kARResidualAttnResCombine and kAllReduceLatentNorm). Must match the
-IPC lamport backend and survive CUDA-graph capture/replay (the rotation state
-lives in device memory and self-resets across replays).
+"""MNNVL-structured one-shot all-reduce fusion.
+
+The implementation combines an NVLS multicast payload store and Lamport
+rotation with the vendored ``FusedOp`` epilogues, including the Kimi-K3
+``kARResidualAttnResCombine`` and ``kAllReduceLatentNorm`` patterns. It must
+match the IPC Lamport backend and survive CUDA graph capture and replay; the
+rotation state resides in device memory and resets itself across replays.
 
 Normal one-GPU pytest runs skip this file. Exercise it with:
 ``torchrun --standalone --nproc-per-node=8 -m pytest -q <this file>``.
@@ -330,7 +332,7 @@ def test_rmsnorm_family_unfused_fallback():
 
     Cross-node there is no IPC workspace, so block-quant / partial-out rmsnorm
     calls used to raise out of the forward pass. They now run an unfused
-    NCCL all-reduce + torch epilogue with the same return contract. Verified
+    NCCL all-reduce and PyTorch epilogue with the same return contract. Verified
     against the fp32 ground-truth epilogue; residual_reduce_scattered (whose
     input arrives pre-scattered) must still raise rather than corrupt.
     """

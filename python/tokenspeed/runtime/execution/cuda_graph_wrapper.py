@@ -510,7 +510,7 @@ class CudaGraphWrapper:
         # metadata refreshes update the same tensors recorded by the graph.
         self._init_capture_metadata(bs)
 
-        # Fill sampler buffers OUTSIDE the capture so RNG ops aren't recorded.
+        # Fill sampler buffers outside capture so RNG operations are not recorded.
         self._prepare_sampling_capture(bs=bs, variant=variant)
         # Warmup forwards can mutate aliased metadata buffers, so refresh
         # them again immediately before graph capture records the final views.
@@ -649,7 +649,7 @@ class CudaGraphWrapper:
         )
 
     def _cache_group_ids(self, pool) -> tuple[str, ...]:
-        """Group ids for per-group CUDA-graph capture: real tables only
+        """Group ids for per-group CUDA graph capture: real tables only
         arrive at replay, so capture needs just the ids to allocate its
         persistent per-group buffers."""
         if not getattr(self.attn_backend, "uses_cache_groups", False):
@@ -846,7 +846,7 @@ class CudaGraphWrapper:
         forward_mode: ForwardMode,
         **kwargs,
     ):
-        """Graph-replay path — update persistent cuda-graph buffers in place."""
+        """Graph-replay path — update persistent CUDA graph buffers in place."""
         paged_cache_block_tables = kwargs.pop("paged_cache_block_tables", None)
         paged_cache_block_table_base_offsets = kwargs.pop(
             "paged_cache_block_table_base_offsets", None

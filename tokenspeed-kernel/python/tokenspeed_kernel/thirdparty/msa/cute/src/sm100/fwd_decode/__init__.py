@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 MiniMax
 # SPDX-License-Identifier: MIT
 
-"""CUTE DSL launchers for paged fp8 decode forward."""
+"""CuTe DSL launchers for paged fp8 decode forward."""
 
 from __future__ import annotations
 

@@ -62,7 +62,8 @@ class FilteredTopKKernelVarlen:
         self.num_ctas_per_row = num_ctas_per_row
         self.merge_blocks = merge_blocks
 
-        # Note: now we only support top_k <= 2048, we could change the code here to support larger top_k.
+        # The current implementation supports top_k <= 2048. Increase this
+        # limit when larger top-k values are implemented.
         self.filtered_topk_max_k = 2048
         # 8 bits for radix-based filter.
         self.radix = 256
@@ -232,7 +233,7 @@ class FilteredTopKKernelVarlen:
                     s_num_input[s_num_input_idx] = 0
                     if cutlass.const_expr(self.enable_gmem_store):
                         g_num_input[s_num_input_idx] = 0
-                    # TODO: the difference between 1 and 2.
+                    # TODO: Determine why configurations 1 and 2 differ.
                     s_counter[0] = 0
             # sync among all threads in a cta.
             cute.arch.barrier()
@@ -498,7 +499,7 @@ class FilteredTopKKernelVarlen:
         # Trivial case: length <= top_k
         if length <= self.top_k:
             for i in range(tidx, self.top_k, self.num_threads_per_cta):
-                # TODO: add multi-cta version support here.
+                # TODO: Add multi-CTA support.
                 if i < length:
                     if cutlass.const_expr(self.enable_multi_cta):
                         dst[i] = i + row_start
@@ -728,7 +729,7 @@ class FilteredTopKKernelVarlen:
                             s_num_input.iterator,
                             val_one,
                         )
-                        # TODO: add gmem buffer here.
+                        # TODO: Add a GMEM buffer.
                         if cutlass.const_expr(self.enable_gmem_store):
                             if pos < self.filtered_topk_smem_input_size:
                                 s_input_idx[0, pos] = self.index_type(col_idx)
@@ -745,7 +746,7 @@ class FilteredTopKKernelVarlen:
                                 val_one,
                             )
                         else:
-                            # TODO: how to handle the type of sub_bin and ordered?
+                            # TODO: Determine the types of sub_bin and ordered.
                             if cutlass.const_expr(self.dtype == cutlass.Float32):
                                 ordered = cutlass.Uint32(0)
                                 sub_bin = cutlass.Uint32(0)
@@ -775,7 +776,7 @@ class FilteredTopKKernelVarlen:
                             s_num_input.iterator,
                             val_one,
                         )
-                        # TODO: add gmem buffer here.
+                        # TODO: Add a GMEM buffer.
                         if cutlass.const_expr(self.enable_gmem_store):
                             if pos < self.filtered_topk_smem_input_size:
                                 s_input_idx[0, pos] = self.index_type(col_idx)
@@ -792,7 +793,7 @@ class FilteredTopKKernelVarlen:
                                 val_one,
                             )
                         else:
-                            # TODO: how to handle the type of sub_bin and ordered?
+                            # TODO: Determine the types of sub_bin and ordered.
                             if cutlass.const_expr(self.dtype == cutlass.Float32):
                                 ordered = cutlass.Uint32(0)
                                 sub_bin = cutlass.Uint32(0)
@@ -895,7 +896,7 @@ class FilteredTopKKernelVarlen:
                                             s_num_input.iterator + (r_idx ^ 1),
                                             val_one,
                                         )
-                                        # TODO: remove this if logic for gmem store?
+                                        # TODO: Remove this conditional if GMEM stores permit it.
                                         # num_input < filter_topk_smem_input_size
                                         if cutlass.const_expr(self.enable_gmem_store):
                                             if (
@@ -920,7 +921,7 @@ class FilteredTopKKernelVarlen:
                                                 val_one,
                                             )
                                         else:
-                                            # TODO: how to handle the type of sub_bin and bin32?
+                                            # TODO: Determine the types of sub_bin and bin32.
                                             if cutlass.const_expr(
                                                 self.dtype == cutlass.Float32
                                             ):
@@ -1030,7 +1031,7 @@ class FilteredTopKKernelVarlen:
                     self.top_k,
                     cute.ceil_div(self.top_k, self.num_threads_per_cta),
                     self.num_copy_bits // self.dtype.width,
-                    # TODO: only tested for float32. need to check for other dtypes.
+                    # TODO: Test data types other than FP32.
                     2,
                 )
             )

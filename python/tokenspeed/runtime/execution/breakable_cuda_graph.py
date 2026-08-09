@@ -106,7 +106,7 @@ def current_forward_ctx() -> Any:
 
 
 def weak_ref_tensor(t: Any) -> Any:
-    """Reference a break-point tensor without pinning its cudagraph mempool slot.
+    """Reference a breakpoint tensor without pinning its CUDA graph memory-pool slot.
 
     CUDA tensors are wrapped in a non-owning view (``tokenspeed_kernel``
     ``ops.transform.weak_ref``, an ``at::from_blob`` alias -- the vLLM/sglang

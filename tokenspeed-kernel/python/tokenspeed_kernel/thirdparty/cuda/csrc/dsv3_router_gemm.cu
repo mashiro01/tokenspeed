@@ -115,7 +115,7 @@ struct LoopUnroller<kEnd, kEnd, kHiddenDim, ADtype, BDtype> {
     if (num_tokens == kEnd) {
       invokeRouterGemmFloatOutput<ADtype, BDtype, kEnd, kHiddenDim>(output, input, weights, num_experts, enable_pdl, stream);
     } else {
-      throw std::invalid_argument("Invalid num_tokens, only supports 1 to 32");
+      throw std::invalid_argument("Invalid num_tokens; only 1 to 32 are supported");
     }
   }
 };
@@ -198,7 +198,7 @@ void dsv3_router_gemm(TensorView output, TensorView mat_a, TensorView mat_b, boo
   const bool b_is_fp32 = (mat_b.dtype() == dl_float32);
 
   // If weights are fp32, cast mat_a to fp32 then GEMM (fp32 x fp32 -> fp32).
-  // Do not try bf16 x fp32 GEMM first; it can introduce accuracy drift vs torch fp32 reference.
+  // Do not try bf16 x fp32 GEMM first; it can introduce accuracy drift versus PyTorch fp32 reference.
   if (b_is_fp32) {
     const int64_t numel = static_cast<int64_t>(num_tokens) * static_cast<int64_t>(hidden_dim);
     Tensor a_fp32_tensor = alloc_tensor({numel}, dl_float32, device);

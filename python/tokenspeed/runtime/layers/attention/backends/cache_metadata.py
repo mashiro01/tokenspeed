@@ -194,7 +194,7 @@ class CacheBatchMetadata:
             raise KeyError(f"missing paged cache group {group_id!r}") from None
 
     def require_full_attention_table(self, *, active_forward_op: Any) -> torch.Tensor:
-        """Return the unique full-history history-group table.
+        """Return the unique full-history group table.
 
         Args:
             active_forward_op: The scheduler forward operation this batch is

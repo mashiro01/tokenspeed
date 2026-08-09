@@ -69,7 +69,7 @@ def seq_idx_from_cu_seqlens(
     Returns:
         Int32 tensor ``[T]`` where entry ``t`` is the sequence index that
         token ``t`` belongs to. Indices are clamped to ``B - 1`` so that
-        tokens beyond ``cu_seqlens[-1]`` (e.g. CUDA-graph warmup padding with
+        tokens beyond ``cu_seqlens[-1]`` (e.g. CUDA graph warmup padding with
         dummy zero-length sequences) stay in range.
     """
     t = torch.arange(total_tokens, dtype=torch.int64, device=cu_seqlens.device)

@@ -18,7 +18,7 @@
 """store_sf_interleaved: MXFP8 scale scatter into the FA4 atom layout.
 
 Bit-exactness is pinned two ways:
-  1. Against a pure-torch scatter that applies the documented mapping
+  1. Against a pure-PyTorch scatter that applies the documented mapping
      (token at page offset t -> packed-u32 position (t%32)*4 + t//32).
   2. Against the FA4 fork's own ``interleave_sf`` (the layout's source of
      truth) for a full contiguous page, when the fork is installed.

@@ -165,7 +165,7 @@ def get_available_gpu_memory(
         if torch.cuda.current_device() != gpu_id:
             logger.debug(
                 "Current device is not %s, but %s, which may cause useless "
-                "memory allocation for torch CUDA context.",
+                "memory allocation for the PyTorch CUDA context.",
                 gpu_id,
                 torch.cuda.current_device(),
             )
@@ -247,7 +247,7 @@ def _load_image(
     gpu_image_decode: bool = True,
 ) -> torch.Tensor | Image.Image:
     """
-    Try to decode JPEG with nvJPEG on GPU and return a torch device tensor,
+    Try to decode a JPEG with nvJPEG on the GPU and return a PyTorch device tensor,
     otherwise fallback to decode with PIL on CPU and return a PIL Image.
     """
     if image_file != "":
@@ -606,7 +606,7 @@ prometheus_multiproc_dir: tempfile.TemporaryDirectory
 def set_prometheus_multiproc_dir():
     # Set prometheus multiprocess directory
     # tokenspeed uses prometheus multiprocess mode
-    # we need to set this before importing prometheus_client
+    # Set this value before importing prometheus_client.
     # https://prometheus.github.io/client_python/multiprocess/
     global prometheus_multiproc_dir
 
@@ -622,7 +622,7 @@ def set_prometheus_multiproc_dir():
 
 
 def add_prometheus_middleware(app):
-    # We need to import prometheus_client after setting the env variable `PROMETHEUS_MULTIPROC_DIR`
+    # Import prometheus_client after setting ``PROMETHEUS_MULTIPROC_DIR``.
     from prometheus_client import CollectorRegistry, make_asgi_app, multiprocess
 
     registry = CollectorRegistry()
@@ -641,7 +641,7 @@ def get_amdgpu_memory_capacity():
             "PyTorch build are installed and accessible."
         )
 
-    # Query each visible device's total memory (bytes) via the torch API
+    # Query each visible device's total memory (bytes) via the PyTorch API
     # (torch.cuda is reused for ROCm/HIP), and return the minimum in MiB so
     # the value matches the previous rocminfo-based implementation.
     memory_values = [
@@ -997,7 +997,7 @@ def find_local_repo_dir(repo_id: str, revision: str | None = None) -> str | None
 
 
 def read_system_prompt_from_file(model_name: str) -> str:
-    """Read system prompt from a file in the HuggingFace cache directory.
+    """Read system prompt from a file in the Hugging Face cache directory.
 
     Args:
         model_name: The model name to construct the file path

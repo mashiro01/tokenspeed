@@ -20,7 +20,7 @@
 
 """Fused TopK + TopP renormalization kernel wrapper.
 
-Matches the result of flashinfer's ``top_k_renorm_prob`` followed by
+Matches the result of FlashInfer's ``top_k_renorm_prob`` followed by
 ``top_p_renorm_prob(..., is_deterministic=True)`` in one launch sequence.
 """
 

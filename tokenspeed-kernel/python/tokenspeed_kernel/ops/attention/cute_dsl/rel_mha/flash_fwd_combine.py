@@ -228,7 +228,8 @@ class FlashAttentionForwardCombine:
         if const_expr(mLSE is not None and mLSE.element_type not in [Float32]):
             raise TypeError("LSE tensor must be Float32")
 
-        # Shape validation - input tensors are in user format, need to be converted to kernel format
+        # Validate shapes after converting input tensors from user format to
+        # kernel format.
         if const_expr(len(mO_partial.shape) not in [4, 5]):
             raise ValueError(
                 "O partial tensor must have 4 or 5 dimensions: (num_splits, batch, seqlen, nheads, headdim) or (num_splits, total_q, nheads, headdim)"
@@ -417,7 +418,7 @@ class FlashAttentionForwardCombine:
             seqlen_static=mO_partial.shape[0],
             cu_seqlens=cu_seqlens,
             seqused=seqused,
-            # Don't need to pass in tile size since we won't use offset_padded
+            # Omit the tile size because offset_padded is unused.
         )
         seqlen, offset = seqlen_info.seqlen, seqlen_info.offset
 
@@ -470,7 +471,8 @@ class FlashAttentionForwardCombine:
                             )
                         else:
                             tLSEsLSE[None, s, m].fill(-Float32.inf)
-                # Don't need to zero out the rest of the LSEs, as we will not write the output to gmem
+                # Leave the remaining LSEs unchanged because their outputs are
+                # not written to global memory.
             cute.arch.cp_async_commit_group()
 
             # ===============================
@@ -677,7 +679,8 @@ class FlashAttentionForwardCombine:
 
                 # Wait for the current stage to be ready
                 cute.arch.cp_async_wait_group(self.stages - 1)
-                # We don't need __syncthreads() because each thread is just reading its own data from smem
+                # No __syncthreads() is required because each thread reads only
+                # its own shared-memory data.
                 # Copy from smem to registers
                 cute.autovec_copy(
                     tOsO_partial[None, None, None, stage_compute], tOrO_partial
