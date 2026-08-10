@@ -277,6 +277,54 @@ class K3DSparkDecoderLayer(nn.Module):
         return norm(hidden_states, residual)
 
 
+class K3DSparkConfidenceHead(nn.Module):
+    """Predict conditional draft-token acceptance from DSpark state.
+
+    The published checkpoint stores a single linear head over the draft hidden
+    state and, when configured, the rank-256 Markov embedding of the preceding
+    token. It emits logits so sequential temperature scaling can operate before
+    the sigmoid without a lossy probability round trip.
+    """
+
+    def __init__(self, config, prefix: str = "") -> None:
+        super().__init__()
+        self.with_markov = bool(config.confidence_head_with_markov)
+        input_size = int(config.hidden_size)
+        if self.with_markov:
+            input_size += int(config.markov_rank)
+        self.proj = ReplicatedLinear(
+            input_size,
+            1,
+            bias=True,
+            quant_config=None,
+            prefix=add_prefix("proj", prefix),
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        previous_embeddings: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.with_markov:
+            if previous_embeddings is None:
+                raise ValueError(
+                    "K3 DSpark confidence head requires a previous-token "
+                    "Markov embedding."
+                )
+            if hidden_states.shape[:-1] != previous_embeddings.shape[:-1]:
+                raise ValueError(
+                    "K3 DSpark confidence hidden states and Markov embeddings "
+                    "must share leading dimensions."
+                )
+            features = torch.cat(
+                [hidden_states, previous_embeddings.to(hidden_states.dtype)], dim=-1
+            )
+        else:
+            features = hidden_states
+        logits, _ = self.proj(features)
+        return logits.squeeze(-1)
+
+
 class K3DSparkModel(nn.Module):
     """The draft network. Interface-compatible with ``DFlashDraftModel``."""
 
@@ -324,6 +372,13 @@ class K3DSparkModel(nn.Module):
         self.markov_head = VanillaMarkov(
             vocab_size=int(config.vocab_size),
             markov_rank=int(config.markov_rank),
+        )
+        self.confidence_head = (
+            K3DSparkConfidenceHead(
+                config, prefix=add_prefix("confidence_head", prefix)
+            )
+            if bool(config.enable_confidence_head)
+            else None
         )
         # Names the DFlash drafter reads off the draft model.
         self.block_size = None
@@ -394,6 +449,23 @@ class K3DSparkModel(nn.Module):
         if self._projected_context_dtype is None:
             raise RuntimeError("K3 DSpark projected context dtype is not configured")
         return self._projected_context_dtype
+
+    @torch.no_grad()
+    def predict_confidence(
+        self,
+        hidden_states: torch.Tensor,
+        previous_token_ids: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """Return per-candidate conditional acceptance logits, if available."""
+
+        if self.confidence_head is None:
+            return None
+        previous_embeddings = None
+        if self.confidence_head.with_markov:
+            previous_embeddings = self.markov_head.get_prev_latent(
+                previous_token_ids.clamp(0, int(self.config.vocab_size) - 1)
+            )
+        return self.confidence_head(hidden_states, previous_embeddings)
 
     @torch.no_grad()
     def write_context_kv(

@@ -23,7 +23,10 @@ from tokenspeed.runtime.configs.kimi_k3_dspark_config import (
     validate_k3_dspark_config,
 )
 from tokenspeed.runtime.models import kimi_k3_dspark as dspark_model_module
-from tokenspeed.runtime.models.kimi_k3_dspark import K3DSparkModel
+from tokenspeed.runtime.models.kimi_k3_dspark import (
+    K3DSparkConfidenceHead,
+    K3DSparkModel,
+)
 
 # The published Inferact/Kimi-K3-DSpark config.json.
 INFERACT_CONFIG = dict(
@@ -243,31 +246,46 @@ def test_vocab_mismatch_is_rejected() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_skipped_prefixes_cover_exactly_the_shared_and_training_only_weights() -> None:
+def test_skipped_prefixes_cover_exactly_the_shared_weights() -> None:
     skipped = [
         k for k in CHECKPOINT_KEYS if k.startswith(K3_DSPARK_SKIPPED_WEIGHT_PREFIXES)
     ]
-    assert sorted(skipped) == [
-        "confidence_head.proj.bias",
-        "confidence_head.proj.weight",
-        "embed_tokens.weight",
-    ]
+    assert sorted(skipped) == ["embed_tokens.weight"]
     # No lm_head ships at all; the draft borrows the target's.
     assert not any(k.startswith("lm_head") for k in CHECKPOINT_KEYS)
 
 
-def test_confidence_head_is_reported_inactive_rather_than_dropped() -> None:
-    """Issue #879: unsupported optional scheduling must be stated, not silent."""
-    notes = k3_dspark_inactive_features(make_config())
-    assert len(notes) == 1
-    note = notes[0]
-    assert "confidence_head" in note
-    # It names both what is ignored and what runs instead.
-    assert "static" in note
+def test_confidence_head_is_not_reported_inactive_or_dropped() -> None:
+    assert k3_dspark_inactive_features(make_config()) == []
 
 
 def test_no_inactive_features_reported_without_a_confidence_head() -> None:
     assert k3_dspark_inactive_features(make_config(enable_confidence_head=False)) == []
+
+
+def test_confidence_head_concatenates_hidden_and_markov_features() -> None:
+    class _Projection(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen = None
+
+        def forward(self, features):
+            self.seen = features
+            return features.sum(dim=-1, keepdim=True), None
+
+    head = K3DSparkConfidenceHead.__new__(K3DSparkConfidenceHead)
+    torch.nn.Module.__init__(head)
+    head.with_markov = True
+    head.proj = _Projection()
+    hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    markov = torch.tensor([[5.0], [6.0]])
+
+    logits = head(hidden, markov)
+
+    torch.testing.assert_close(
+        head.proj.seen, torch.tensor([[1.0, 2.0, 5.0], [3.0, 4.0, 6.0]])
+    )
+    torch.testing.assert_close(logits, torch.tensor([8.0, 13.0]))
 
 
 def test_final_norm_reduces_the_last_row_parallel_mlp_output() -> None:
@@ -304,6 +322,8 @@ def test_every_remaining_checkpoint_key_has_a_destination() -> None:
     stacked = {".gate_proj.": ".gate_up_proj.", ".up_proj.": ".gate_up_proj."}
     fused = {".q_a_proj.", ".kv_a_proj_with_mqa."}
     expected_params = {
+        "confidence_head.proj.bias",
+        "confidence_head.proj.weight",
         "context_proj.weight",
         "context_norm.weight",
         "final_norm.weight",

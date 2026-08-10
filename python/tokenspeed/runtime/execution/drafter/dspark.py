@@ -15,10 +15,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Static DSpark drafter.
+"""K3 DSpark drafter with Markov proposals and confidence emission.
 
-This is the minimal static configuration: greedy sampling, vanilla Markov head,
-fixed verify window (verify-all). No confidence head / SPS-STS / ragged verify.
+The target-input path remains fixed-width until ragged verify packing is
+enabled, but this drafter loads the checkpoint confidence head and emits
+per-position logits for every drafted block. That permits calibration and later
+scheduling without changing the model's weight contract again.
 """
 
 from __future__ import annotations
@@ -45,6 +47,19 @@ class DSpark(DFlash):
                 "DSPARK requires the draft model to define a markov_head "
                 "(use a DSparkDraftModel checkpoint with markov_rank > 0)."
             )
+        self.confidence_head = getattr(self.model, "confidence_head", None)
+        if self.confidence_head is not None and not hasattr(
+            self.model, "predict_confidence"
+        ):
+            raise ValueError(
+                "K3 DSpark confidence head requires model.predict_confidence."
+            )
+        self.confidence_logits_buf = torch.empty(
+            (self.input_buffers.max_bs, self.draft_block_size),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self._last_confidence_logits: torch.Tensor | None = None
 
     @nvtx_range("dspark_sample_block", color="purple")
     def _sample_block(
@@ -55,20 +70,41 @@ class DSpark(DFlash):
     ) -> torch.Tensor:
         """Semi-autoregressive greedy proposal over the block positions."""
         next_tokens[:, 0] = block_ids[:, 0]
+        confidence_logits = (
+            self.confidence_logits_buf[: draft_hidden.shape[0]]
+            if self.confidence_head is not None
+            else None
+        )
         for k in range(1, self.spec_num_tokens):
             # The Markov head embeds the previous token, so it must be in range
             # before this step, not after the loop: the anchor comes from the
             # target's last output (garbage during warmup) and each proposal
             # from a vocab-parallel argmax that can lose every shard. An
             # out-of-range id here indexes past the embedding table.
-            bias_fn = self._make_step_bias_fn(next_tokens[:, k - 1])
+            previous_tokens = next_tokens[:, k - 1]
+            if confidence_logits is not None:
+                confidence = self.model.predict_confidence(
+                    draft_hidden[:, k - 1, :], previous_tokens
+                )
+                if confidence is None:
+                    raise RuntimeError(
+                        "K3 DSpark confidence head disappeared during drafting."
+                    )
+                confidence_logits[:, k - 1].copy_(confidence.float())
+            bias_fn = self._make_step_bias_fn(previous_tokens)
             self._greedy_argmax_vocab_parallel(
                 draft_hidden[:, k - 1, :],
                 out=next_tokens[:, k],
                 bias_fn=bias_fn,
             )
         next_tokens.clamp_(min=0)
+        self._last_confidence_logits = confidence_logits
         return next_tokens
+
+    def get_last_confidence_logits(self) -> torch.Tensor | None:
+        """Return the last drafted block's [batch, draft_tokens] head logits."""
+
+        return self._last_confidence_logits
 
     def _make_step_bias_fn(self, prev_tokens: torch.Tensor):
         """Build the per-position additive-bias hook for the Markov head.

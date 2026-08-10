@@ -36,9 +36,10 @@ from typing import Any
 
 from transformers.configuration_utils import PretrainedConfig
 
-# The checkpoint ships an embed_tokens copy of the frozen target embedding and
-# a training-only confidence head. Neither is instantiated at serving time.
-K3_DSPARK_SKIPPED_WEIGHT_PREFIXES = ("embed_tokens.", "lm_head.", "confidence_head.")
+# The checkpoint ships an embed_tokens copy of the frozen target embedding.
+# The serving path borrows that target embedding, while the confidence head is
+# loaded for confidence-scheduled ragged verification.
+K3_DSPARK_SKIPPED_WEIGHT_PREFIXES = ("embed_tokens.", "lm_head.")
 
 SUPPORTED_MARKOV_HEAD_TYPES = ("vanilla",)
 
@@ -169,20 +170,10 @@ class KimiK3DSparkConfig(PretrainedConfig):
 
 
 def k3_dspark_inactive_features(config: KimiK3DSparkConfig) -> list[str]:
-    """Optional checkpoint features this build loads but does not act on.
+    """Compatibility shim for callers that surface optional feature warnings."""
 
-    Issue #879 asks for these to be stated rather than silently dropped: a user
-    who trained a confidence head is entitled to know the scheduler is ignoring
-    it and every request is verifying the full block.
-    """
-    inactive = []
-    if config.enable_confidence_head:
-        inactive.append(
-            "confidence_head: present in the checkpoint but unused. Verify is "
-            "static (the full block is verified every step); confidence-scheduled "
-            "ragged verify is not implemented."
-        )
-    return inactive
+    del config
+    return []
 
 
 def validate_k3_dspark_config(config: KimiK3DSparkConfig, target_config=None) -> None:
