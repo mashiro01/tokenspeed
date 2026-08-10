@@ -7,6 +7,12 @@ from tokenspeed.runtime.configs.kimi_k3_config import KimiLinearConfig
 from tokenspeed.runtime.layers.attention.kv_cache.hybrid_kda import (
     HybridKDATokenToKVPool,
 )
+from tokenspeed.runtime.layers.attention.kv_cache.recipes.plan import (
+    CacheFieldLayout,
+    CacheGroupLayout,
+    CacheMemoryPlan,
+    CachePlaneLayout,
+)
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.kimi_k3 import (
     kimi_k3_layer_group_ids,
     solve_kimi_k3_cache_layout,
@@ -17,6 +23,52 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.spec import (
     build_paged_cache_group_specs,
 )
 
+
+def test_kimi_k3_pool_binds_heterogeneous_latent_cache_storage_dtypes() -> None:
+    plan = CacheMemoryPlan(
+        logical_block_tokens=2,
+        lcm_block_bytes=24,
+        num_lcm_blocks=1,
+        groups=(
+            CacheGroupLayout("target", cache_blocks_per_lcm_block=1, page_count=2),
+            CacheGroupLayout("draft", cache_blocks_per_lcm_block=1, page_count=2),
+        ),
+        planes=(
+            CachePlaneLayout("target", bytes_per_lcm_block=8, arena_offset_bytes=0),
+            CachePlaneLayout("draft", bytes_per_lcm_block=16, arena_offset_bytes=16),
+        ),
+        fields=(
+            CacheFieldLayout(
+                "target", "layer.0.latent_kv", "target", (2, 4), 1, 0, 8
+            ),
+            CacheFieldLayout(
+                "draft", "layer.1.latent_kv", "draft", (2, 4), 2, 0, 16
+            ),
+        ),
+    )
+    pool = HybridKDATokenToKVPool(
+        size=2,
+        model_dtype=torch.bfloat16,
+        dtype=torch.float8_e4m3fn,
+        quant_method=None,
+        kv_lora_rank=3,
+        qk_rope_head_dim=1,
+        layer_num=2,
+        device="cpu",
+        enable_memory_saver=False,
+        page_size=2,
+        rank=0,
+        layer_types=(FULL_ATTENTION, FULL_ATTENTION),
+        layer_group_ids=("target", "draft"),
+        field_dtypes={
+            "layer.0.latent_kv": torch.float8_e4m3fn,
+            "layer.1.latent_kv": torch.bfloat16,
+        },
+        memory_plan=plan,
+    )
+
+    assert pool.get_component(0, "latent_kv").dtype == torch.uint8
+    assert pool.get_component(1, "latent_kv").dtype == torch.bfloat16
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_kimi_k3_pool_binds_mla_and_kda_to_one_lcm_backing() -> None:

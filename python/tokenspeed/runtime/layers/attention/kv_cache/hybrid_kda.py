@@ -45,6 +45,7 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
         layer_types: tuple[str, ...],
         logical_layer_ids: tuple[int, ...] | None = None,
         pd_disaggregation_enabled: bool = False,
+        field_dtypes: Mapping[str, torch.dtype] | None = None,
         state_field_dtypes: Mapping[str, torch.dtype] | None = None,
         **kwargs,
     ):
@@ -57,6 +58,7 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
         )
         self._group_ids_by_layer = dict(enumerate(group_ids))
         self._pd_disaggregation_enabled = pd_disaggregation_enabled
+        self._field_dtypes = dict(field_dtypes or {})
         self._state_field_dtypes = dict(state_field_dtypes or {})
         self._state_buffers_by_layer: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         self.paged_cache_requires_page_zeroing = True
@@ -124,7 +126,10 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
                 )
                 self._state_buffers_by_layer[layer_id] = (conv, recurrent)
                 continue
-            latent = self.field(f"layer.{logical_layer_id}.latent_kv", self.store_dtype)
+            latent = self.field(
+                f"layer.{logical_layer_id}.latent_kv",
+                self._latent_storage_dtype(logical_layer_id),
+            )
             page_elements = int(np.prod(latent.shape[1:]))
             if latent.stride(0) != page_elements:
                 raise ValueError(
@@ -155,6 +160,15 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
         except KeyError as exc:
             raise ValueError(f"layer {layer_id} has no cache group") from exc
 
+    def _latent_storage_dtype(self, logical_layer_id: int) -> torch.dtype:
+        field_id = f"layer.{logical_layer_id}.latent_kv"
+        logical_dtype = self._field_dtypes.get(field_id)
+        if logical_dtype is None:
+            return self.store_dtype
+        if str(logical_dtype).startswith("torch.float8_"):
+            return torch.uint8
+        return logical_dtype
+
     def get_component(self, layer_id: int, component_name: str) -> torch.Tensor:
         if self.layerwise_load_tracker is not None:
             self.layerwise_load_tracker.wait_for_layer(layer_id)
@@ -163,7 +177,10 @@ class HybridKDATokenToKVPool(MLATokenToKVPool):
             if buffer is None:
                 raise ValueError(f"layer {layer_id} has no MLA latent cache")
             logical_layer_id = self._logical_layer_ids[layer_id]
-            return self.field(f"layer.{logical_layer_id}.latent_kv", self.store_dtype)
+            return self.field(
+                f"layer.{logical_layer_id}.latent_kv",
+                self._latent_storage_dtype(logical_layer_id),
+            )
         try:
             conv, recurrent = self._state_buffers_by_layer[layer_id]
         except KeyError as exc:
