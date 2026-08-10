@@ -659,6 +659,7 @@ def _create_draft_components(
     pool,
     cache_spec: CachePoolSpec | None,
     num_target_layers: int,
+    draft_logical_layer_offset: int | None,
     full_attn_backend_name: str | None,
     is_hybrid_linear: bool,
     is_kda: bool,
@@ -701,10 +702,15 @@ def _create_draft_components(
     # convention) is this map's INVERSE and would route every draft write to
     # the target's first layers. Global ids (V4 MTP layers carry them) pass
     # through _map's identity default unharmed.
+    draft_layer_offset = (
+        draft_logical_layer_offset
+        if draft_logical_layer_offset is not None
+        else num_target_layers
+    )
     draft_pool = LayerMappedKVPool(
         pool,
-        [num_target_layers + local for local in range(num_layers)],
-        layer_map={local: num_target_layers + local for local in range(num_layers)},
+        [draft_layer_offset + local for local in range(num_layers)],
+        layer_map={local: draft_layer_offset + local for local in range(num_layers)},
     )
     if is_hybrid_linear:
         backend = _create_hybrid_linear_attn_backend(
@@ -801,9 +807,15 @@ def create_attn_components(
         if draft_model_config is not None
         else []
     )
-    is_dspark_draft_model = any(
+    is_deepseek_v4_dspark_draft_model = any(
         architecture == "DeepseekV4ForCausalLMDSpark"
         for architecture in draft_architectures
+    )
+    is_k3_dspark_draft_model = any(
+        architecture == "K3DSparkModel" for architecture in draft_architectures
+    )
+    is_dspark_draft_model = (
+        is_deepseek_v4_dspark_draft_model or is_k3_dspark_draft_model
     )
     is_deepseek_v4_draft_model = (
         draft_model_config is not None
@@ -883,7 +895,7 @@ def create_attn_components(
     )
     draft_attn_config = (
         _create_attn_config(server_args, draft_model_config, is_draft=True)
-        if draft_model_config and not is_dspark_draft_model
+        if draft_model_config and not is_deepseek_v4_dspark_draft_model
         else None
     )
     if is_deepseek_v4_draft_model:
@@ -909,14 +921,18 @@ def create_attn_components(
         else:
             draft_full_attn_backend_name = draft_attn_config.backend_name
     draft_cache_family = _ordinary_cache_family(draft_attn_config)
-    heterogeneous_draft_family = _resolve_heterogeneous_draft_family(
-        cache_family,
-        draft_cache_family,
-        pd_disaggregation_enabled=config.pd_disaggregation_enabled
-        or (
-            draft_attn_config is not None
-            and draft_attn_config.pd_disaggregation_enabled
-        ),
+    heterogeneous_draft_family = (
+        None
+        if is_k3_dspark_draft_model
+        else _resolve_heterogeneous_draft_family(
+            cache_family,
+            draft_cache_family,
+            pd_disaggregation_enabled=config.pd_disaggregation_enabled
+            or (
+                draft_attn_config is not None
+                and draft_attn_config.pd_disaggregation_enabled
+            ),
+        )
     )
     pipeline = server_args.mapping.pipeline
     if pipeline.stage_count > 1:
@@ -1024,13 +1040,19 @@ def create_attn_components(
         is_kda=is_hybrid_mla_kda,
         is_inkling=is_inkling,
     )
+    draft_components_enabled = (
+        not is_k3_dspark_draft_model
+        or pipeline.stage_count == 1
+        or pipeline.is_first_stage
+    )
     draft_attn_backend, draft_pool = _create_draft_components(
         server_args=server_args,
-        model_config=draft_model_config,
-        config=draft_attn_config,
+        model_config=(draft_model_config if draft_components_enabled else None),
+        config=(draft_attn_config if draft_components_enabled else None),
         pool=pool,
         cache_spec=draft_view_spec,
         num_target_layers=cache_setup.num_target_layers,
+        draft_logical_layer_offset=cache_setup.draft_logical_layer_offset,
         full_attn_backend_name=draft_full_attn_backend_name,
         is_hybrid_linear=draft_is_hybrid_gdn or draft_is_hybrid_mla_kda,
         is_kda=draft_is_hybrid_mla_kda,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 
 _TEST_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(_TEST_DIR))
@@ -12,9 +13,11 @@ import pytest
 import torch
 
 from tokenspeed.runtime.configs.kimi_k3_config import KimiLinearConfig
+from tokenspeed.runtime.configs.kimi_k3_dspark_config import KimiK3DSparkConfig
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.kimi_k3 import (
     FULL_ATTENTION,
     LINEAR_ATTENTION,
+    _build_kimi_k3_pipeline_cache_contract,
     _kimi_k3_global_cache_field_dtypes,
     build_kimi_k3_logical_cache_fields,
     kimi_k3_layer_group_ids,
@@ -25,6 +28,7 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.kimi_k3 import (
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.stage_layout import (
     CacheStagePlacement,
     pipeline_cache_abi_digest,
+    solve_stage_cache_layout,
 )
 from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
     build_balanced_kimi_k3_pipeline_plan,
@@ -166,6 +170,82 @@ def test_pipeline_cache_dtype_abi_is_global_across_stages() -> None:
             conv_dtype=conv_dtype,
             recurrent_dtype=recurrent_dtype,
         )
+
+
+def test_pp8_dspark_cache_owns_draft_planes_on_pp0_only() -> None:
+    text_config = KimiLinearConfig()
+    draft_config = KimiK3DSparkConfig(
+        target_layer_ids=[2, 23, 47, 71, 89],
+        mask_token_id=0,
+    )
+    attn_config = SimpleNamespace(
+        attn_tp_size=8,
+        kv_cache_dtype=torch.bfloat16,
+        kv_cache_quant_method=None,
+        dtype=torch.bfloat16,
+        kv_lora_rank=draft_config.kv_lora_rank,
+        qk_rope_head_dim=draft_config.qk_rope_head_dim,
+    )
+    contract = _build_kimi_k3_pipeline_cache_contract(
+        text_config=text_config,
+        attn_config=attn_config,
+        draft_model_config=SimpleNamespace(hf_config=draft_config),
+        draft_attn_config=attn_config,
+        stage_count=8,
+    )
+
+    assert contract.dspark_placement is not None
+    assert contract.dspark_placement.draft_owner_stage_id == 0
+    assert contract.auxiliary_logical_layer_ids_by_stage == (
+        (93, 94, 95, 96, 97),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+    )
+    assert len(contract.logical_fields) == 167
+    assert len(contract.global_layout.plane_bytes) == 29
+    assert tuple(contract.global_group_ids[-5:]) == (FULL_ATTENTION,) * 5
+
+    pp0 = CacheStagePlacement.from_pipeline_plan(
+        rank=0,
+        world_size=64,
+        plan=contract.pipeline_plan,
+        auxiliary_logical_layer_ids_by_stage=(
+            contract.auxiliary_logical_layer_ids_by_stage
+        ),
+    )
+    pp7 = CacheStagePlacement.from_pipeline_plan(
+        rank=56,
+        world_size=64,
+        plan=contract.pipeline_plan,
+        auxiliary_logical_layer_ids_by_stage=(
+            contract.auxiliary_logical_layer_ids_by_stage
+        ),
+    )
+    layouts = [
+        solve_stage_cache_layout(
+            contract.logical_fields,
+            placement,
+            logical_block_tokens=128,
+            cache_blocks_per_lcm_block=dict(contract.global_layout.group_packing),
+            max_padding_fraction=float("inf"),
+            compact_group_planes=True,
+        )
+        for placement in (pp0, pp7)
+    ]
+
+    assert tuple(binding.logical_layer_id for binding in layouts[0].bindings)[-5:] == (
+        93,
+        94,
+        95,
+        96,
+        97,
+    )
+    assert all(binding.logical_layer_id < 93 for binding in layouts[1].bindings)
 
 
 def test_lcm_geometry_packs_two_kda_pages_at_tp16() -> None:

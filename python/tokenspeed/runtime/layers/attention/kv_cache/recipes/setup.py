@@ -300,6 +300,10 @@ class CacheSetup:
     num_draft_layers: int
     cache_budget_bytes: int
     fixed_workspace_bytes: int
+    # Pipeline stages can hold a local target subset plus draft continuation
+    # layers whose logical ids remain global. ``None`` preserves the legacy
+    # continuation convention (immediately after this spec's target layers).
+    draft_logical_layer_offset: int | None = None
 
     @property
     def num_target_layers(self) -> int:

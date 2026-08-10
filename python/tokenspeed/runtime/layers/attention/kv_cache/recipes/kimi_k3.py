@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -24,6 +25,7 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.ordinary import (
 )
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.plan import (
     CacheFieldSpec,
+    CacheLayout,
     CacheMemoryPlan,
     continue_layer_fields,
     solve_cache_layout,
@@ -36,6 +38,10 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.stage_layout import (
 )
 from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
     build_balanced_kimi_k3_pipeline_plan,
+)
+from tokenspeed.runtime.pipeline.kimi_k3_dspark import (
+    KimiK3DSparkPlacement,
+    resolve_kimi_k3_dspark_placement,
 )
 
 _KIMI_K3_LAYERS = 93
@@ -54,6 +60,21 @@ _PIPELINE_DTYPE_ELEMENT_SIZES = {
     "float64": 8,
 }
 
+
+@dataclass(frozen=True)
+class _KimiK3PipelineCacheContract:
+    """Global K3 cache ABI plus the local-only DSpark placement facts."""
+
+    pipeline_plan: object
+    logical_fields: tuple[LogicalCacheFieldSpec, ...]
+    global_layout: CacheLayout
+    global_layer_types: tuple[str, ...]
+    global_group_ids: tuple[str, ...]
+    logical_field_dtypes: dict[str, torch.dtype]
+    auxiliary_logical_layer_ids_by_stage: tuple[tuple[int, ...], ...]
+    draft_layer_offset: int | None
+    dspark_placement: KimiK3DSparkPlacement | None
+
 if TYPE_CHECKING:
     from tokenspeed.runtime.configs.kimi_k3_config import KimiLinearConfig
 
@@ -68,6 +89,153 @@ def _require_non_negative_int(name: str, value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
     return value
+
+
+def _is_k3_dspark_draft_config(draft_model_config) -> bool:
+    """Return whether a draft config is K3's MLA-native DSpark checkpoint."""
+
+    if draft_model_config is None:
+        return False
+    config = getattr(draft_model_config, "hf_config", draft_model_config)
+    architectures = getattr(config, "architectures", None) or ()
+    return (
+        getattr(config, "model_type", None) == "k3_dspark"
+        or "K3DSparkModel" in architectures
+    )
+
+
+def _build_kimi_k3_pipeline_cache_contract(
+    *,
+    text_config,
+    attn_config,
+    draft_model_config,
+    draft_attn_config,
+    stage_count: int,
+) -> _KimiK3PipelineCacheContract:
+    """Build the rank-independent K3 PP cache and DSpark ownership ABI.
+
+    The target's 93 logical layers remain a strict contiguous PP partition.
+    A K3 DSpark draft contributes five continuation layers, but their cache
+    fields are explicitly owned by PP0 only. This is distinct from loading a
+    five-layer draft on every PP rank: only the owner stage consumes the
+    additional HBM while the global cache ABI remains identical everywhere.
+    """
+
+    global_group_ids = kimi_k3_layer_group_ids(text_config)
+    global_layer_types = tuple(
+        FULL_ATTENTION if group_id == FULL_ATTENTION else LINEAR_ATTENTION
+        for group_id in global_group_ids
+    )
+    logical_fields = build_kimi_k3_logical_cache_fields(
+        text_config,
+        tp_size=attn_config.attn_tp_size,
+        mla_cache_dtype=attn_config.kv_cache_dtype,
+        mla_quant_method=attn_config.kv_cache_quant_method or None,
+    )
+    draft_layer_offset = None
+    dspark_placement = None
+    auxiliary_logical_layer_ids_by_stage: tuple[tuple[int, ...], ...] = ()
+    pipeline_kwargs = {}
+    draft_fields = None
+
+    if draft_model_config is not None:
+        if not _is_k3_dspark_draft_config(draft_model_config):
+            raise ValueError(
+                "Kimi-K3 pipeline cache only supports K3DSparkModel as a "
+                "speculative draft"
+            )
+        if draft_attn_config is None:
+            raise ValueError(
+                "Kimi-K3 DSpark pipeline cache requires a draft MLA attention "
+                "configuration"
+            )
+        from tokenspeed.runtime.configs.kimi_k3_dspark_config import (
+            validate_k3_dspark_config,
+        )
+
+        draft_config = draft_model_config.hf_config
+        validate_k3_dspark_config(draft_config, text_config)
+        if draft_attn_config.attn_tp_size != attn_config.attn_tp_size:
+            raise ValueError(
+                "Kimi-K3 DSpark draft and target must use the same tensor "
+                "parallel size"
+            )
+
+        num_draft_layers = int(draft_config.num_hidden_layers)
+        draft_layer_offset = int(text_config.num_hidden_layers)
+        draft_fields = mla_cache_fields(
+            layer_group_ids=(FULL_ATTENTION,) * num_draft_layers,
+            logical_block_tokens=_KIMI_K3_LOGICAL_BLOCK_TOKENS,
+            latent_width=(
+                draft_attn_config.kv_lora_rank
+                + draft_attn_config.qk_rope_head_dim
+            ),
+            element_size=draft_attn_config.kv_cache_dtype.itemsize,
+        )
+        continued_draft_fields = continue_layer_fields(
+            draft_fields,
+            first_layer_id=draft_layer_offset,
+        )
+        logical_fields = logical_fields + tuple(
+            LogicalCacheFieldSpec(draft_layer_offset + layer_id, field)
+            for layer_id, field in enumerate(continued_draft_fields)
+        )
+        global_layer_types = global_layer_types + (FULL_ATTENTION,) * num_draft_layers
+        global_group_ids = global_group_ids + (FULL_ATTENTION,) * num_draft_layers
+        auxiliary_logical_layer_ids_by_stage = (
+            tuple(range(draft_layer_offset, draft_layer_offset + num_draft_layers)),
+            *((),) * (stage_count - 1),
+        )
+        pipeline_kwargs = {
+            "dspark_context_hidden_size": int(draft_config.hidden_size),
+            "dspark_context_dtype": "float32",
+        }
+
+    global_layout = solve_kimi_k3_cache_layout(
+        text_config,
+        tp_size=attn_config.attn_tp_size,
+        mla_cache_dtype=attn_config.kv_cache_dtype,
+        mla_quant_method=attn_config.kv_cache_quant_method or None,
+        draft_fields=draft_fields,
+    )
+    pipeline_plan = build_balanced_kimi_k3_pipeline_plan(
+        num_layers=text_config.num_hidden_layers,
+        hidden_size=text_config.hidden_size,
+        attn_res_block_size=text_config.attn_res_block_size,
+        stage_count=stage_count,
+        activation_dtype=str(attn_config.dtype).removeprefix("torch."),
+        **pipeline_kwargs,
+    )
+    if draft_model_config is not None:
+        draft_config = draft_model_config.hf_config
+        dspark_placement = resolve_kimi_k3_dspark_placement(
+            pipeline_plan,
+            target_layer_ids=tuple(
+                int(layer) for layer in draft_config.target_layer_ids
+            ),
+            target_hidden_size=int(draft_config.target_hidden_size),
+            context_hidden_size=int(draft_config.hidden_size),
+        )
+
+    _, _, conv_dtype, recurrent_dtype, _ = text_config.mamba2_cache_params
+    logical_field_dtypes = _kimi_k3_global_cache_field_dtypes(
+        logical_fields,
+        global_layer_types,
+        mla_cache_dtype=attn_config.kv_cache_dtype,
+        conv_dtype=conv_dtype,
+        recurrent_dtype=recurrent_dtype,
+    )
+    return _KimiK3PipelineCacheContract(
+        pipeline_plan=pipeline_plan,
+        logical_fields=logical_fields,
+        global_layout=global_layout,
+        global_layer_types=global_layer_types,
+        global_group_ids=global_group_ids,
+        logical_field_dtypes=logical_field_dtypes,
+        auxiliary_logical_layer_ids_by_stage=auxiliary_logical_layer_ids_by_stage,
+        draft_layer_offset=draft_layer_offset,
+        dspark_placement=dspark_placement,
+    )
 
 
 def kimi_k3_pipeline_workspace_bytes(
@@ -634,48 +802,30 @@ def _prepare_kimi_k3_pipeline_cache(
     prepared = None
     local_error = None
     try:
-        if draft_model_config is not None or draft_attn_config is not None:
-            raise ValueError(
-                "Kimi-K3 pipeline cache does not support speculative draft layers"
-            )
         text_config = getattr(
             model_config.hf_config, "text_config", model_config.hf_config
         )
-        global_group_ids = kimi_k3_layer_group_ids(text_config)
-        global_layer_types = tuple(
-            FULL_ATTENTION if group_id == FULL_ATTENTION else LINEAR_ATTENTION
-            for group_id in global_group_ids
-        )
-        global_layout = solve_kimi_k3_cache_layout(
-            text_config,
-            tp_size=attn_config.attn_tp_size,
-            mla_cache_dtype=attn_config.kv_cache_dtype,
-            mla_quant_method=attn_config.kv_cache_quant_method or None,
-        )
-        logical_fields = build_kimi_k3_logical_cache_fields(
-            text_config,
-            tp_size=attn_config.attn_tp_size,
-            mla_cache_dtype=attn_config.kv_cache_dtype,
-            mla_quant_method=attn_config.kv_cache_quant_method or None,
-        )
-        pipeline_plan = build_balanced_kimi_k3_pipeline_plan(
-            num_layers=text_config.num_hidden_layers,
-            hidden_size=text_config.hidden_size,
-            attn_res_block_size=text_config.attn_res_block_size,
+        contract = _build_kimi_k3_pipeline_cache_contract(
+            text_config=text_config,
             stage_count=mapping.pipeline.stage_count,
-            activation_dtype=str(attn_config.dtype).removeprefix("torch."),
+            attn_config=attn_config,
+            draft_model_config=draft_model_config,
+            draft_attn_config=draft_attn_config,
         )
         placement = CacheStagePlacement.from_pipeline_plan(
             rank=mapping.rank,
             world_size=mapping.world_size,
-            plan=pipeline_plan,
+            plan=contract.pipeline_plan,
+            auxiliary_logical_layer_ids_by_stage=(
+                contract.auxiliary_logical_layer_ids_by_stage
+            ),
         )
         max_step_tokens = max(
             server_args.chunked_prefill_size,
             attn_config.max_bs * decode_input_tokens,
         )
         fixed_workspace_bytes = kimi_k3_pipeline_workspace_bytes(
-            pipeline_plan=pipeline_plan,
+            pipeline_plan=contract.pipeline_plan,
             stage_id=placement.stage_id,
             num_layers=text_config.num_hidden_layers,
             attn_res_block_size=text_config.attn_res_block_size,
@@ -684,10 +834,10 @@ def _prepare_kimi_k3_pipeline_cache(
             activation_element_size=attn_config.dtype.itemsize,
         )
         stage_layout = solve_stage_cache_layout(
-            logical_fields,
+            contract.logical_fields,
             placement,
             logical_block_tokens=_KIMI_K3_LOGICAL_BLOCK_TOKENS,
-            cache_blocks_per_lcm_block=dict(global_layout.group_packing),
+            cache_blocks_per_lcm_block=dict(contract.global_layout.group_packing),
             alignment=256,
             # The global K3 solve retains the 25% guard. After stage
             # projection, local group ratios intentionally differ, so the
@@ -699,23 +849,18 @@ def _prepare_kimi_k3_pipeline_cache(
             binding.logical_layer_id for binding in stage_layout.bindings
         )
         layer_types = tuple(
-            global_layer_types[layer_id] for layer_id in logical_layer_ids
+            contract.global_layer_types[layer_id] for layer_id in logical_layer_ids
         )
-        group_ids = tuple(global_group_ids[layer_id] for layer_id in logical_layer_ids)
-        _, _, conv_dtype, recurrent_dtype, _ = text_config.mamba2_cache_params
-        logical_field_dtypes = _kimi_k3_global_cache_field_dtypes(
-            logical_fields,
-            global_layer_types,
-            mla_cache_dtype=attn_config.kv_cache_dtype,
-            conv_dtype=conv_dtype,
-            recurrent_dtype=recurrent_dtype,
+        group_ids = tuple(
+            contract.global_group_ids[layer_id] for layer_id in logical_layer_ids
         )
         state_dtypes = {
-            logical_field.field.field_id: logical_field_dtypes[
+            logical_field.field.field_id: contract.logical_field_dtypes[
                 logical_field.field.field_id
             ]
             for logical_field in stage_layout.logical_fields
-            if global_layer_types[logical_field.logical_layer_id] == LINEAR_ATTENTION
+            if contract.global_layer_types[logical_field.logical_layer_id]
+            == LINEAR_ATTENTION
         }
         reference_plan = stage_layout.layout.with_num_lcm_blocks(1)
         usable_cache_bytes = cache_budget_bytes - fixed_workspace_bytes
@@ -760,10 +905,14 @@ def _prepare_kimi_k3_pipeline_cache(
             **sizing,
         )
         cache_abi_digest = pipeline_cache_abi_digest(
-            logical_fields,
+            contract.logical_fields,
             placement,
-            global_layout,
-            field_dtypes=logical_field_dtypes,
+            contract.global_layout,
+            field_dtypes=contract.logical_field_dtypes,
+        )
+        local_num_draft_layers = sum(
+            layer_id >= text_config.num_hidden_layers
+            for layer_id in logical_layer_ids
         )
         prepared = {
             "layout": stage_layout.layout,
@@ -775,10 +924,14 @@ def _prepare_kimi_k3_pipeline_cache(
             "max_num_lcm_blocks": max_num_lcm_blocks,
             "local_admitted_tokens": local_admitted_tokens,
             "sizing": sizing,
-            "pipeline_plan_digest": pipeline_plan.digest,
+            "pipeline_plan_digest": contract.pipeline_plan.digest,
             "cache_abi_digest": cache_abi_digest,
             "cache_manifest_digest": stage_layout.manifest.stage_digest,
             "fixed_workspace_bytes": fixed_workspace_bytes,
+            "num_draft_layers": local_num_draft_layers,
+            "draft_logical_layer_offset": (
+                contract.draft_layer_offset if local_num_draft_layers else None
+            ),
         }
     except Exception as exc:  # noqa: BLE001 - every rank must join consensus
         local_error = exc
@@ -850,9 +1003,10 @@ def _prepare_kimi_k3_pipeline_cache(
                     *tuple(sorted(prepared["sizing"].items())),
                 ),
             ),
-            num_draft_layers=0,
+            num_draft_layers=prepared["num_draft_layers"],
             cache_budget_bytes=cache_budget_bytes,
             fixed_workspace_bytes=prepared["fixed_workspace_bytes"],
+            draft_logical_layer_offset=prepared["draft_logical_layer_offset"],
         )
         global_runtime_digest = result.spec.global_runtime_abi_digest
         stage_runtime_digest = result.spec.runtime_abi_digest
