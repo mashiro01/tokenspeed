@@ -13,6 +13,9 @@ from tokenspeed.runtime.distributed.consensus import raise_on_rank_error
 from tokenspeed.runtime.distributed.process_group_manager import (
     process_group_manager as pg_manager,
 )
+from tokenspeed.runtime.distributed.qualification_events import (
+    emit_kimi_k3_cache_consensus_success,
+)
 from tokenspeed.runtime.layers.attention.kv_cache.recipes import (
     configured_token_limit,
 )
@@ -486,6 +489,8 @@ def _validate_pipeline_cache_digest_consensus(
     cache_abi_digest: str,
     stage_manifest_digest: str,
     mapping,
+    *,
+    consensus_phase: str,
 ) -> None:
     """Validate global and per-stage cache ABIs in one global collective."""
 
@@ -518,6 +523,12 @@ def _validate_pipeline_cache_digest_consensus(
             f"global ABI ranks={global_divergent}, "
             f"stage ABI ranks={stage_divergent}"
         )
+    emit_kimi_k3_cache_consensus_success(
+        mapping,
+        consensus_phase=consensus_phase,
+        global_abi_digest=cache_abi_digest,
+        stage_abi_digest=stage_manifest_digest,
+    )
 
 
 def _prepare_kimi_k3_pipeline_cache(
@@ -702,6 +713,7 @@ def _prepare_kimi_k3_pipeline_cache(
         prepared["cache_abi_digest"],
         prepared["cache_manifest_digest"],
         mapping,
+        consensus_phase="layout",
     )
     admitted_tokens = _global_min_token_capacity(
         prepared["local_admitted_tokens"], mapping
@@ -778,6 +790,7 @@ def _prepare_kimi_k3_pipeline_cache(
         global_runtime_digest,
         stage_runtime_digest,
         mapping,
+        consensus_phase="runtime",
     )
     return result
 
