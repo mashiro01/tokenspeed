@@ -6,9 +6,13 @@ FROM lightseekorg/tokenspeed-runner:cu130-torch-2.11.0-flashinfer-0.6.15.post1
 USER root
 
 ARG MAX_JOBS=16
-ARG CUDA_ARCH_LIST="9.0a 10.0a"
+ARG CUDA_ARCH_LIST="9.0a 10.0a 12.0a"
+ARG CUDA_HOME=/usr/local/cuda-13.0
+ARG FLASH_LINEAR_ATTENTION_VERSION=0.5.1
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV CUDA_HOME=${CUDA_HOME}
+ENV PATH=${CUDA_HOME}/bin:${PATH}
 
 WORKDIR /workspace
 
@@ -26,7 +30,12 @@ COPY . /workspace
 
 # Install every TokenSpeed package from this checkout so the image always
 # contains the source being built, rather than published package wheels.
-RUN python3 -m pip install cmake ninja && \
+RUN test -x "${CUDA_HOME}/bin/nvcc" && \
+    python3 -m pip install cmake ninja && \
+    TORCH_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}" \
+    python3 -m pip install \
+        "flash-linear-attention==${FLASH_LINEAR_ATTENTION_VERSION}" \
+        --no-build-isolation && \
     MAX_JOBS=${MAX_JOBS} \
     FLASHINFER_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}" \
     TOKENSPEED_KERNEL_BACKEND=cuda \
