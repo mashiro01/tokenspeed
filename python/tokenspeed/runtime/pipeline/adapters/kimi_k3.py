@@ -80,9 +80,7 @@ def balanced_kimi_k3_stage_layer_counts(
     """
 
     num_layers = _positive_int("num_layers", num_layers)
-    attn_res_block_size = _positive_int(
-        "attn_res_block_size", attn_res_block_size
-    )
+    attn_res_block_size = _positive_int("attn_res_block_size", attn_res_block_size)
     stage_count = _positive_int("stage_count", stage_count)
     if stage_count == 1:
         return (num_layers,)
@@ -113,9 +111,7 @@ def balanced_kimi_k3_stage_layer_counts(
         boundary_blocks.append(candidate)
         previous = candidate
 
-    boundaries = tuple(
-        block_id * attn_res_block_size for block_id in boundary_blocks
-    )
+    boundaries = tuple(block_id * attn_res_block_size for block_id in boundary_blocks)
     edges = (0, *boundaries, num_layers)
     return tuple(right - left for left, right in zip(edges, edges[1:]))
 
@@ -171,9 +167,7 @@ def build_kimi_k3_pipeline_plan(
 
     num_layers = _positive_int("num_layers", num_layers)
     hidden_size = _positive_int("hidden_size", hidden_size)
-    attn_res_block_size = _positive_int(
-        "attn_res_block_size", attn_res_block_size
-    )
+    attn_res_block_size = _positive_int("attn_res_block_size", attn_res_block_size)
     counts = tuple(stage_layer_counts)
     if not counts:
         raise ValueError("stage_layer_counts must not be empty")

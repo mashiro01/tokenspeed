@@ -181,7 +181,9 @@ def test_model_runner_stage_uses_typed_forward_batch():
     observed = {}
 
     class FakeRunner:
-        def forward_pipeline_stage(self, ctx, input_ids, positions, out_cache_loc, **kw):
+        def forward_pipeline_stage(
+            self, ctx, input_ids, positions, out_cache_loc, **kw
+        ):
             observed.update(
                 ctx=ctx,
                 input_ids=input_ids,

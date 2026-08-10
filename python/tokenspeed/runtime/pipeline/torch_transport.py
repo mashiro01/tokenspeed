@@ -75,9 +75,7 @@ def validate_pipeline_plan_consensus(plan: PipelinePlan, mapping: Mapping) -> No
     group = pg_manager.get_process_group("gloo", mapping.world_group)
     dist.all_gather(gathered, local, group=group)
     divergent = [
-        rank
-        for rank, digest in enumerate(gathered)
-        if not torch.equal(digest, local)
+        rank for rank, digest in enumerate(gathered) if not torch.equal(digest, local)
     ]
     if divergent:
         raise PipelineProtocolError(
@@ -123,7 +121,9 @@ class TorchPipelineTransport:
     ) -> None:
         destination = self._mapping.pipeline.next_rank
         if destination is None:
-            raise PipelineProtocolError("the final pipeline stage cannot send activation")
+            raise PipelineProtocolError(
+                "the final pipeline stage cannot send activation"
+            )
         schema.validate(activation)
         leading_dimensions = []
         for field, value in zip(schema.fields, activation.values):
@@ -201,9 +201,7 @@ class TorchPipelineTransport:
         total_elements = 0
         leading_shapes: dict[str, tuple[int, ...]] = {}
         for field in schema.fields:
-            leading = tuple(
-                leading_dimensions[cursor : cursor + field.leading_rank]
-            )
+            leading = tuple(leading_dimensions[cursor : cursor + field.leading_rank])
             cursor += field.leading_rank
             if (
                 field.leading_shape_id == "tokens"
@@ -345,9 +343,7 @@ class TorchPipelineResultSynchronizer:
                     raise PipelineProtocolError(
                         "pipeline NaN flags must contain one value per request"
                     )
-                payload[2 * batch_size :].copy_(
-                    nan_flags.reshape(-1).to(torch.int64)
-                )
+                payload[2 * batch_size :].copy_(nan_flags.reshape(-1).to(torch.int64))
         work = dist.broadcast(
             packet,
             src=self._source,

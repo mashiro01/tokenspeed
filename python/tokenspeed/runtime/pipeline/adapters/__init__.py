@@ -19,4 +19,3 @@
 # SOFTWARE.
 
 """Model adapters for the generic pipeline runtime."""
-

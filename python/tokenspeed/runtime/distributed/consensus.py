@@ -40,8 +40,8 @@ def raise_on_rank_error(error: Exception | None, mapping, phase: str) -> None:
         encoded = encoded[: _ERROR_MESSAGE_BYTES - 1]
         message[: len(encoded)] = torch.tensor(list(encoded), dtype=torch.uint8)
     dist.broadcast(message, src=failure_rank, group=cpu_group)
-    decoded = bytes(message.tolist()).split(b"\0", 1)[0].decode(
-        "utf-8", errors="replace"
+    decoded = (
+        bytes(message.tolist()).split(b"\0", 1)[0].decode("utf-8", errors="replace")
     )
     consensus_error = RuntimeError(
         f"{phase} failed on global rank {failure_rank}: {decoded}"
