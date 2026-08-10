@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
 from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
     build_balanced_kimi_k3_pipeline_plan,
 )
 from tokenspeed.runtime.pipeline.kimi_k3_dspark import (
+    KimiK3DSparkStageProjector,
     resolve_kimi_k3_dspark_placement,
+    split_kimi_k3_dspark_context_projection,
 )
 
 
@@ -34,6 +37,7 @@ def test_k3_dspark_uses_one_projected_context_stream_per_pp_boundary() -> None:
     for stage in dspark.stages[:-1]:
         assert stage.output_schema.fields[-1].field_id == "dspark_context"
         assert stage.output_schema.fields[-1].trailing_shape == (7168,)
+        assert stage.output_schema.fields[-1].dtype == "float32"
         assert all(
             not field.field_id.startswith("aux_capture.")
             for field in stage.output_schema.fields
@@ -106,3 +110,64 @@ def test_k3_dspark_rejects_a_draft_owner_without_target_embeddings() -> None:
 def test_k3_dspark_context_width_must_be_positive() -> None:
     with pytest.raises(ValueError, match="dspark_context_hidden_size"):
         _k3_pp8_plan(dspark_context_hidden_size=0)
+
+
+def test_k3_dspark_stage_projections_match_the_full_context_linear() -> None:
+    placement = resolve_kimi_k3_dspark_placement(
+        _k3_pp8_plan(dspark_context_hidden_size=5),
+        target_layer_ids=[2, 23, 47, 71, 89],
+        target_hidden_size=3,
+        context_hidden_size=5,
+    )
+    full_weight = torch.arange(5 * 15, dtype=torch.float32).reshape(5, 15)
+    target_hidden = {
+        layer_id: torch.full((2, 3), float(index + 1))
+        for index, layer_id in enumerate(placement.target_layer_ids)
+    }
+    context = torch.zeros((2, 5), dtype=torch.float32)
+    weights_by_stage = split_kimi_k3_dspark_context_projection(full_weight, placement)
+
+    for stage_id in range(8):
+        projector = KimiK3DSparkStageProjector(
+            placement,
+            stage_id=stage_id,
+            projection_weights=weights_by_stage.get(stage_id, {}),
+        )
+        for slice_ in placement.projection_slices_for_stage(stage_id):
+            projector.accumulate(
+                context,
+                target_layer_id=slice_.target_layer_id,
+                target_hidden=target_hidden[slice_.target_layer_id],
+            )
+
+    expected = torch.mm(
+        torch.cat(
+            [target_hidden[layer_id] for layer_id in placement.target_layer_ids],
+            dim=1,
+        ),
+        full_weight.t(),
+    )
+    torch.testing.assert_close(context, expected)
+
+
+def test_k3_dspark_stage_projector_rejects_non_local_taps() -> None:
+    placement = resolve_kimi_k3_dspark_placement(
+        _k3_pp8_plan(dspark_context_hidden_size=4),
+        target_layer_ids=[2, 23, 47, 71, 89],
+        target_hidden_size=2,
+        context_hidden_size=4,
+    )
+    full_weight = torch.zeros((4, 10), dtype=torch.float32)
+    projector = KimiK3DSparkStageProjector(
+        placement,
+        stage_id=0,
+        projection_weights=split_kimi_k3_dspark_context_projection(
+            full_weight, placement
+        )[0],
+    )
+    with pytest.raises(ValueError, match="does not own"):
+        projector.accumulate(
+            torch.zeros((1, 4), dtype=torch.float32),
+            target_layer_id=23,
+            target_hidden=torch.zeros((1, 2), dtype=torch.float32),
+        )

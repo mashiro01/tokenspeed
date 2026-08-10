@@ -121,6 +121,38 @@ class StageCacheLayoutTest(unittest.TestCase):
         self.assertEqual(stage0, 8 * per_tensor)
         self.assertEqual(stage7, 16 * per_tensor)
 
+    def test_k3_dspark_workspace_accounts_for_its_fp32_context_stream(self):
+        plan = build_balanced_kimi_k3_pipeline_plan(
+            num_layers=93,
+            hidden_size=7168,
+            attn_res_block_size=12,
+            stage_count=8,
+            dspark_context_hidden_size=7168,
+        )
+        stage0 = kimi_k3_pipeline_workspace_bytes(
+            pipeline_plan=plan,
+            stage_id=0,
+            num_layers=93,
+            attn_res_block_size=12,
+            hidden_size=7168,
+            max_step_tokens=8192,
+            activation_element_size=2,
+        )
+        stage7 = kimi_k3_pipeline_workspace_bytes(
+            pipeline_plan=plan,
+            stage_id=7,
+            num_layers=93,
+            attn_res_block_size=12,
+            hidden_size=7168,
+            max_step_tokens=8192,
+            activation_element_size=2,
+        )
+
+        bf16_tensor = 8192 * 7168 * 2
+        fp32_tensor = 8192 * 7168 * 4
+        self.assertEqual(stage0, 8 * bf16_tensor + fp32_tensor)
+        self.assertEqual(stage7, 16 * bf16_tensor + fp32_tensor)
+
     def test_default_k3_pp8_compacts_stage_planes_with_global_packing(self):
         full_layers = set(range(3, 92, 4)) | {92}
         kda_layers = [layer for layer in range(93) if layer not in full_layers]

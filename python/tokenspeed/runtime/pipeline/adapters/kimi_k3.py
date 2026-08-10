@@ -131,6 +131,7 @@ def build_balanced_kimi_k3_pipeline_plan(
     stage_count: int,
     activation_dtype: str = "bfloat16",
     dspark_context_hidden_size: int | None = None,
+    dspark_context_dtype: str | None = None,
 ) -> PipelinePlan:
     """Build the default balanced K3 plan for a pipeline stage count."""
 
@@ -145,6 +146,7 @@ def build_balanced_kimi_k3_pipeline_plan(
         ),
         activation_dtype=activation_dtype,
         dspark_context_hidden_size=dspark_context_hidden_size,
+        dspark_context_dtype=dspark_context_dtype,
     )
 
 
@@ -156,6 +158,7 @@ def build_kimi_k3_pipeline_plan(
     stage_layer_counts: Sequence[int],
     activation_dtype: str = "bfloat16",
     dspark_context_hidden_size: int | None = None,
+    dspark_context_dtype: str | None = None,
 ) -> PipelinePlan:
     """Build K3 stage ownership and chain-full AttnRes boundary schemas.
 
@@ -173,6 +176,9 @@ def build_kimi_k3_pipeline_plan(
         dspark_context_hidden_size: When set, reserve one projected DSpark
             context stream at every PP boundary. The stream is an accumulated
             projection rather than a relay of every raw target hidden state.
+        dspark_context_dtype: Wire dtype of the accumulated DSpark context.
+            Defaults to float32 so partial projections are accumulated once
+            without BF16 rounding at every target stage.
 
     Returns:
         A validated generic :class:`PipelinePlan`.
@@ -192,8 +198,18 @@ def build_kimi_k3_pipeline_plan(
         )
     if not isinstance(activation_dtype, str) or not activation_dtype:
         raise ValueError("activation_dtype must be a non-empty string")
+    context_dtype = None
     if dspark_context_hidden_size is not None:
         _positive_int("dspark_context_hidden_size", dspark_context_hidden_size)
+        context_dtype = (
+            "float32" if dspark_context_dtype is None else dspark_context_dtype
+        )
+        if not isinstance(context_dtype, str) or not context_dtype:
+            raise ValueError("dspark_context_dtype must be a non-empty string")
+    elif dspark_context_dtype is not None:
+        raise ValueError(
+            "dspark_context_dtype requires dspark_context_hidden_size"
+        )
 
     boundaries: list[int] = []
     cursor = 0
@@ -214,6 +230,7 @@ def build_kimi_k3_pipeline_plan(
             attn_res_block_size=attn_res_block_size,
             activation_dtype=activation_dtype,
             dspark_context_hidden_size=dspark_context_hidden_size,
+            dspark_context_dtype=context_dtype,
         )
         for stage_id, end_layer in enumerate(boundaries)
     )
@@ -249,6 +266,7 @@ def _boundary_schema(
     attn_res_block_size: int,
     activation_dtype: str,
     dspark_context_hidden_size: int | None,
+    dspark_context_dtype: str | None,
 ) -> ActivationSchema:
     completed_blocks = end_layer // attn_res_block_size
     fields = [
@@ -267,10 +285,11 @@ def _boundary_schema(
         for block_id in range(completed_blocks)
     )
     if dspark_context_hidden_size is not None:
+        assert dspark_context_dtype is not None
         fields.append(
             ActivationFieldSpec(
                 field_id="dspark_context",
-                dtype=activation_dtype,
+                dtype=dspark_context_dtype,
                 trailing_shape=(dspark_context_hidden_size,),
             )
         )

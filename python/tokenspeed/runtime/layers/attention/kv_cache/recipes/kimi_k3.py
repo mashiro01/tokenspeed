@@ -47,6 +47,13 @@ _KIMI_K3_MLA_PACKING = 12
 FULL_ATTENTION = "full_attention"
 LINEAR_ATTENTION = "linear_attention"
 
+_PIPELINE_DTYPE_ELEMENT_SIZES = {
+    "bfloat16": 2,
+    "float16": 2,
+    "float32": 4,
+    "float64": 8,
+}
+
 if TYPE_CHECKING:
     from tokenspeed.runtime.configs.kimi_k3_config import KimiLinearConfig
 
@@ -73,7 +80,7 @@ def kimi_k3_pipeline_workspace_bytes(
     max_step_tokens: int,
     activation_element_size: int,
 ) -> int:
-    """Reserve the stage-local AttnRes slab and received Wire tensors."""
+    """Reserve the local AttnRes slab and typed PP activation workspaces."""
 
     num_layers = _require_positive_int("num_layers", num_layers)
     attn_res_block_size = _require_positive_int(
@@ -90,15 +97,32 @@ def kimi_k3_pipeline_workspace_bytes(
         raise ValueError("stage_id is outside the pipeline plan")
 
     stage = pipeline_plan.stages[stage_id]
-    incoming_fields = (
-        0 if stage.input_schema is None else len(stage.input_schema.fields)
-    )
+    incoming_bytes = 0
+    if stage.input_schema is not None:
+        for field in stage.input_schema.fields:
+            try:
+                element_size = _PIPELINE_DTYPE_ELEMENT_SIZES[field.dtype]
+            except KeyError as exc:
+                raise ValueError(
+                    f"unsupported Kimi-K3 pipeline field dtype {field.dtype!r}"
+                ) from exc
+            incoming_bytes += (
+                max_step_tokens * math.prod(field.trailing_shape) * element_size
+            )
+    first_stage_context_bytes = 0
+    if stage.input_schema is None and stage.output_schema is not None:
+        for field in stage.output_schema.fields:
+            if field.field_id == "dspark_context":
+                first_stage_context_bytes += (
+                    max_step_tokens
+                    * math.prod(field.trailing_shape)
+                    * _PIPELINE_DTYPE_ELEMENT_SIZES[field.dtype]
+                )
     attn_res_blocks = math.ceil(num_layers / attn_res_block_size)
     return (
-        (attn_res_blocks + incoming_fields)
-        * max_step_tokens
-        * hidden_size
-        * activation_element_size
+        attn_res_blocks * max_step_tokens * hidden_size * activation_element_size
+        + incoming_bytes
+        + first_stage_context_bytes
     )
 
 

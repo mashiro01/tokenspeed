@@ -21,8 +21,11 @@ Instead every target stage owns the corresponding input-column slice of
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+
+import torch
+from torch import nn
 
 from tokenspeed.runtime.pipeline.contracts import PipelinePlan
 
@@ -68,6 +71,152 @@ class KimiK3DSparkPlacement:
             for slice_ in self.projection_slices
             if slice_.stage_id == stage_id
         )
+
+
+def split_kimi_k3_dspark_context_projection(
+    context_projection_weight: torch.Tensor,
+    placement: KimiK3DSparkPlacement,
+) -> dict[int, dict[int, torch.Tensor]]:
+    """Split a loaded context projection into stage-local target-tap slices.
+
+    ``context_proj`` is an ordinary linear weight with shape
+    ``[context_hidden_size, num_taps * target_hidden_size]``. The returned
+    buffers retain the original dtype; :class:`KimiK3DSparkStageProjector`
+    accumulates each GEMM into FP32 before the draft applies ``context_norm``.
+    """
+
+    if not isinstance(context_projection_weight, torch.Tensor):
+        raise TypeError("context_projection_weight must be a torch.Tensor")
+    expected_shape = (
+        placement.context_hidden_size,
+        len(placement.target_layer_ids) * placement.target_hidden_size,
+    )
+    if tuple(context_projection_weight.shape) != expected_shape:
+        raise ValueError(
+            "Kimi-K3 DSpark context projection has shape "
+            f"{tuple(context_projection_weight.shape)}, expected {expected_shape}"
+        )
+
+    by_stage: dict[int, dict[int, torch.Tensor]] = {}
+    for slice_ in placement.projection_slices:
+        by_stage.setdefault(slice_.stage_id, {})[slice_.target_layer_id] = (
+            context_projection_weight[:, slice_.input_start : slice_.input_end]
+            .detach()
+            .contiguous()
+        )
+    return by_stage
+
+
+class KimiK3DSparkStageProjector(nn.Module):
+    """Apply one pipeline stage's DSpark context-projection column slices.
+
+    The target hidden stream is BF16 in the usual K3 path. CUDA matmul's
+    FP32-output mode retains one FP32 accumulator across all stages, avoiding
+    a BF16 round-trip for each of the five target taps. CPU uses an explicit
+    FP32 fallback so this contract is unit-testable without a GPU.
+    """
+
+    def __init__(
+        self,
+        placement: KimiK3DSparkPlacement,
+        *,
+        stage_id: int,
+        projection_weights: Mapping[int, torch.Tensor],
+    ) -> None:
+        super().__init__()
+        if isinstance(stage_id, bool) or not isinstance(stage_id, int):
+            raise TypeError("stage_id must be an integer")
+        local_slices = placement.projection_slices_for_stage(stage_id)
+        expected_ids = {slice_.target_layer_id for slice_ in local_slices}
+        provided_ids = set(projection_weights)
+        if provided_ids != expected_ids:
+            raise ValueError(
+                "Kimi-K3 DSpark stage projection weights must cover exactly "
+                f"{sorted(expected_ids)}, got {sorted(provided_ids)}"
+            )
+
+        self.placement = placement
+        self.stage_id = stage_id
+        self._slices_by_layer = {
+            slice_.target_layer_id: slice_ for slice_ in local_slices
+        }
+        self._weight_names: dict[int, str] = {}
+        expected_shape = (
+            placement.context_hidden_size,
+            placement.target_hidden_size,
+        )
+        for index, slice_ in enumerate(local_slices):
+            weight = projection_weights[slice_.target_layer_id]
+            if not isinstance(weight, torch.Tensor):
+                raise TypeError(
+                    "Kimi-K3 DSpark context projection slices must be tensors"
+                )
+            if tuple(weight.shape) != expected_shape:
+                raise ValueError(
+                    "Kimi-K3 DSpark context projection slice for layer "
+                    f"{slice_.target_layer_id} has shape {tuple(weight.shape)}, "
+                    f"expected {expected_shape}"
+                )
+            name = f"context_weight_{index}"
+            self.register_buffer(name, weight.detach().contiguous(), persistent=True)
+            self._weight_names[slice_.target_layer_id] = name
+
+    def new_context(self, num_tokens: int, *, device: torch.device) -> torch.Tensor:
+        """Allocate the FP32 projected-context accumulator for one PP step."""
+
+        if isinstance(num_tokens, bool) or not isinstance(num_tokens, int):
+            raise TypeError("num_tokens must be an integer")
+        if num_tokens < 0:
+            raise ValueError("num_tokens must be non-negative")
+        return torch.zeros(
+            (num_tokens, self.placement.context_hidden_size),
+            dtype=torch.float32,
+            device=device,
+        )
+
+    @torch.no_grad()
+    def accumulate(
+        self,
+        context: torch.Tensor,
+        *,
+        target_layer_id: int,
+        target_hidden: torch.Tensor,
+    ) -> torch.Tensor:
+        """Add one local target tap's FP32 partial projection in place."""
+
+        try:
+            weight = getattr(self, self._weight_names[target_layer_id])
+        except KeyError as exc:
+            raise ValueError(
+                "Kimi-K3 DSpark stage "
+                f"{self.stage_id} does not own target layer {target_layer_id}"
+            ) from exc
+        if target_hidden.ndim != 2 or target_hidden.shape[1] != self.placement.target_hidden_size:
+            raise ValueError(
+                "Kimi-K3 DSpark target hidden must have shape "
+                f"[tokens, {self.placement.target_hidden_size}], got "
+                f"{tuple(target_hidden.shape)}"
+            )
+        expected_shape = (
+            target_hidden.shape[0],
+            self.placement.context_hidden_size,
+        )
+        if tuple(context.shape) != expected_shape:
+            raise ValueError(
+                "Kimi-K3 DSpark context has shape "
+                f"{tuple(context.shape)}, expected {expected_shape}"
+            )
+        if context.dtype != torch.float32:
+            raise ValueError("Kimi-K3 DSpark context accumulator must be float32")
+        if context.device != target_hidden.device or context.device != weight.device:
+            raise ValueError("Kimi-K3 DSpark context, target, and weight must share a device")
+
+        if context.device.type == "cuda":
+            partial = torch.mm(target_hidden, weight.t(), out_dtype=torch.float32)
+        else:
+            partial = torch.mm(target_hidden.float(), weight.float().t())
+        context.add_(partial)
+        return context
 
 
 def resolve_kimi_k3_dspark_placement(
