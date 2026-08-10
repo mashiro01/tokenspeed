@@ -389,6 +389,39 @@ def test_partition_parts_can_replicate_qkv_slices(tmp_path: Path) -> None:
     ]
 
 
+def test_partition_can_exclude_checkpoint_padding(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.safetensors"
+    _write_safetensors(checkpoint, {"padded": ("F32", [16], bytes(64))})
+    plan_data = {
+        "version": 1,
+        "stages": [
+            {
+                "id": "attention",
+                "ranks": [
+                    {"rank": 0, "tp_rank": 0, "ep_rank": 0},
+                    {"rank": 1, "tp_rank": 1, "ep_rank": 0},
+                ],
+            }
+        ],
+        "ownership": [{"pattern": "^padded$", "stage": "attention"}],
+        "routes": [
+            {
+                "pattern": "^padded$",
+                "kind": "sharded",
+                "partitions": [{"axis": 0, "by": "tp", "start": 2, "length": 12}],
+            }
+        ],
+    }
+
+    ledger = build_ledger(load_checkpoint(checkpoint), parse_plan(plan_data))
+
+    assert [entry["bytes"] for entry in ledger["entries"]] == [24, 24]
+    assert [entry["slices"] for entry in ledger["entries"]] == [
+        [{"axis": 0, "start": 2, "stop": 8}],
+        [{"axis": 0, "start": 8, "stop": 14}],
+    ]
+
+
 def test_plan_validation_is_strict() -> None:
     invalid_plans: list[tuple[dict[str, object], str]] = []
 

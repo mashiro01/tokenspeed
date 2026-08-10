@@ -148,6 +148,8 @@ class PartitionSpec:
     axis: int
     by: str
     parts: int | None
+    start: int
+    length: int | None
 
 
 @dataclass(frozen=True)
@@ -568,7 +570,12 @@ def _parse_partitions(value: Any, context: str) -> tuple[PartitionSpec, ...]:
     for index, raw_partition in enumerate(raw_partitions):
         item_context = f"{context}[{index}]"
         partition_data = _require_object(raw_partition, item_context)
-        _validate_keys(partition_data, item_context, {"axis", "by"}, {"parts"})
+        _validate_keys(
+            partition_data,
+            item_context,
+            {"axis", "by"},
+            {"parts", "start", "length"},
+        )
         axis = _require_int(partition_data["axis"], f"{item_context}.axis")
         if axis >= MAX_TENSOR_DIMENSIONS:
             raise PlanValidationError(
@@ -590,7 +597,13 @@ def _parse_partitions(value: Any, context: str) -> tuple[PartitionSpec, ...]:
             parts = _require_int(
                 partition_data["parts"], f"{item_context}.parts", minimum=1
             )
-        partitions.append(PartitionSpec(axis, by, parts))
+        start = _require_int(partition_data.get("start", 0), f"{item_context}.start")
+        length = None
+        if "length" in partition_data:
+            length = _require_int(
+                partition_data["length"], f"{item_context}.length", minimum=1
+            )
+        partitions.append(PartitionSpec(axis, by, parts, start, length))
     return tuple(sorted(partitions, key=lambda partition: partition.axis))
 
 
@@ -1231,7 +1244,7 @@ def _partition_entries(
     targets: list[_RankTarget],
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     stage = targets[0].stage
-    partition_details: list[tuple[PartitionSpec, int, int]] = []
+    partition_details: list[tuple[PartitionSpec, int, int, int]] = []
     for partition in route.partitions:
         if partition.axis >= len(tensor.shape):
             return (
@@ -1247,26 +1260,46 @@ def _partition_entries(
                 f"{partition.by} size {parallel_size} is not divisible by "
                 f"partition parts {parts}",
             )
-        axis_size = tensor.shape[partition.axis]
+        source_axis_size = tensor.shape[partition.axis]
+        if partition.start >= source_axis_size:
+            return (
+                None,
+                f"partition start {partition.start} is outside axis "
+                f"{partition.axis} size {source_axis_size}",
+            )
+        axis_size = (
+            partition.length
+            if partition.length is not None
+            else source_axis_size - partition.start
+        )
+        if partition.start + axis_size > source_axis_size:
+            return (
+                None,
+                f"partition range [{partition.start}, "
+                f"{partition.start + axis_size}) exceeds axis "
+                f"{partition.axis} size {source_axis_size}",
+            )
         if axis_size % parts:
             return (
                 None,
-                f"shape axis {partition.axis} size {axis_size} is not divisible "
+                f"partition axis {partition.axis} length {axis_size} is not divisible "
                 f"by partition parts {parts}",
             )
-        partition_details.append((partition, parts, axis_size // parts))
+        partition_details.append(
+            (partition, parts, partition.start, axis_size // parts)
+        )
 
     rows: list[tuple[_RankTarget, list[dict[str, int]], tuple[int, ...]]] = []
     observed_regions: set[tuple[int, ...]] = set()
     for target in targets:
         slices: list[dict[str, int]] = []
         region: list[int] = []
-        for partition, parts, shard_size in partition_details:
+        for partition, parts, source_start, shard_size in partition_details:
             field = PARALLEL_FIELDS[partition.by]
             coordinate = getattr(target.rank, field)
             parallel_size = stage.parallel_size(partition.by)
             part_index = coordinate * parts // parallel_size
-            start = part_index * shard_size
+            start = source_start + part_index * shard_size
             slices.append(
                 {"axis": partition.axis, "start": start, "stop": start + shard_size}
             )
@@ -1276,7 +1309,7 @@ def _partition_entries(
         rows.append((target, slices, region_tuple))
 
     expected_regions = set(
-        itertools.product(*(range(parts) for _, parts, _ in partition_details))
+        itertools.product(*(range(parts) for _, parts, _, _ in partition_details))
     )
     if observed_regions != expected_regions:
         return None, "owned ranks do not cover every declared tensor partition"

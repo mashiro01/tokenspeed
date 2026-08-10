@@ -194,6 +194,21 @@ def test_checkpoint_filter_selects_only_stage_owned_k3_weights():
         include_vision=False,
     )
     assert kimi_k3_stage_checkpoint_weight_filter(
+        "language_model.model.output_attn_res_norm.weight",
+        stage_plan=last,
+        include_vision=False,
+    )
+    assert kimi_k3_stage_checkpoint_weight_filter(
+        "language_model.model.output_attn_res_proj.weight",
+        stage_plan=last,
+        include_vision=False,
+    )
+    assert not kimi_k3_stage_checkpoint_weight_filter(
+        "language_model.model.output_attn_res_proj.weight",
+        stage_plan=middle,
+        include_vision=False,
+    )
+    assert kimi_k3_stage_checkpoint_weight_filter(
         "language_model.lm_head.weight",
         stage_plan=last,
         include_vision=False,

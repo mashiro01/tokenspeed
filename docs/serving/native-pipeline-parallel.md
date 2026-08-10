@@ -118,12 +118,25 @@ complete. Average model size is not an acceptable HBM gate; startup planning
 uses the worst per-rank total.
 
 ```bash
+python -m tokenspeed.tools.kimi_k3_checkpoint_plan \
+  --config /path/to/config.json \
+  --pipeline-parallel-size 8 \
+  --tensor-parallel-size 8 \
+  --mm-encoder-tp-mode data \
+  --output ownership-plan.json
+
 python -m tokenspeed.tools.checkpoint_ledger \
   --checkpoint /path/to/model.safetensors.index.json \
-  --plan /path/to/ownership-plan.json \
+  --plan ownership-plan.json \
   --format jsonl \
   --output checkpoint-ledger.jsonl
 ```
+
+The K3 generator mirrors the runtime's AttnRes-aligned layer partition and
+accounts for the checkpoint-padded `A_log` buffer. PP8 qualification requires
+`--mm-encoder-tp-mode data`: K3 has 12 vision heads, which cannot be
+weight-sharded over TP8. In data mode each first-stage rank owns a complete
+TP1 vision tower and the runtime distributes whole image items across ranks.
 
 ## Kimi-K3 First Target
 
@@ -152,6 +165,7 @@ the currently qualified surface:
 --world-size 64
 --pipeline-parallel-size 8
 --attn-tp-size 8
+--mm-encoder-tp-mode data
 --enforce-eager
 --disable-prefill-graph
 --disable-overlap-schedule
