@@ -10,6 +10,11 @@ ARG CUDA_ARCH_LIST="9.0a 10.0a 12.0a"
 ARG CUDA_HOME=/usr/local/cuda-13.0
 ARG FLASH_LINEAR_ATTENTION_VERSION=0.5.1
 ARG FLASHINFER_JIT_CACHE_VERSION=0.6.16.post3+cu130
+ARG VCS_REF=unknown
+ARG VCS_URL=https://github.com/lightseekorg/tokenspeed
+
+LABEL org.opencontainers.image.source="${VCS_URL}" \
+      org.opencontainers.image.revision="${VCS_REF}"
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV CUDA_HOME=${CUDA_HOME}
@@ -46,6 +51,7 @@ COPY . /workspace
 RUN \
     MAX_JOBS=${MAX_JOBS} \
     FLASHINFER_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}" \
+    TOKENSPEED_KERNEL_GIT_SHA="${VCS_REF}" \
     TOKENSPEED_KERNEL_BACKEND=cuda \
     python3 -m pip install tokenspeed-kernel/python/ --no-build-isolation && \
     python3 -m pip install tokenspeed-scheduler/ && \
