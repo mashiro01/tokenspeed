@@ -1,4 +1,7 @@
+import multiprocessing
 import threading
+import time
+from datetime import timedelta
 
 import pytest
 
@@ -6,9 +9,18 @@ torch = pytest.importorskip("torch")
 
 from tokenspeed.runtime.distributed.mapping import Mapping
 from tokenspeed.runtime.pipeline.contracts import PipelinePlan, PipelineStepAborted
+from tokenspeed.runtime.pipeline.groups import (
+    PIPELINE_FAULT_DOWNSTREAM_GROUP_ROLE,
+    PIPELINE_FAULT_UPSTREAM_GROUP_ROLE,
+    PIPELINE_STEP_META_GROUP_ROLE,
+)
 from tokenspeed.runtime.pipeline.torch_control import (
     _FAULT_MAGIC,
+    _HEARTBEAT_PACKET_KIND,
+    _PIPELINE_EXIT_CODE,
+    _STOP_PACKET_KIND,
     TorchPipelineControlPlane,
+    _DeadlineWatchdog,
     pg_manager,
 )
 
@@ -37,6 +49,53 @@ class _StuckThread:
 
     def is_alive(self):
         return True
+
+
+def _run_idle_fault_channel(rank: int, init_file: str) -> None:
+    import torch.distributed as dist
+
+    import tokenspeed.runtime.pipeline.torch_control as torch_control
+
+    dist.init_process_group(
+        "gloo",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=2,
+        timeout=timedelta(seconds=2),
+    )
+    mapping = _mapping(rank)
+    roles = (
+        PIPELINE_STEP_META_GROUP_ROLE,
+        PIPELINE_FAULT_UPSTREAM_GROUP_ROLE,
+        PIPELINE_FAULT_DOWNSTREAM_GROUP_ROLE,
+    )
+    try:
+        for role in roles:
+            timeout = 2 if role == PIPELINE_STEP_META_GROUP_ROLE else 0.4
+            group = dist.new_group(
+                ranks=[0, 1],
+                backend="gloo",
+                timeout=timedelta(seconds=timeout),
+            )
+            pg_manager.register_process_group(
+                "gloo",
+                mapping.world_group,
+                group,
+                role=role,
+            )
+
+        torch_control.PIPELINE_FAULT_HEARTBEAT_SECONDS = 0.05
+        control = TorchPipelineControlPlane(
+            mapping,
+            plan_digest=PipelinePlan.single(1).digest,
+            step_timeout_seconds=2,
+            abort_grace_seconds=1,
+        )
+        time.sleep(1.0)
+        assert control._poison is None
+        control.close(cancel_fatal_deadline=True)
+    finally:
+        dist.destroy_process_group()
 
 
 def _mapping(rank: int = 0) -> Mapping:
@@ -222,7 +281,7 @@ def test_peer_fault_is_validated_relayed_and_poisons_next_step(monkeypatch):
 
     def receive(tensor, src, group):
         assert src is None
-        assert group == "fault-group"
+        assert group == "fault-upstream"
         tensor.copy_(
             torch.tensor(
                 (_FAULT_MAGIC, 1, control._epoch, 1, 2, 1, 0xA, 0xB),
@@ -232,13 +291,14 @@ def test_peer_fault_is_validated_relayed_and_poisons_next_step(monkeypatch):
         return 2
 
     def send(tensor, dst, group):
-        assert group == "fault-group"
+        assert group == "fault-downstream"
         relayed.append((dst, tensor.clone()))
         return _ImmediateWork()
 
     monkeypatch.setattr(torch.distributed, "recv", receive)
     monkeypatch.setattr(torch.distributed, "isend", send)
-    control._fault_group = "fault-group"
+    control._fault_in_group = "fault-upstream"
+    control._fault_out_group = "fault-downstream"
     try:
         control._listen_for_fault()
         with pytest.raises(PipelineStepAborted, match="peer rank 2 stage 1"):
@@ -287,12 +347,15 @@ def test_fault_relay_submits_every_peer_before_waiting(monkeypatch):
         )
 
     monkeypatch.setattr(torch.distributed, "isend", send)
-    control._fault_group = "fault-group"
     packet = torch.zeros(8, dtype=torch.int64)
     try:
-        assert not control._send_packets(packet, (1, 2, 3), wait=True)
+        assert not control._send_packets(
+            packet,
+            (1, 2, 3),
+            group="fault-group",
+            wait=True,
+        )
     finally:
-        control._fault_group = None
         control.close(cancel_fatal_deadline=True)
 
     assert submitted == [1, 2, 3]
@@ -380,12 +443,130 @@ def test_close_fails_closed_when_fault_listener_does_not_stop(monkeypatch):
         terminate=lambda _code: None,
         enable_fault_listener=False,
     )
-    control._fault_group = "fault-group"
+    control._fault_out_group = "fault-group"
     control._fault_thread = _StuckThread()
     try:
         with pytest.raises(PipelineStepAborted, match="did not stop"):
             control.close()
     finally:
-        control._fault_group = None
+        control._fault_out_group = None
         control._fault_thread = None
         control.close(cancel_fatal_deadline=True)
+
+
+def test_fault_listener_renews_receive_after_heartbeat(monkeypatch):
+    _patch_groups_and_epoch(monkeypatch)
+    control = TorchPipelineControlPlane(
+        Mapping(
+            rank=0,
+            world_size=4,
+            pipeline_parallel_size=2,
+            attn_tp_size=2,
+            dense_tp_size=2,
+            moe_tp_size=2,
+        ),
+        plan_digest=PipelinePlan.single(1).digest,
+        terminate=lambda _code: None,
+        enable_fault_listener=False,
+    )
+    packets = [
+        torch.tensor(
+            (
+                _FAULT_MAGIC,
+                _HEARTBEAT_PACKET_KIND,
+                control._epoch,
+                0,
+                1,
+                0,
+                0,
+                0,
+            ),
+            dtype=torch.int64,
+        ),
+        torch.tensor(
+            (
+                _FAULT_MAGIC,
+                _STOP_PACKET_KIND,
+                control._epoch,
+                0,
+                1,
+                0,
+                0,
+                0,
+            ),
+            dtype=torch.int64,
+        ),
+    ]
+    receives = []
+
+    def receive(tensor, src, group):
+        assert src is None
+        assert group == "fault-upstream"
+        receives.append(True)
+        tensor.copy_(packets.pop(0))
+        return 1
+
+    monkeypatch.setattr(torch.distributed, "recv", receive)
+    control._fault_in_group = "fault-upstream"
+    try:
+        control._listen_for_fault()
+        assert control._poison is None
+    finally:
+        control.close(cancel_fatal_deadline=True)
+
+    assert len(receives) == 2
+
+
+def test_watchdog_emits_fatal_context_before_termination(monkeypatch):
+    writes = []
+    terminated = threading.Event()
+    exit_codes = []
+
+    monkeypatch.setattr(
+        "tokenspeed.runtime.pipeline.torch_control.os.write",
+        lambda fd, payload: writes.append((fd, payload)),
+    )
+
+    def terminate(code):
+        exit_codes.append(code)
+        terminated.set()
+
+    watchdog = _DeadlineWatchdog(
+        terminate,
+        clock=time.monotonic,
+        context="global_rank=7 pipeline_stage=0",
+    )
+    watchdog.arm(19, time.monotonic() + 0.01, "pipeline-step-decode")
+
+    assert terminated.wait(timeout=1)
+    watchdog.close()
+
+    assert exit_codes == [_PIPELINE_EXIT_CODE]
+    assert writes and writes[0][0] == 2
+    diagnostic = writes[0][1].decode()
+    assert "global_rank=7 pipeline_stage=0" in diagnostic
+    assert "step_id=19" in diagnostic
+    assert "reason=pipeline-step-decode" in diagnostic
+
+
+def test_idle_fault_channel_survives_multiple_gloo_timeouts(tmp_path):
+    init_file = tmp_path / "gloo-init"
+    context = multiprocessing.get_context("spawn")
+    processes = [
+        context.Process(
+            target=_run_idle_fault_channel,
+            args=(rank, str(init_file)),
+        )
+        for rank in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
+
+    assert [process.exitcode for process in processes] == [0, 0]

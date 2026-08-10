@@ -30,7 +30,9 @@ from tokenspeed.runtime.distributed.qualification_events import (
     emit_distributed_topology_success,
 )
 from tokenspeed.runtime.pipeline.groups import (
-    PIPELINE_FAULT_GROUP_ROLE,
+    PIPELINE_FAULT_DOWNSTREAM_GROUP_ROLE,
+    PIPELINE_FAULT_GROUP_TIMEOUT_SECONDS,
+    PIPELINE_FAULT_UPSTREAM_GROUP_ROLE,
     PIPELINE_RESULT_GROUP_ROLE,
     PIPELINE_STEP_META_GROUP_ROLE,
 )
@@ -195,7 +197,14 @@ class DistributedInitializer:
             pg_manager.init_process_group(
                 config.mapping.world_group,
                 backend="gloo",
-                role=PIPELINE_FAULT_GROUP_ROLE,
+                role=PIPELINE_FAULT_UPSTREAM_GROUP_ROLE,
+                timeout_seconds=PIPELINE_FAULT_GROUP_TIMEOUT_SECONDS,
+            )
+            pg_manager.init_process_group(
+                config.mapping.world_group,
+                backend="gloo",
+                role=PIPELINE_FAULT_DOWNSTREAM_GROUP_ROLE,
+                timeout_seconds=PIPELINE_FAULT_GROUP_TIMEOUT_SECONDS,
             )
         pg_manager.init_process_group(config.mapping.attn.tp_group)
         pg_manager.init_process_group(config.mapping.dense.tp_group)
