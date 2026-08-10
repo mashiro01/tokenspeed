@@ -130,6 +130,7 @@ def build_balanced_kimi_k3_pipeline_plan(
     attn_res_block_size: int,
     stage_count: int,
     activation_dtype: str = "bfloat16",
+    dspark_context_hidden_size: int | None = None,
 ) -> PipelinePlan:
     """Build the default balanced K3 plan for a pipeline stage count."""
 
@@ -143,6 +144,7 @@ def build_balanced_kimi_k3_pipeline_plan(
             stage_count=stage_count,
         ),
         activation_dtype=activation_dtype,
+        dspark_context_hidden_size=dspark_context_hidden_size,
     )
 
 
@@ -153,6 +155,7 @@ def build_kimi_k3_pipeline_plan(
     attn_res_block_size: int,
     stage_layer_counts: Sequence[int],
     activation_dtype: str = "bfloat16",
+    dspark_context_hidden_size: int | None = None,
 ) -> PipelinePlan:
     """Build K3 stage ownership and chain-full AttnRes boundary schemas.
 
@@ -167,6 +170,9 @@ def build_kimi_k3_pipeline_plan(
         attn_res_block_size: Decoder layers represented by one snapshot.
         stage_layer_counts: Positive decoder-layer count for every stage.
         activation_dtype: Runtime dtype string used by activation validation.
+        dspark_context_hidden_size: When set, reserve one projected DSpark
+            context stream at every PP boundary. The stream is an accumulated
+            projection rather than a relay of every raw target hidden state.
 
     Returns:
         A validated generic :class:`PipelinePlan`.
@@ -186,6 +192,8 @@ def build_kimi_k3_pipeline_plan(
         )
     if not isinstance(activation_dtype, str) or not activation_dtype:
         raise ValueError("activation_dtype must be a non-empty string")
+    if dspark_context_hidden_size is not None:
+        _positive_int("dspark_context_hidden_size", dspark_context_hidden_size)
 
     boundaries: list[int] = []
     cursor = 0
@@ -205,6 +213,7 @@ def build_kimi_k3_pipeline_plan(
             hidden_size=hidden_size,
             attn_res_block_size=attn_res_block_size,
             activation_dtype=activation_dtype,
+            dspark_context_hidden_size=dspark_context_hidden_size,
         )
         for stage_id, end_layer in enumerate(boundaries)
     )
@@ -239,6 +248,7 @@ def _boundary_schema(
     hidden_size: int,
     attn_res_block_size: int,
     activation_dtype: str,
+    dspark_context_hidden_size: int | None,
 ) -> ActivationSchema:
     completed_blocks = end_layer // attn_res_block_size
     fields = [
@@ -256,6 +266,14 @@ def _boundary_schema(
         )
         for block_id in range(completed_blocks)
     )
+    if dspark_context_hidden_size is not None:
+        fields.append(
+            ActivationFieldSpec(
+                field_id="dspark_context",
+                dtype=activation_dtype,
+                trailing_shape=(dspark_context_hidden_size,),
+            )
+        )
     return ActivationSchema(
         boundary_id=(
             f"kimi-k3/attn-res-{attn_res_block_size}/after-layer-{end_layer}/"
