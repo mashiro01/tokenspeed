@@ -306,6 +306,7 @@ class K3DSparkModel(nn.Module):
             prefix=add_prefix("context_proj", prefix),
         )
         self.context_norm = RMSNorm(hidden_size, eps=eps)
+        self._projected_context_dtype: torch.dtype | None = None
 
         self.layers = nn.ModuleList(
             [
@@ -330,7 +331,45 @@ class K3DSparkModel(nn.Module):
 
     def project_target_hidden(self, target_hidden: torch.Tensor) -> torch.Tensor:
         """Concatenated target taps -> draft hidden space."""
+        if self.context_proj is None:
+            raise RuntimeError(
+                "K3 DSpark is in pipeline-projected context mode; raw target "
+                "tap concatenation is unavailable."
+            )
         return self.context_norm(self.context_proj(target_hidden)[0])
+
+    def enable_pipeline_projected_context(self) -> None:
+        """Release the full ``context_proj`` after PP slice distribution.
+
+        Pipeline stages have already retained the five input-column slices and
+        send their FP32 sum back to this PP0-owned draft. Keeping the original
+        full projection would duplicate roughly one dense projection per TP
+        rank for no runtime purpose.
+        """
+
+        if self.context_proj is None:
+            return
+        self._projected_context_dtype = self.context_proj.weight.dtype
+        self.context_proj = None
+
+    @torch.no_grad()
+    def project_pipeline_context(self, projected_context: torch.Tensor) -> torch.Tensor:
+        """Normalize the FP32 context accumulated across K3 pipeline stages."""
+
+        if self.context_proj is not None:
+            raise RuntimeError(
+                "K3 DSpark pipeline context mode must release context_proj first."
+            )
+        if (
+            projected_context.ndim != 2
+            or projected_context.shape[1] != self.hidden_size
+        ):
+            raise ValueError(
+                "K3 DSpark projected context must have shape "
+                f"[tokens, {self.hidden_size}], got {tuple(projected_context.shape)}"
+            )
+        dtype = self.context_dtype
+        return self.context_norm(projected_context.to(dtype=dtype))
 
     def _finalize_hidden(
         self, hidden_states: torch.Tensor, residual: torch.Tensor
@@ -350,7 +389,11 @@ class K3DSparkModel(nn.Module):
 
     @property
     def context_dtype(self) -> torch.dtype:
-        return self.context_proj.weight.dtype
+        if self.context_proj is not None:
+            return self.context_proj.weight.dtype
+        if self._projected_context_dtype is None:
+            raise RuntimeError("K3 DSpark projected context dtype is not configured")
+        return self._projected_context_dtype
 
     @torch.no_grad()
     def write_context_kv(

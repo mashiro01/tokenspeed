@@ -119,7 +119,7 @@ from tokenspeed.runtime.layers.linear import (
     ReplicatedLinear,
     RowParallelLinear,
 )
-from tokenspeed.runtime.layers.logits_processor import LogitsMetadata
+from tokenspeed.runtime.layers.logits_processor import LogitsMetadata, LogitsProcessor
 from tokenspeed.runtime.layers.moe.expert import MoELayer
 from tokenspeed.runtime.layers.moe.latent import (
     Kimi3LatentProjection,
@@ -132,7 +132,11 @@ from tokenspeed.runtime.layers.moe.schema import ExpertCheckpointSchema
 from tokenspeed.runtime.layers.moe.topk import TopK, TopKOutput, TopKOutputFormat
 from tokenspeed.runtime.layers.moe.utils import RoutingMethodType, get_moe_backend
 from tokenspeed.runtime.layers.quantization.base_config import QuantizationConfig
-from tokenspeed.runtime.layers.vocab_parallel_embedding import VocabParallelEmbedding
+from tokenspeed.runtime.layers.vocab_parallel_embedding import (
+    ParallelLMHead,
+    UnquantizedEmbeddingMethod,
+    VocabParallelEmbedding,
+)
 from tokenspeed.runtime.model_loader.weight_utils import (
     default_weight_loader,
     sharded_weight_loader,
@@ -2284,6 +2288,7 @@ class KimiLinearModel(nn.Module):
         placement: KimiK3DSparkPlacement,
         *,
         projection_weights: MappingABC[int, torch.Tensor],
+        activation_dtype: str | None = None,
     ) -> None:
         """Install one PP stage's projected DSpark context path.
 
@@ -2323,7 +2328,10 @@ class KimiLinearModel(nn.Module):
             hidden_size=self.config.hidden_size,
             attn_res_block_size=self.config.attn_res_block_size,
             stage_layer_counts=counts,
-            activation_dtype=str(torch.get_default_dtype()).removeprefix("torch."),
+            activation_dtype=(
+                activation_dtype
+                or str(torch.get_default_dtype()).removeprefix("torch.")
+            ),
             dspark_context_hidden_size=placement.context_hidden_size,
             dspark_context_dtype="float32",
         )
@@ -2551,11 +2559,14 @@ class KimiLinearForCausalLM(BaseCausalLM):
         placement: KimiK3DSparkPlacement,
         *,
         projection_weights: MappingABC[int, torch.Tensor],
+        activation_dtype: str | None = None,
     ) -> None:
         """Install K3's stage-local DSpark context projection contract."""
 
         self.model.configure_dspark_pipeline(
-            placement, projection_weights=projection_weights
+            placement,
+            projection_weights=projection_weights,
+            activation_dtype=activation_dtype,
         )
 
     def resolve_lm_head(
@@ -3028,6 +3039,11 @@ class KimiK3ForConditionalGeneration(nn.Module):
             self.vision = None
             self.vision_embedder = None
             self.image_encoder = None
+        # PP0 normally owns embeddings while PP7 owns the target LM head. K3
+        # DSpark keeps the draft on PP0, so startup installs this TP-sharded
+        # replica there from the PP7 checkpoint shard.
+        self._pipeline_dspark_lm_head = None
+        self._pipeline_dspark_logits_processor = None
 
     def get_input_embeddings(self) -> nn.Module:
         if self.language_model is None:
@@ -3048,6 +3064,125 @@ class KimiK3ForConditionalGeneration(nn.Module):
             raise AttributeError("encoder-only Kimi-K3 has no language pipeline plan")
         return self.language_model.model.pipeline_plan
 
+    @property
+    def dspark_pipeline_placement(self) -> KimiK3DSparkPlacement | None:
+        if self.language_model is None:
+            return None
+        return self.language_model.model.dspark_pipeline_placement
+
+    def install_pipeline_dspark_draft_head(self, weight: torch.Tensor) -> None:
+        """Install PP7's vocab shard on PP0 for K3 DSpark candidate sampling."""
+
+        if not self.mapping.pipeline.is_first_stage:
+            raise ValueError("only Kimi-K3 pipeline stage 0 may own a DSpark head")
+        if self.language_model is None:
+            raise AttributeError("encoder-only Kimi-K3 cannot install a DSpark head")
+        if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+            raise ValueError("Kimi-K3 DSpark LM head weight must be a rank-2 tensor")
+
+        text_config = self.language_model.config
+        if self.mapping.attn.has_dp:
+            head = ReplicatedLinear(
+                text_config.hidden_size,
+                text_config.vocab_size,
+                bias=False,
+                params_dtype=weight.dtype,
+                prefix="pipeline_dspark_lm_head",
+            )
+        else:
+            head = ParallelLMHead(
+                text_config.vocab_size,
+                text_config.hidden_size,
+                params_dtype=weight.dtype,
+                prefix="pipeline_dspark_lm_head",
+                tp_rank=self.mapping.attn.tp_rank,
+                tp_size=self.mapping.attn.tp_size,
+                tp_group=self.mapping.attn.tp_group,
+            )
+        if tuple(head.weight.shape) != tuple(weight.shape):
+            raise ValueError(
+                "Kimi-K3 DSpark LM head shard shape disagrees with PP0: "
+                f"source={tuple(weight.shape)}, destination={tuple(head.weight.shape)}"
+            )
+        head.weight.data.copy_(weight)
+        self._pipeline_dspark_lm_head = head
+        self._pipeline_dspark_logits_processor = LogitsProcessor(
+            text_config,
+            skip_all_gather=self.mapping.attn.has_dp,
+            tp_rank=self.mapping.attn.tp_rank,
+            tp_size=self.mapping.attn.tp_size,
+            tp_group=self.mapping.attn.tp_group,
+        )
+
+    def get_pipeline_dspark_source_head_weight(
+        self,
+        *,
+        expected_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Validate and return PP7's portable K3 DSpark vocabulary shard.
+
+        The PP0 draft currently reuses a plain ``ParallelLMHead`` shard. Do
+        not silently treat this as support for a quantized or stateful head:
+        those would require a manifest and transfer of every parameter/buffer.
+        """
+
+        if not self.mapping.pipeline.is_last_stage:
+            raise ValueError(
+                "only the final Kimi-K3 pipeline stage owns the source head"
+            )
+        if self.language_model is None:
+            raise AttributeError("encoder-only Kimi-K3 has no language LM head")
+        source_head = self.language_model.lm_head
+        if not isinstance(source_head, ParallelLMHead):
+            raise TypeError(
+                "Kimi-K3 DSpark pipeline requires an unquantized ParallelLMHead"
+            )
+        if source_head.bias is not None:
+            raise ValueError("Kimi-K3 DSpark pipeline LM head must not have a bias")
+        if source_head.quant_config is not None or type(
+            source_head.linear_method
+        ) is not UnquantizedEmbeddingMethod:
+            raise ValueError(
+                "Kimi-K3 DSpark pipeline does not support a quantized LM head"
+            )
+        parameter_names = tuple(name for name, _ in source_head.named_parameters())
+        if parameter_names != ("weight",):
+            raise ValueError(
+                "Kimi-K3 DSpark pipeline LM head must expose only its weight, "
+                f"got parameters {parameter_names}"
+            )
+        buffer_names = tuple(name for name, _ in source_head.named_buffers())
+        if buffer_names:
+            raise ValueError(
+                "Kimi-K3 DSpark pipeline LM head must not expose persistent "
+                f"buffers, got {buffer_names}"
+            )
+        weight = source_head.weight.detach()
+        if weight.ndim != 2:
+            raise RuntimeError("Kimi-K3 target LM head weight must be rank-2")
+        if weight.dtype != expected_dtype:
+            raise ValueError(
+                "Kimi-K3 target LM head dtype must match the target dtype: "
+                f"{weight.dtype} != {expected_dtype}"
+            )
+        return weight
+
+    def get_pipeline_dspark_draft_components(self):
+        """Return PP0's target embedding and replicated vocabulary head."""
+
+        if (
+            self._pipeline_dspark_lm_head is None
+            or self._pipeline_dspark_logits_processor is None
+        ):
+            raise RuntimeError(
+                "Kimi-K3 DSpark pipeline head is not installed on this stage"
+            )
+        return (
+            self.get_input_embeddings(),
+            self._pipeline_dspark_lm_head,
+            self._pipeline_dspark_logits_processor,
+        )
+
     def get_embed_and_head(self):
         if self.mapping.pipeline.stage_count > 1:
             raise AttributeError(
@@ -3060,6 +3195,7 @@ class KimiK3ForConditionalGeneration(nn.Module):
         placement: KimiK3DSparkPlacement,
         *,
         projection_weights: MappingABC[int, torch.Tensor],
+        activation_dtype: str | None = None,
     ) -> None:
         """Configure the local K3 target stage for projected PP DSpark."""
 
@@ -3068,7 +3204,9 @@ class KimiK3ForConditionalGeneration(nn.Module):
                 "Kimi-K3 encoder-only mode cannot configure DSpark pipeline state."
             )
         self.language_model.configure_dspark_pipeline(
-            placement, projection_weights=projection_weights
+            placement,
+            projection_weights=projection_weights,
+            activation_dtype=activation_dtype,
         )
 
     def set_dflash_layers_to_capture(

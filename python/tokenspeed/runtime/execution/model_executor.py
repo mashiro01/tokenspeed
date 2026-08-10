@@ -99,6 +99,7 @@ from tokenspeed.runtime.pipeline.torch_control import (
     TorchPipelineControlPlane,
 )
 from tokenspeed.runtime.pipeline.torch_transport import (
+    TorchPipelineDSparkSynchronizer,
     TorchPipelineResultSynchronizer,
     TorchPipelineTransport,
     validate_pipeline_plan_consensus,
@@ -369,8 +370,21 @@ class ModelExecutor:
         self.token_to_kv_pool = token_to_kv_pool
         self.pipeline_executor = None
         self.pipeline_result_synchronizer = None
+        self.pipeline_dspark_synchronizer = None
         self.pipeline_control = None
         self._active_pipeline_step = None
+        self._spec_enabled = config.spec_algo is not None
+        self._pipeline_dspark_placement = getattr(
+            model_runner.model,
+            "dspark_pipeline_placement",
+            None,
+        )
+        self._pipeline_dspark_enabled = bool(
+            self._spec_enabled
+            and config.spec_algo == "DSPARK"
+            and config.pipeline_stage_count > 1
+            and self._pipeline_dspark_placement is not None
+        )
         if config.pipeline_stage_count > 1:
             pipeline_plan = getattr(model_runner.model, "pipeline_plan", None)
             stage_plan = getattr(model_runner.model, "pipeline_stage_plan", None)
@@ -411,6 +425,16 @@ class ModelExecutor:
                 device=indexed_device,
                 control=self.pipeline_control,
             )
+            if self._pipeline_dspark_enabled:
+                self.pipeline_dspark_synchronizer = TorchPipelineDSparkSynchronizer(
+                    model_runner.mapping,
+                    device=indexed_device,
+                    control=self.pipeline_control,
+                    context_hidden_size=(
+                        self._pipeline_dspark_placement.context_hidden_size
+                    ),
+                    candidate_width=int(config.spec_num_tokens or 0),
+                )
         # Every pool runs on the shared cache arena and publishes a runtime
         # contract; the per-group tables travel as CacheBatchMetadata. Fail
         # fast here rather than at the first forward or, worse, a CUDA-graph
@@ -505,27 +529,37 @@ class ModelExecutor:
             max_bs,
             self.device,
         )
-        if self.config.spec_algo is not None:
+        if self._spec_enabled:
             # Model-to-model wiring (shared embed/head, eagle3 capture ids)
             # already happened in create_model_runner, right after both
             # models loaded. Here only the drafter instance is built and
             # wired to the target.
-            DrafterImpl = get_drafter_impl(config.spec_algo, draft_model_runner.model)
-            self.drafter = DrafterImpl(
-                spec_num_tokens=config.spec_num_tokens,
-                spec_num_steps=config.spec_num_steps,
-                draft_model_runner=draft_model_runner,
-                runtime_states=self.runtime_states,
-                input_buffers=self.input_buffers,
-                cache_view=self._draft_staging.view,
-                attn_backend=draft_attn_backend,
-                token_to_kv_pool=draft_token_to_kv_pool,
-                vocab_size=config.vocab_size,
-            )
-            self.drafter.wire_target(self.model_runner.model)
-            MultimodalRuntime.wire_drafter(
-                self.drafter, self.model_runner.model_config.hf_config
-            )
+            if draft_model_runner is None:
+                if not self._pipeline_dspark_enabled:
+                    raise RuntimeError(
+                        "speculative decoding requires a local draft model runner"
+                    )
+                self.drafter = None
+            else:
+                DrafterImpl = get_drafter_impl(
+                    config.spec_algo,
+                    draft_model_runner.model,
+                )
+                self.drafter = DrafterImpl(
+                    spec_num_tokens=config.spec_num_tokens,
+                    spec_num_steps=config.spec_num_steps,
+                    draft_model_runner=draft_model_runner,
+                    runtime_states=self.runtime_states,
+                    input_buffers=self.input_buffers,
+                    cache_view=self._draft_staging.view,
+                    attn_backend=draft_attn_backend,
+                    token_to_kv_pool=draft_token_to_kv_pool,
+                    vocab_size=config.vocab_size,
+                )
+                self.drafter.wire_target(self.model_runner.model)
+                MultimodalRuntime.wire_drafter(
+                    self.drafter, self.model_runner.model_config.hf_config
+                )
         else:
             self.drafter = None
 
@@ -584,7 +618,7 @@ class ModelExecutor:
                 model=self.model_runner.model,
                 sampling_backend=self.sampling_backend,
                 requested=self.config.dp_sampling,
-                drafter_available=self.drafter is not None,
+                drafter_available=self._spec_enabled,
                 limits=DpSamplingRuntimeLimits(
                     runtime_vocab_size=self.config.vocab_size,
                     max_num_seqs=config.max_num_seqs,
@@ -608,6 +642,8 @@ class ModelExecutor:
             input_buffers=self.input_buffers,
             config=config,
             drafter=self.drafter,
+            spec_enabled=self._spec_enabled,
+            disable_pipeline_graphs=self._pipeline_dspark_enabled,
             draft_attn_backend=draft_attn_backend,
             draft_token_to_kv_pool=draft_token_to_kv_pool,
             capturable_grammar=self.capturable_grammar,
@@ -632,6 +668,8 @@ class ModelExecutor:
             config=config,
             page_table=self.draft_page_table,
             drafter=self.drafter,
+            spec_enabled=self._spec_enabled,
+            disable_pipeline_graphs=self._pipeline_dspark_enabled,
         )
 
         if config.enable_pipeline_local_warmup:
@@ -967,6 +1005,128 @@ class ModelExecutor:
             multimodal_context=self._active_multimodal_context,
         )
 
+    def _spec_output_token_count(self, ctx: ForwardContext) -> int:
+        """Return the flat target-output width for this sample/verify step."""
+
+        if not self._spec_enabled:
+            return ctx.bs
+        num_decodes = ctx.bs - ctx.num_extends
+        return ctx.num_extends + num_decodes * int(self.config.spec_num_tokens or 1)
+
+    def _get_spec_candidates(self, ctx: ForwardContext) -> torch.Tensor | None:
+        """Read the current verify candidates without requiring a local draft."""
+
+        if not self._spec_enabled:
+            return None
+        num_decodes = ctx.bs - ctx.num_extends
+        if num_decodes == 0:
+            return None
+        verify_width = int(self.config.spec_num_tokens or 0)
+        if verify_width < 1:
+            raise RuntimeError("speculative decoding requires a positive verify width")
+        num_decode_tokens = num_decodes * verify_width
+        num_prefill_tokens = ctx.input_num_tokens - num_decode_tokens
+        if num_prefill_tokens < 0:
+            raise RuntimeError(
+                "speculative verify input has fewer tokens than its decode window"
+            )
+        return self.input_buffers.input_ids_buf[
+            num_prefill_tokens : ctx.input_num_tokens
+        ].reshape(num_decodes, verify_width)
+
+    def _run_pipeline_dspark_step(
+        self,
+        *,
+        ctx: ForwardContext,
+        sampling_info: SamplingBatchInfo,
+        pipeline_step: PipelineStepLease,
+        logits_output: LogitsProcessorOutput | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Complete one PP8 K3 DSpark verify/draft transition.
+
+        PP7 is the only stage with target logits. PP0 is the only stage with
+        draft weights. This method deliberately places both sides of the
+        context/result/candidate handoff in one sequenced protocol so every
+        stage observes the same next verify block.
+        """
+
+        if (
+            self.pipeline_dspark_synchronizer is None
+            or self.pipeline_result_synchronizer is None
+        ):
+            raise RuntimeError("K3 DSpark pipeline synchronizers are unavailable")
+        is_verify_owner = (
+            self.config.pipeline_stage_index == self.config.pipeline_stage_count - 1
+        )
+        output_tokens = None
+        accept_lengths = None
+        context = None
+        output_logprobs = None
+
+        if is_verify_owner:
+            if logits_output is None:
+                raise RuntimeError("K3 DSpark PP7 did not produce target logits")
+            self.nan_guard.audit_logits(logits_output, ctx)
+            if self.capturable_grammar is not None:
+                self.capturable_grammar.wait_bitmask()
+            output_tokens, accept_lengths = self._run_sampling(
+                logits_output,
+                sampling_info,
+                ctx,
+                self._get_spec_candidates(ctx),
+            )
+            self.nan_guard.merge_oov(
+                output_tokens,
+                ctx,
+                self.runtime_states.vocab_size,
+            )
+            context = logits_output.hidden_states
+            output_logprobs = logits_output.next_token_logprobs
+
+        received_context = self.pipeline_dspark_synchronizer.relay_context(
+            step=pipeline_step,
+            context=context,
+        )
+        output_tokens, accept_lengths, nan_flags = (
+            self.pipeline_result_synchronizer.synchronize(
+                step=pipeline_step,
+                batch_size=ctx.bs,
+                output_tokens=output_tokens,
+                accept_lengths=accept_lengths,
+                nan_flags=(self.nan_guard.flags_device if is_verify_owner else None),
+                output_token_count=self._spec_output_token_count(ctx),
+            )
+        )
+        self.nan_guard.load_pipeline_flags(nan_flags)
+
+        next_candidates = None
+        if self.config.pipeline_stage_index == 0:
+            if self.drafter is None or received_context is None:
+                raise RuntimeError("K3 DSpark PP0 is missing draft context or drafter")
+            run_from_projected = getattr(self.drafter, "run_from_projected_context", None)
+            if run_from_projected is None:
+                raise RuntimeError("K3 DSpark PP0 drafter lacks projected-context support")
+            next_candidates = run_from_projected(
+                base_ctx=ctx,
+                projected_context=received_context,
+                output_tokens=output_tokens,
+                accept_lengths=accept_lengths,
+            )
+        next_candidates = self.pipeline_dspark_synchronizer.broadcast_candidates(
+            step=pipeline_step,
+            candidates=next_candidates,
+        )
+        self.runtime_states.future_input_map[
+            self.input_buffers.state_write_req_pool_indices_buf[: ctx.bs]
+        ] = next_candidates.to(torch.int32)
+
+        if is_verify_owner and self.capturable_grammar is not None:
+            self.capturable_grammar.schedule_post_sampler(
+                output_tokens,
+                accept_lengths,
+            )
+        return output_tokens, accept_lengths, output_logprobs
+
     def _apply_force_single_token_verify(
         self,
         accept_lengths: torch.Tensor,
@@ -989,7 +1149,7 @@ class ModelExecutor:
         ctx: ForwardContext,
         candidates: torch.Tensor | None = None,
     ):
-        if self.drafter is None:
+        if not self._spec_enabled:
             return self.sampling_backend.sample(logits_output, sampling_info)
 
         num_extends = ctx.num_extends
@@ -1139,6 +1299,20 @@ class ModelExecutor:
         )
 
         if (
+            self._pipeline_dspark_enabled
+            and ctx.forward_mode is not None
+            and not ctx.forward_mode.is_idle()
+        ):
+            if pipeline_step is None:
+                raise RuntimeError("K3 DSpark pipeline requires an active step")
+            return self._run_pipeline_dspark_step(
+                ctx=ctx,
+                sampling_info=sampling_info,
+                pipeline_step=pipeline_step,
+                logits_output=logits_output,
+            )
+
+        if (
             self.pipeline_result_synchronizer is not None
             and self.config.pipeline_stage_index < self.config.pipeline_stage_count - 1
         ):
@@ -1146,6 +1320,7 @@ class ModelExecutor:
                 self.pipeline_result_synchronizer.synchronize(
                     step=pipeline_step,
                     batch_size=ctx.bs,
+                    output_token_count=self._spec_output_token_count(ctx),
                 )
             )
             self.nan_guard.load_pipeline_flags(nan_flags)
@@ -1160,9 +1335,7 @@ class ModelExecutor:
         self.nan_guard.audit_logits(logits_output, ctx)
 
         candidates = (
-            self.drafter.get_candidates(ctx)
-            if self.config.spec_algo is not None
-            else None
+            self._get_spec_candidates(ctx) if self._spec_enabled else None
         )
 
         if self.capturable_grammar is not None:
@@ -1185,6 +1358,7 @@ class ModelExecutor:
                     output_tokens=output_tokens,
                     accept_lengths=accept_lengths,
                     nan_flags=self.nan_guard.flags_device,
+                    output_token_count=self._spec_output_token_count(ctx),
                 )
             )
             self.nan_guard.load_pipeline_flags(nan_flags)
@@ -1225,7 +1399,7 @@ class ModelExecutor:
         next iteration's batch prep on the default stream, so they need
         explicit stream synchronization (see execute_forward_op).
         """
-        if self.drafter is None:
+        if not self._spec_enabled:
             # Without drafter, store output tokens for next round.
             # With drafter, _forward_step already wrote the drafter's
             # next-round input (verified + draft tokens) to future_input_map.
@@ -1817,7 +1991,7 @@ class ModelExecutor:
                 gather_ids = None
                 if num_extends > 0:
                     num_decodes = bs - num_extends
-                    if self.drafter is not None and num_decodes > 0:
+                    if self._spec_enabled and num_decodes > 0:
                         # MIXED + spec: prefill rows pruned to last token,
                         # decode block kept full at verify width.
                         num_decode_tokens = num_decodes * self.config.spec_num_tokens
@@ -1859,7 +2033,7 @@ class ModelExecutor:
                     forward_mode=forward_mode,
                     capture_hidden_mode=(
                         CaptureHiddenMode.FULL
-                        if self.drafter is not None
+                        if self._spec_enabled
                         else CaptureHiddenMode.NULL
                     ),
                     gather_ids=gather_ids,
@@ -1882,7 +2056,7 @@ class ModelExecutor:
                     grammar_completion = setup_grammar_step(
                         sampling_info=sampling_info,
                         bs=bs,
-                        is_spec_decode=self.drafter is not None and num_extends < bs,
+                        is_spec_decode=self._spec_enabled and num_extends < bs,
                         spec_num_tokens=self.config.spec_num_tokens or 1,
                         grammar_inputs=grammar_inputs,
                         grammar_runtime=self.grammar_runtime,

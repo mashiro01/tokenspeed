@@ -166,6 +166,7 @@ class DFlash(BaseDrafter):
         self._greedy_gather_cap = 0
         self._init_fused_kv_helper()
         self._init_incremental_proj()
+        self._pipeline_projected_context = False
 
     def _init_native_buffers(self) -> None:
         if self.input_buffers is None:
@@ -227,9 +228,19 @@ class DFlash(BaseDrafter):
         language_model = getattr(target_model, "language_model", target_model)
         self.target_model = target_model
         self.target_language_model = language_model
-        self.embed_tokens = target_model.get_input_embeddings()
-        self.lm_head = target_model.lm_head
-        self.logits_processor = language_model.logits_processor
+        placement = getattr(target_model, "dspark_pipeline_placement", None)
+        self._pipeline_projected_context = placement is not None
+        if self._pipeline_projected_context:
+            components = getattr(target_model, "get_pipeline_dspark_draft_components", None)
+            if components is None:
+                raise ValueError(
+                    "K3 DSpark pipeline target must provide PP0 draft components."
+                )
+            self.embed_tokens, self.lm_head, self.logits_processor = components()
+        else:
+            self.embed_tokens = target_model.get_input_embeddings()
+            self.lm_head = target_model.lm_head
+            self.logits_processor = language_model.logits_processor
         if not hasattr(target_model, "set_dflash_layers_to_capture"):
             raise ValueError(
                 "DFLASH requires the target model to support "
@@ -428,10 +439,42 @@ class DFlash(BaseDrafter):
         hidden = logits_output.hidden_states
         if hidden is None:
             raise RuntimeError("DFLASH requires target hidden states.")
-        if hidden.shape[0] != base_ctx.input_num_tokens:
+        target_hidden, target_positions, target_cache_locs, decode_only = (
+            self._select_native_cache_rows(
+                base_ctx,
+                hidden,
+                accept_lengths,
+                label="hidden-state",
+            )
+        )
+        if target_hidden is None:
+            return
+        self._write_native_cache(
+            target_hidden,
+            target_positions,
+            target_cache_locs,
+            decode_only=decode_only,
+        )
+
+    def _select_native_cache_rows(
+        self,
+        base_ctx: ForwardContext,
+        context: torch.Tensor,
+        accept_lengths: torch.Tensor,
+        *,
+        label: str,
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        bool,
+    ]:
+        """Select accepted target rows and update the draft sequence lengths."""
+
+        if context.shape[0] != base_ctx.input_num_tokens:
             raise RuntimeError(
-                "DFLASH hidden-state/token mismatch: "
-                f"hidden_tokens={hidden.shape[0]}, input_tokens={base_ctx.input_num_tokens}."
+                f"DFLASH {label}/token mismatch: "
+                f"tokens={context.shape[0]}, input_tokens={base_ctx.input_num_tokens}."
             )
 
         bs = base_ctx.bs
@@ -457,20 +500,19 @@ class DFlash(BaseDrafter):
             self.draft_seq_lens_buf[:bs].copy_(
                 old_lens.to(torch.int32) + accept_lengths[:bs].to(torch.int32)
             )
-            self._write_native_cache(hidden, positions, cache_locs, decode_only=True)
-            return
+            return context, positions, cache_locs, True
 
-        hidden_chunks = torch.split(hidden, lengths.detach().cpu().tolist(), dim=0)
+        context_chunks = torch.split(context, lengths.detach().cpu().tolist(), dim=0)
         pos_chunks = torch.split(positions, lengths.detach().cpu().tolist(), dim=0)
         loc_chunks = torch.split(cache_locs, lengths.detach().cpu().tolist(), dim=0)
 
-        selected_hidden = []
+        selected_context = []
         selected_positions = []
         selected_cache_locs = []
         new_seq_lens = torch.empty((bs,), dtype=torch.int32, device=self.device)
 
         for row, (chunk, pos_chunk, loc_chunk) in enumerate(
-            zip(hidden_chunks, pos_chunks, loc_chunks, strict=True)
+            zip(context_chunks, pos_chunks, loc_chunks, strict=True)
         ):
             if row < base_ctx.num_extends:
                 take = int(chunk.shape[0])
@@ -484,23 +526,43 @@ class DFlash(BaseDrafter):
             chunk = chunk[:take].contiguous()
             pos_chunk = pos_chunk[:take].contiguous()
             loc_chunk = loc_chunk[:take].contiguous()
-            selected_hidden.append(chunk)
+            selected_context.append(chunk)
             selected_positions.append(pos_chunk)
             selected_cache_locs.append(loc_chunk)
             new_seq_lens[row] = (pos_chunk[-1] + 1).to(torch.int32)
 
         self.draft_seq_lens_buf[:bs].copy_(new_seq_lens)
-        if not selected_hidden:
-            return
+        if not selected_context:
+            return None, None, None, decode_only
 
-        target_hidden = torch.cat(selected_hidden, dim=0)
+        target_context = torch.cat(selected_context, dim=0)
         target_positions = torch.cat(selected_positions, dim=0)
         target_cache_locs = torch.cat(selected_cache_locs, dim=0)
-        self._write_native_cache(
-            target_hidden,
+        return target_context, target_positions, target_cache_locs, decode_only
+
+    @nvtx_range("dflash_update_projected_cache", color="purple")
+    def _update_native_cache_from_projected_context(
+        self,
+        base_ctx: ForwardContext,
+        projected_context: torch.Tensor,
+        accept_lengths: torch.Tensor,
+    ) -> None:
+        """Materialize K3 DSpark's PP-accumulated context into draft KV."""
+
+        target_context, target_positions, target_cache_locs, _decode_only = (
+            self._select_native_cache_rows(
+                base_ctx,
+                projected_context,
+                accept_lengths,
+                label="projected-context",
+            )
+        )
+        if target_context is None:
+            return
+        self._write_projected_context_cache(
+            target_context,
             target_positions,
             target_cache_locs,
-            decode_only=decode_only,
         )
 
     def _write_native_cache(
@@ -528,6 +590,35 @@ class DFlash(BaseDrafter):
                 )
                 return
             # The draft model owns its KV layout (GQA k/v vs MLA latent).
+            model.write_context_kv(
+                ctx_hidden,
+                target_positions,
+                target_cache_locs,
+                self.token_to_kv_pool,
+            )
+
+    def _write_projected_context_cache(
+        self,
+        projected_context: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_cache_locs: torch.Tensor,
+    ) -> None:
+        model = self.draft_model_runner.model
+        project = getattr(model, "project_pipeline_context", None)
+        if project is None:
+            raise RuntimeError(
+                "DFLASH received a pipeline-projected context for a draft that "
+                "does not support it."
+            )
+        expected_width = int(getattr(model, "hidden_size", 0))
+        actual_width = int(projected_context.shape[-1])
+        if actual_width != expected_width:
+            raise RuntimeError(
+                "DFLASH projected context width mismatch: "
+                f"expected {expected_width}, got {actual_width}."
+            )
+        with torch.inference_mode():
+            ctx_hidden = project(projected_context)
             model.write_context_kv(
                 ctx_hidden,
                 target_positions,
@@ -994,6 +1085,11 @@ class DFlash(BaseDrafter):
     ) -> torch.Tensor:
         if not hasattr(self, "target_model"):
             raise RuntimeError("DFLASH drafter is not bound to a target model.")
+        if self._pipeline_projected_context:
+            raise RuntimeError(
+                "K3 DSpark pipeline must run from its projected context, not "
+                "the local target logits output."
+            )
 
         from tokenspeed.runtime.execution.cuda_graph_wrapper import (
             get_is_cuda_graph_phase,
@@ -1016,6 +1112,66 @@ class DFlash(BaseDrafter):
 
         # Default sequential path
         self._update_native_cache_from_target(base_ctx, logits_output, accept_lengths)
+        bs = base_ctx.bs
+        current_tokens = self.block_ids_buf[:bs, 0]
+        if base_ctx.num_extends == 0:
+            draft_cache_locs = self.draft_out_cache_loc_buf[
+                : bs * self.draft_query_width
+            ]
+            max_draft_prefix = self.cache_view.max_tokens - self.draft_query_width
+            dflash_prepare_decode(
+                output_tokens=output_tokens,
+                accept_lengths=accept_lengths[:bs],
+                req_pool_indices=self.input_buffers.req_pool_indices_buf[:bs],
+                valid_cache_lengths=self.runtime_states.valid_cache_lengths,
+                page_table=self.cache_view.table,
+                draft_seq_lens=self.draft_seq_lens_buf[:bs],
+                block_ids=self.block_ids_buf[:bs],
+                block_positions=self.block_positions_buf[:bs],
+                out_cache_loc=draft_cache_locs,
+                verify_width=self.spec_num_tokens,
+                draft_query_width=self.draft_query_width,
+                page_size=self.cache_view.page_size,
+                max_draft_prefix=max_draft_prefix,
+            )
+            return self._draft_native(current_tokens, prepared=True)
+
+        self._current_tokens_from_output(
+            output_tokens,
+            accept_lengths,
+            base_ctx.num_extends,
+            self.spec_num_tokens,
+            out=current_tokens,
+        )
+        return self.draft(current_tokens)
+
+    @nvtx_range("drafter:dflash_pipeline", color="purple")
+    def run_from_projected_context(
+        self,
+        *,
+        base_ctx: ForwardContext,
+        projected_context: torch.Tensor,
+        output_tokens: torch.Tensor,
+        accept_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run the PP0-owned K3 DSpark draft after PP7 verification.
+
+        The input is the single FP32 context accumulated by target stages and
+        relayed from PP7, rather than a local ``LogitsProcessorOutput``. This
+        intentionally uses the sequential KV path: the old aux-stream overlap
+        assumes the target and draft live on one rank and cannot synchronize a
+        remote PP7 producer correctly.
+        """
+
+        if not self._pipeline_projected_context:
+            raise RuntimeError(
+                "run_from_projected_context is only valid for K3 DSpark PP."
+            )
+        self._update_native_cache_from_projected_context(
+            base_ctx,
+            projected_context,
+            accept_lengths,
+        )
         bs = base_ctx.bs
         current_tokens = self.block_ids_buf[:bs, 0]
         if base_ctx.num_extends == 0:

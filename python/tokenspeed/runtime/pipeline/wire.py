@@ -233,8 +233,15 @@ class ResultWireHeader:
         *,
         expected_step: PipelineStepDescriptor,
         expected_source_stage: int,
+        expected_field_count: int = 3,
+        expected_flags: int = 0,
     ) -> None:
         words = _words(value, RESULT_HEADER_WORDS, "result header")
-        expected = cls(expected_step, expected_source_stage).pack()
+        expected = cls(
+            expected_step,
+            expected_source_stage,
+            field_count=expected_field_count,
+            flags=expected_flags,
+        ).pack()
         if words != expected:
             raise PipelineProtocolError("result wire identity does not match this step")

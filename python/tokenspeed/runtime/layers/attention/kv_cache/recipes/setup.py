@@ -23,7 +23,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Literal
 
@@ -77,6 +77,10 @@ class CachePoolSpec:
     paged_cache_group_specs: tuple[PagedCacheGroupSpec, ...]
     state_field_dtypes: Mapping[str, torch.dtype]
     token_capacity: int
+    # Concrete storage dtype for fields whose representation differs from the
+    # pool-wide default. K3 DSpark uses this for BF16 draft latent KV beside
+    # FP8 target latent KV in the same arena.
+    field_dtypes: Mapping[str, torch.dtype] = field(default_factory=dict)
     layer_kv_head_counts: tuple[int, ...] | None = None
     pool_options: object | None = None
     # ``None`` means the legacy identity mapping. Pipeline stages carry their
@@ -111,6 +115,21 @@ class CachePoolSpec:
             ):
                 raise ValueError(
                     "logical cache layer ids must be unique non-negative integers"
+                )
+        planned_fields = {field.field_id: field for field in self.memory_plan.fields}
+        for field_id, dtype in self.field_dtypes.items():
+            planned = planned_fields.get(field_id)
+            if planned is None:
+                raise ValueError(
+                    f"cache field dtype names an unplanned field {field_id!r}"
+                )
+            if not isinstance(dtype, torch.dtype):
+                raise TypeError(
+                    f"cache field dtype for {field_id!r} must be a torch.dtype"
+                )
+            if torch.empty((), dtype=dtype).element_size() != planned.element_size:
+                raise ValueError(
+                    f"cache field dtype for {field_id!r} does not match its plan"
                 )
         for name, digest in (
             ("pipeline_plan_digest", self.pipeline_plan_digest),
@@ -202,6 +221,10 @@ class CachePoolSpec:
                 "state_field_dtypes": tuple(
                     (field_id, str(dtype).removeprefix("torch."))
                     for field_id, dtype in sorted(self.state_field_dtypes.items())
+                ),
+                "field_dtypes": tuple(
+                    (field_id, str(dtype).removeprefix("torch."))
+                    for field_id, dtype in sorted(self.field_dtypes.items())
                 ),
                 "token_capacity": self.token_capacity,
                 "layer_kv_head_counts": self.layer_kv_head_counts,

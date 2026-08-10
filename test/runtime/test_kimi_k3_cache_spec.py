@@ -248,6 +248,39 @@ def test_pp8_dspark_cache_owns_draft_planes_on_pp0_only() -> None:
     assert all(binding.logical_layer_id < 93 for binding in layouts[1].bindings)
 
 
+def test_pp8_dspark_records_mixed_target_and_draft_kv_dtypes() -> None:
+    text_config = KimiLinearConfig()
+    draft_config = KimiK3DSparkConfig(
+        target_layer_ids=[2, 23, 47, 71, 89],
+        mask_token_id=0,
+    )
+    target_attn_config = SimpleNamespace(
+        attn_tp_size=8,
+        kv_cache_dtype=torch.float8_e4m3fn,
+        kv_cache_quant_method=None,
+        dtype=torch.bfloat16,
+        kv_lora_rank=draft_config.kv_lora_rank,
+        qk_rope_head_dim=draft_config.qk_rope_head_dim,
+    )
+    draft_attn_config = SimpleNamespace(
+        **{
+            **target_attn_config.__dict__,
+            "kv_cache_dtype": torch.bfloat16,
+        }
+    )
+
+    contract = _build_kimi_k3_pipeline_cache_contract(
+        text_config=text_config,
+        attn_config=target_attn_config,
+        draft_model_config=SimpleNamespace(hf_config=draft_config),
+        draft_attn_config=draft_attn_config,
+        stage_count=8,
+    )
+
+    assert contract.logical_field_dtypes["layer.3.latent_kv"] == torch.float8_e4m3fn
+    assert contract.logical_field_dtypes["layer.93.latent_kv"] == torch.bfloat16
+
+
 def test_lcm_geometry_packs_two_kda_pages_at_tp16() -> None:
     """KDA state halves at TP16; two pages pack per MLA-sized plane."""
     plan = _plan(7, tp_size=16)

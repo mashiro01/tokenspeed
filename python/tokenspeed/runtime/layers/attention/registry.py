@@ -660,6 +660,7 @@ def _create_draft_components(
     cache_spec: CachePoolSpec | None,
     num_target_layers: int,
     draft_logical_layer_offset: int | None,
+    strict_layer_map: bool,
     full_attn_backend_name: str | None,
     is_hybrid_linear: bool,
     is_kda: bool,
@@ -711,6 +712,7 @@ def _create_draft_components(
         pool,
         [draft_layer_offset + local for local in range(num_layers)],
         layer_map={local: draft_layer_offset + local for local in range(num_layers)},
+        strict=strict_layer_map,
     )
     if is_hybrid_linear:
         backend = _create_hybrid_linear_attn_backend(
@@ -1053,6 +1055,7 @@ def create_attn_components(
         cache_spec=draft_view_spec,
         num_target_layers=cache_setup.num_target_layers,
         draft_logical_layer_offset=cache_setup.draft_logical_layer_offset,
+        strict_layer_map=is_k3_dspark_draft_model,
         full_attn_backend_name=draft_full_attn_backend_name,
         is_hybrid_linear=draft_is_hybrid_gdn or draft_is_hybrid_mla_kda,
         is_kda=draft_is_hybrid_mla_kda,

@@ -197,6 +197,8 @@ class CudaGraphWrapper:
         draft_attn_backend: AttentionBackend | None = None,
         draft_token_to_kv_pool: CachePool | None = None,
         drafter: BaseDrafter | None = None,
+        spec_enabled: bool | None = None,
+        disable_pipeline_graphs: bool = False,
         capturable_grammar=None,
         eager_grammar_buffers=None,
         sampling_backend: SamplingBackend | None = None,
@@ -208,6 +210,9 @@ class CudaGraphWrapper:
         self.draft_token_to_kv_pool = draft_token_to_kv_pool
         self.token_to_kv_pool = token_to_kv_pool
         self.drafter = drafter
+        self.spec_enabled = (
+            config.spec_algo is not None if spec_enabled is None else bool(spec_enabled)
+        )
         self.sampling_backend = sampling_backend
         self.input_buffers = input_buffers
         self.capturable_grammar = capturable_grammar
@@ -233,7 +238,12 @@ class CudaGraphWrapper:
         self.use_v4_mtp_paged_metadata = config.use_v4_mtp_paged_metadata
         self.dp_size = config.data_parallel_size
         self.world_size = config.world_size
-        self.disable = config.enforce_eager
+        # A whole-step graph cannot include PP control headers, dynamic P2P
+        # receive buffers, remote DSpark context, or candidate broadcasts.
+        # PipelineStageCudaGraphRunner captures the target-only stage forward
+        # separately; keep this whole-step wrapper off until that runner owns
+        # the pipeline path.
+        self.disable = config.enforce_eager or disable_pipeline_graphs
         # Backends alias their cache_seqlens buffer. Draft backend aliases
         # the drafter-owned draft_seq_lens to keep InputBuffers read-only.
         init_backend_cuda_graph_state(
@@ -418,7 +428,7 @@ class CudaGraphWrapper:
             all_decode_or_idle=True,
             capture_hidden_mode=(
                 CaptureHiddenMode.FULL
-                if self.drafter is not None
+                if self.spec_enabled
                 else CaptureHiddenMode.NULL
             ),
         )
@@ -468,7 +478,7 @@ class CudaGraphWrapper:
             sampling_info,
             self.eager_grammar_buffers,
             bs,
-            spec=self.drafter is not None,
+            spec=self.spec_enabled,
             capturable=self.capturable_grammar,
             grammar_backend=self.grammar_backend,
         )
@@ -567,7 +577,7 @@ class CudaGraphWrapper:
                     all_decode_or_idle=True,
                     capture_hidden_mode=(
                         CaptureHiddenMode.FULL
-                        if self.drafter is not None
+                        if self.spec_enabled
                         else CaptureHiddenMode.NULL
                     ),
                 )
@@ -597,7 +607,7 @@ class CudaGraphWrapper:
                     sampling_info,
                     self.eager_grammar_buffers,
                     bs,
-                    spec=self.drafter is not None,
+                    spec=self.spec_enabled,
                     capturable=self.capturable_grammar,
                     grammar_backend=self.grammar_backend,
                 )
@@ -717,7 +727,7 @@ class CudaGraphWrapper:
             )
             if paged_cache_block_tables is not None:
                 capture_kwargs["paged_cache_block_tables"] = paged_cache_block_tables
-                if self.drafter is not None:
+                if self.spec_enabled:
                     capture_kwargs["num_tokens"] = bs * self.max_tokens_per_req
         cache_group_ids = self._cache_group_ids(self.token_to_kv_pool)
         if cache_group_ids:
@@ -930,7 +940,7 @@ class CudaGraphWrapper:
                 kwargs["block_tables"] = padded_block_tables
         if self.attn_backend.uses_padded_decode_token_mask:
             kwargs["actual_bs"] = actual_bs
-        if target_uses_paged_groups and getattr(self, "drafter", None) is not None:
+        if target_uses_paged_groups and self.spec_enabled:
             kwargs["num_tokens"] = padded_bs * self.max_tokens_per_req
         self.attn_backend.init_forward_metadata_replay_cuda_graph(
             padded_bs,
@@ -990,7 +1000,7 @@ class CudaGraphWrapper:
         """Eager path — allocate/refresh metadata for the upcoming forward."""
         if (
             getattr(self.attn_backend, "uses_paged_cache_groups", False)
-            and self.drafter is not None
+            and self.spec_enabled
             and forward_mode.is_decode()
         ):
             kwargs.setdefault("num_tokens", padded_bs * self.max_tokens_per_req)

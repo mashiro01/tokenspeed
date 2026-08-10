@@ -228,6 +228,7 @@ def create_cache_pool(
             layer_group_ids=spec.layer_group_ids,
             pd_disaggregation_enabled=config.pd_disaggregation_enabled,
             state_field_dtypes=spec.state_field_dtypes,
+            field_dtypes=spec.field_dtypes,
             logical_layer_ids=spec.logical_layer_ids,
             memory_plan=plan,
             paged_cache_group_specs=spec.paged_cache_group_specs,

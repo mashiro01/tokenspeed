@@ -36,6 +36,7 @@ from tokenspeed.runtime.distributed.qualification_events import (
 )
 from tokenspeed.runtime.pipeline.contracts import (
     ActivationSchema,
+    PipelineForwardMode,
     PipelinePlan,
     PipelineProtocolError,
     StageActivation,
@@ -108,16 +109,25 @@ class TorchPipelineTransport:
         control: TorchPipelineControlPlane,
         max_leading_dimension: int = 1 << 20,
         max_tensor_elements: int = 1 << 31,
+        max_decode_receive_cache_bytes: int = 64 * 1024 * 1024,
     ) -> None:
         if mapping.pipeline.stage_count < 2:
             raise ValueError("TorchPipelineTransport requires at least two stages")
         if max_leading_dimension < 1 or max_tensor_elements < 1:
             raise ValueError("pipeline activation limits must be positive")
+        if max_decode_receive_cache_bytes < 0:
+            raise ValueError("decode receive cache limit must not be negative")
         self._mapping = mapping
         self._device = torch.device(device)
         self._control = control
         self._max_leading_dimension = max_leading_dimension
         self._max_tensor_elements = max_tensor_elements
+        self._max_decode_receive_cache_bytes = max_decode_receive_cache_bytes
+        self._decode_receive_buffers: dict[
+            tuple[str, tuple[int, ...]], tuple[torch.Tensor, ...]
+        ] = {}
+        self._decode_receive_buffer_bytes = 0
+        self._receive_header = torch.empty(ACTIVATION_HEADER_WORDS, dtype=torch.int64)
         group = mapping.pipeline.pipeline_group
         self._cpu_group = pg_manager.get_process_group("gloo", group)
         self._device_group = pg_manager.get_process_group("nccl", group)
@@ -203,11 +213,14 @@ class TorchPipelineTransport:
             raise PipelineProtocolError(
                 "the first pipeline stage cannot receive activation"
             )
-        header = torch.empty(ACTIVATION_HEADER_WORDS, dtype=torch.int64)
-        header_work = dist.irecv(header, src=source, group=self._cpu_group)
+        header_work = dist.irecv(
+            self._receive_header,
+            src=source,
+            group=self._cpu_group,
+        )
         self._control.wait_work(header_work, step, "activation-header-receive")
         wire_header = ActivationWireHeader.validate_and_unpack(
-            header.tolist(),
+            self._receive_header.tolist(),
             expected_step=step.descriptor,
             expected_schema=schema,
             expected_source_stage=self._mapping.pipeline.stage_index - 1,
@@ -221,7 +234,7 @@ class TorchPipelineTransport:
             )
         self._validate_leading_dimensions(leading_dimensions)
 
-        values = []
+        fields = []
         cursor = 0
         total_elements = 0
         leading_shapes: dict[str, tuple[int, ...]] = {}
@@ -252,13 +265,18 @@ class TorchPipelineTransport:
                 raise PipelineProtocolError(
                     f"field {field.field_id} uses unsupported dtype {field.dtype!r}"
                 )
-            value = torch.empty(shape, dtype=dtype, device=self._device)
-            total_elements += value.numel()
-            values.append(value)
+            total_elements += math.prod(shape)
+            fields.append((field, shape, dtype))
         if total_elements != wire_header.total_elements:
             raise PipelineProtocolError(
                 "activation header total element count does not match payload"
             )
+        values = self._receive_payload_buffers(
+            step=step,
+            schema=schema,
+            leading_dimensions=leading_dimensions,
+            fields=fields,
+        )
 
         payloads = list(zip(values, schema.fields, strict=True))
         works = (
@@ -283,6 +301,51 @@ class TorchPipelineTransport:
             field_ids=[field.field_id for _value, field in payloads],
         )
         return schema.bind(values)
+
+    def _receive_payload_buffers(
+        self,
+        *,
+        step: PipelineStepLease,
+        schema: ActivationSchema,
+        leading_dimensions: tuple[int, ...],
+        fields: list[tuple[object, tuple[int, ...], torch.dtype]],
+    ) -> list[torch.Tensor]:
+        """Allocate or reuse exact-shape payload buffers for steady decode.
+
+        Decode repeatedly traverses a small set of batch buckets. Keeping the
+        exact tensors alive makes the NCCL receive addresses stable and removes
+        per-step CUDA allocation from the pipeline critical path. Prefill is
+        deliberately excluded because its token dimensions can be very large
+        and highly variable.
+        """
+
+        cache_key = (schema.digest, leading_dimensions)
+        use_cache = (
+            step.descriptor.forward_mode is PipelineForwardMode.DECODE
+            and self._max_decode_receive_cache_bytes > 0
+        )
+        if use_cache:
+            cached = self._decode_receive_buffers.get(cache_key)
+            if cached is not None:
+                return list(cached)
+
+        payload_bytes = sum(
+            math.prod(shape) * torch.empty((), dtype=dtype).element_size()
+            for _field, shape, dtype in fields
+        )
+        values = [
+            torch.empty(shape, dtype=dtype, device=self._device)
+            for _field, shape, dtype in fields
+        ]
+        if (
+            use_cache
+            and payload_bytes <= self._max_decode_receive_cache_bytes
+            and self._decode_receive_buffer_bytes + payload_bytes
+            <= self._max_decode_receive_cache_bytes
+        ):
+            self._decode_receive_buffers[cache_key] = tuple(values)
+            self._decode_receive_buffer_bytes += payload_bytes
+        return values
 
     def _wait_payload_works(
         self,
@@ -333,13 +396,20 @@ class TorchPipelineTransport:
             )
 
     def close(self) -> None:
+        self._decode_receive_buffers.clear()
+        self._decode_receive_buffer_bytes = 0
         return None
 
 
 class TorchPipelineResultSynchronizer:
-    """Broadcast the target-only sampling result back along every PP lane."""
+    """Broadcast target sampling results back along every PP lane.
 
-    _FIELDS_PER_REQUEST = 3
+    ``accept_lengths`` and NaN flags are one value per request. ``output_tokens``
+    can instead hold a full speculative verify window, so its explicit count
+    is part of the caller contract rather than inferred from ``batch_size``.
+    """
+
+    _REQUEST_FIELDS = 2
 
     def __init__(
         self,
@@ -370,6 +440,7 @@ class TorchPipelineResultSynchronizer:
         output_tokens: torch.Tensor | None = None,
         accept_lengths: torch.Tensor | None = None,
         nan_flags: torch.Tensor | None = None,
+        output_token_count: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if isinstance(batch_size, bool) or not isinstance(batch_size, int):
             raise ValueError("pipeline result batch_size must be an integer")
@@ -379,8 +450,18 @@ class TorchPipelineResultSynchronizer:
             raise PipelineProtocolError(
                 "pipeline result batch_size disagrees with the active step"
             )
+        if output_token_count is None:
+            output_token_count = batch_size
+        if (
+            isinstance(output_token_count, bool)
+            or not isinstance(output_token_count, int)
+            or output_token_count < 0
+        ):
+            raise ValueError("pipeline output_token_count must be non-negative")
         packet = torch.empty(
-            RESULT_HEADER_WORDS + self._FIELDS_PER_REQUEST * batch_size,
+            RESULT_HEADER_WORDS
+            + output_token_count
+            + self._REQUEST_FIELDS * batch_size,
             dtype=torch.int64,
             device=self._device,
         )
@@ -391,9 +472,13 @@ class TorchPipelineResultSynchronizer:
                     "the final pipeline stage must publish sampling tensors"
                 )
             tensors = (output_tokens, accept_lengths)
-            if any(tensor.numel() != batch_size for tensor in tensors):
+            if (
+                output_tokens.numel() != output_token_count
+                or accept_lengths.numel() != batch_size
+            ):
                 raise PipelineProtocolError(
-                    "target-only pipeline sampling requires one result per request"
+                    "pipeline sampling tensors disagree with their declared output "
+                    "token and request counts"
                 )
             packet[:RESULT_HEADER_WORDS].copy_(
                 torch.tensor(
@@ -405,18 +490,22 @@ class TorchPipelineResultSynchronizer:
                     device=self._device,
                 )
             )
-            payload[:batch_size].copy_(output_tokens.reshape(-1).to(torch.int64))
-            payload[batch_size : 2 * batch_size].copy_(
+            payload[:output_token_count].copy_(output_tokens.reshape(-1).to(torch.int64))
+            payload[
+                output_token_count : output_token_count + batch_size
+            ].copy_(
                 accept_lengths.reshape(-1).to(torch.int64)
             )
             if nan_flags is None:
-                payload[2 * batch_size :].zero_()
+                payload[output_token_count + batch_size :].zero_()
             else:
                 if nan_flags.numel() != batch_size:
                     raise PipelineProtocolError(
                         "pipeline NaN flags must contain one value per request"
                     )
-                payload[2 * batch_size :].copy_(nan_flags.reshape(-1).to(torch.int64))
+                payload[output_token_count + batch_size :].copy_(
+                    nan_flags.reshape(-1).to(torch.int64)
+                )
         work = dist.broadcast(
             packet,
             src=self._source,
@@ -430,7 +519,185 @@ class TorchPipelineResultSynchronizer:
             expected_source_stage=self._mapping.pipeline.stage_count - 1,
         )
         return (
-            payload[:batch_size].to(torch.int32),
-            payload[batch_size : 2 * batch_size].to(torch.int32),
-            payload[2 * batch_size :].to(torch.int32),
+            payload[:output_token_count].to(torch.int32),
+            payload[
+                output_token_count : output_token_count + batch_size
+            ].to(torch.int32),
+            payload[output_token_count + batch_size :].to(torch.int32),
+        )
+
+
+class TorchPipelineDSparkSynchronizer:
+    """Move K3 DSpark's PP context and next candidates without replication.
+
+    Target stages accumulate one FP32 context activation as it travels forward.
+    PP7 owns verification and sends that context directly to PP0, the only
+    rank that owns the draft. PP0 broadcasts the next candidate block after
+    drafting so every target stage builds an identical next verify batch.
+    """
+
+    _CONTEXT_FLAG = 1
+    _CANDIDATES_FLAG = 2
+    _FIELD_COUNT = 1
+
+    def __init__(
+        self,
+        mapping: Mapping,
+        *,
+        device: torch.device | str,
+        control: TorchPipelineControlPlane,
+        context_hidden_size: int,
+        candidate_width: int,
+    ) -> None:
+        if mapping.pipeline.stage_count < 2:
+            raise ValueError("K3 DSpark synchronizer requires pipeline parallelism")
+        if context_hidden_size < 1 or candidate_width < 1:
+            raise ValueError("K3 DSpark context and candidate widths must be positive")
+        self._mapping = mapping
+        self._device = torch.device(device)
+        self._control = control
+        self._context_hidden_size = int(context_hidden_size)
+        self._candidate_width = int(candidate_width)
+        group = mapping.pipeline.pipeline_group
+        self._cpu_group = pg_manager.get_process_group("gloo", group)
+        self._device_group = pg_manager.get_process_group(
+            "nccl",
+            group,
+            role=PIPELINE_RESULT_GROUP_ROLE,
+        )
+        self._draft_owner = group[0]
+        self._verify_owner = group[-1]
+
+    def relay_context(
+        self,
+        *,
+        step: PipelineStepLease,
+        context: torch.Tensor | None = None,
+    ) -> torch.Tensor | None:
+        """Send the final stage's FP32 context directly to the PP0 draft."""
+
+        pipeline = self._mapping.pipeline
+        if pipeline.is_last_stage:
+            if context is None:
+                raise PipelineProtocolError("PP7 must publish the DSpark context")
+            expected_shape = (
+                step.descriptor.input_num_tokens,
+                self._context_hidden_size,
+            )
+            if (
+                tuple(context.shape) != expected_shape
+                or context.dtype != torch.float32
+                or context.device != self._device
+            ):
+                raise PipelineProtocolError(
+                    "K3 DSpark context must be a local FP32 tensor with shape "
+                    f"{expected_shape}, got shape={tuple(context.shape)} "
+                    f"dtype={context.dtype} device={context.device}"
+                )
+            header = torch.tensor(
+                ResultWireHeader(
+                    step.descriptor,
+                    source_stage=pipeline.stage_count - 1,
+                    field_count=self._FIELD_COUNT,
+                    flags=self._CONTEXT_FLAG,
+                ).pack(),
+                dtype=torch.int64,
+            )
+            header_work = dist.isend(
+                header,
+                dst=self._draft_owner,
+                group=self._cpu_group,
+            )
+            self._control.wait_work(header_work, step, "dspark-context-header-send")
+            payload_work = dist.isend(
+                context.contiguous(),
+                dst=self._draft_owner,
+                group=self._device_group,
+            )
+            self._control.wait_work(payload_work, step, "dspark-context-send")
+            return None
+
+        if not pipeline.is_first_stage:
+            return None
+
+        header = torch.empty(RESULT_HEADER_WORDS, dtype=torch.int64)
+        header_work = dist.irecv(
+            header,
+            src=self._verify_owner,
+            group=self._cpu_group,
+        )
+        self._control.wait_work(header_work, step, "dspark-context-header-receive")
+        ResultWireHeader.validate(
+            header.tolist(),
+            expected_step=step.descriptor,
+            expected_source_stage=pipeline.stage_count - 1,
+            expected_field_count=self._FIELD_COUNT,
+            expected_flags=self._CONTEXT_FLAG,
+        )
+        received = torch.empty(
+            (step.descriptor.input_num_tokens, self._context_hidden_size),
+            dtype=torch.float32,
+            device=self._device,
+        )
+        payload_work = dist.irecv(
+            received,
+            src=self._verify_owner,
+            group=self._device_group,
+        )
+        self._control.wait_work(payload_work, step, "dspark-context-receive")
+        return received
+
+    def broadcast_candidates(
+        self,
+        *,
+        step: PipelineStepLease,
+        candidates: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Broadcast PP0's next verify candidates as a checked fixed packet."""
+
+        batch_size = step.descriptor.batch_size
+        packet = torch.empty(
+            RESULT_HEADER_WORDS + batch_size * self._candidate_width,
+            dtype=torch.int64,
+            device=self._device,
+        )
+        if self._mapping.pipeline.is_first_stage:
+            if candidates is None:
+                raise PipelineProtocolError("PP0 must publish K3 DSpark candidates")
+            expected_shape = (batch_size, self._candidate_width)
+            if tuple(candidates.shape) != expected_shape:
+                raise PipelineProtocolError(
+                    "K3 DSpark candidates must have shape "
+                    f"{expected_shape}, got {tuple(candidates.shape)}"
+                )
+            packet[:RESULT_HEADER_WORDS].copy_(
+                torch.tensor(
+                    ResultWireHeader(
+                        step.descriptor,
+                        source_stage=0,
+                        field_count=self._FIELD_COUNT,
+                        flags=self._CANDIDATES_FLAG,
+                    ).pack(),
+                    dtype=torch.int64,
+                    device=self._device,
+                )
+            )
+            packet[RESULT_HEADER_WORDS:].copy_(candidates.reshape(-1).to(torch.int64))
+        work = dist.broadcast(
+            packet,
+            src=self._draft_owner,
+            group=self._device_group,
+            async_op=True,
+        )
+        self._control.wait_work(work, step, "dspark-candidate-broadcast")
+        ResultWireHeader.validate(
+            packet[:RESULT_HEADER_WORDS].to(device="cpu").tolist(),
+            expected_step=step.descriptor,
+            expected_source_stage=0,
+            expected_field_count=self._FIELD_COUNT,
+            expected_flags=self._CANDIDATES_FLAG,
+        )
+        return packet[RESULT_HEADER_WORDS:].to(torch.int32).view(
+            batch_size,
+            self._candidate_width,
         )

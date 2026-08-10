@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tokenspeed.runtime.configs.kimi_k3_config import KimiLinearConfig
+from tokenspeed.runtime.layers.attention.kv_cache.base import LayerMappedKVPool
 from tokenspeed.runtime.layers.attention.kv_cache.hybrid_kda import (
     HybridKDATokenToKVPool,
 )
@@ -22,6 +23,24 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.spec import (
     LINEAR_ATTENTION,
     build_paged_cache_group_specs,
 )
+
+
+def test_strict_dspark_draft_cache_view_cannot_fall_through_to_target_layers():
+    class InnerPool:
+        def get_kv_buffer(self, layer_id):
+            return layer_id
+
+    draft_pool = LayerMappedKVPool(
+        InnerPool(),
+        [93, 94, 95, 96, 97],
+        layer_map={layer_id: 93 + layer_id for layer_id in range(5)},
+        strict=True,
+    )
+
+    assert draft_pool.get_kv_buffer(0) == 93
+    assert draft_pool.get_kv_buffer(4) == 97
+    with pytest.raises(ValueError, match="not owned"):
+        draft_pool.get_kv_buffer(5)
 
 
 def test_kimi_k3_pool_binds_heterogeneous_latent_cache_storage_dtypes() -> None:
@@ -69,6 +88,7 @@ def test_kimi_k3_pool_binds_heterogeneous_latent_cache_storage_dtypes() -> None:
 
     assert pool.get_component(0, "latent_kv").dtype == torch.uint8
     assert pool.get_component(1, "latent_kv").dtype == torch.bfloat16
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_kimi_k3_pool_binds_mla_and_kda_to_one_lcm_backing() -> None:

@@ -215,6 +215,8 @@ class PrefillGraph:
         config: ModelExecutorConfig,
         page_table: torch.Tensor | None,
         drafter=None,
+        spec_enabled: bool | None = None,
+        disable_pipeline_graphs: bool = False,
         num_warmup: int = 3,
     ) -> None:
         model = model_runner.model if model_runner is not None else None
@@ -235,12 +237,16 @@ class PrefillGraph:
         self.config = config
         self.page_table = page_table
         self.drafter = drafter
+        self.spec_enabled = (
+            config.spec_algo is not None if spec_enabled is None else bool(spec_enabled)
+        )
         self.num_warmup = num_warmup
         self.dp_size = config.data_parallel_size
 
         self.capture_buckets = get_prefill_token_buckets(config)
         self.disable = (
             config.enforce_eager
+            or disable_pipeline_graphs
             or config.disable_prefill_graph
             or not self.capture_buckets
             or self.inner_model is None
@@ -528,7 +534,7 @@ class PrefillGraph:
             forward_mode=ForwardMode.EXTEND,
             capture_hidden_mode=(
                 CaptureHiddenMode.FULL
-                if self.drafter is not None
+                if self.spec_enabled
                 else CaptureHiddenMode.NULL
             ),
             gather_ids=torch.cumsum(seq_lens_gpu.to(torch.int64), dim=0) - 1,

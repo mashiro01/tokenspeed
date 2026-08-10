@@ -13,6 +13,7 @@ from tokenspeed.runtime.pipeline.contracts import (
 )
 from tokenspeed.runtime.pipeline.torch_control import PipelineStepLease
 from tokenspeed.runtime.pipeline.torch_transport import (
+    TorchPipelineDSparkSynchronizer,
     TorchPipelineResultSynchronizer,
     TorchPipelineTransport,
     pg_manager,
@@ -155,6 +156,89 @@ def test_torch_transport_sends_fixed_header_then_tensor_payloads(monkeypatch):
         "activation-header-receive",
         "activation-payload-receive-batch",
     ]
+
+
+def test_torch_transport_reuses_exact_decode_receive_buffers(monkeypatch):
+    wire = []
+
+    monkeypatch.setattr(
+        pg_manager,
+        "get_process_group",
+        lambda backend, group, **kwargs: (backend, group, kwargs.get("role")),
+    )
+
+    def send(tensor, dst, group):
+        wire.append((dst, group, tensor.clone()))
+        return _ImmediateWork()
+
+    def receive(tensor, src, group):
+        dst, sent_group, value = wire.pop(0)
+        assert dst == 1
+        assert src == 0
+        assert sent_group == group
+        tensor.copy_(value)
+        return _ImmediateWork()
+
+    def p2p(op, tensor, peer, group=None, tag=0):
+        del tag
+        return op, tensor, peer, group
+
+    def batch(ops):
+        for op, tensor, peer, group in ops:
+            if op is send:
+                wire.append((peer, group, tensor.clone()))
+            else:
+                dst, sent_group, value = wire.pop(0)
+                assert dst == 1
+                assert peer == 0
+                assert sent_group == group
+                tensor.copy_(value)
+        return [_ImmediateWork()]
+
+    monkeypatch.setattr(torch.distributed, "isend", send)
+    monkeypatch.setattr(torch.distributed, "irecv", receive)
+    monkeypatch.setattr(torch.distributed, "P2POp", p2p)
+    monkeypatch.setattr(torch.distributed, "batch_isend_irecv", batch)
+
+    first_mapping = Mapping(
+        rank=0,
+        world_size=2,
+        pipeline_parallel_size=2,
+        attn_tp_size=1,
+        dense_tp_size=1,
+        moe_tp_size=1,
+    )
+    second_mapping = Mapping(
+        rank=1,
+        world_size=2,
+        pipeline_parallel_size=2,
+        attn_tp_size=1,
+        dense_tp_size=1,
+        moe_tp_size=1,
+    )
+    schema = ActivationSchema(
+        "stage-0-to-1",
+        (ActivationFieldSpec("hidden", "bfloat16", (4,)),),
+    )
+    source = TorchPipelineTransport(first_mapping, device="cpu", control=_Control())
+    destination = TorchPipelineTransport(
+        second_mapping,
+        device="cpu",
+        control=_Control(),
+    )
+    step = _step()
+
+    first = schema.bind((torch.arange(8, dtype=torch.bfloat16).reshape(2, 4),))
+    source.send(step, schema, first)
+    received = destination.receive(step, schema)
+    receive_ptr = received.values[0].data_ptr()
+
+    second = schema.bind((torch.arange(8, 16, dtype=torch.bfloat16).reshape(2, 4),))
+    source.send(step, schema, second)
+    received_again = destination.receive(step, schema)
+
+    assert received_again.values[0].data_ptr() == receive_ptr
+    assert torch.equal(received_again.values[0], second.values[0])
 
 
 def test_torch_transport_submits_all_payloads_before_waiting(monkeypatch):
@@ -303,3 +387,150 @@ def test_pipeline_result_synchronizer_broadcasts_compact_int_packet(monkeypatch)
     assert tokens.tolist() == [7, 8]
     assert lengths.tolist() == [1, 1]
     assert flags.tolist() == [0, 1]
+
+
+def test_pipeline_result_synchronizer_preserves_a_speculative_verify_window(
+    monkeypatch,
+):
+    published = []
+    monkeypatch.setattr(
+        pg_manager,
+        "get_process_group",
+        lambda backend, group, **kwargs: (backend, group, kwargs.get("role")),
+    )
+
+    def broadcast(tensor, src, group, async_op=False):
+        assert src == 1
+        assert async_op
+        if not published:
+            published.append(tensor.clone())
+        else:
+            tensor.copy_(published[0])
+        return _ImmediateWork()
+
+    monkeypatch.setattr(torch.distributed, "broadcast", broadcast)
+    final_mapping = Mapping(
+        rank=1,
+        world_size=2,
+        pipeline_parallel_size=2,
+        attn_tp_size=1,
+        dense_tp_size=1,
+        moe_tp_size=1,
+    )
+    first_mapping = Mapping(
+        rank=0,
+        world_size=2,
+        pipeline_parallel_size=2,
+        attn_tp_size=1,
+        dense_tp_size=1,
+        moe_tp_size=1,
+    )
+    control = _Control()
+    final = TorchPipelineResultSynchronizer(
+        final_mapping, device="cpu", control=control
+    )
+    first = TorchPipelineResultSynchronizer(
+        first_mapping, device="cpu", control=control
+    )
+    step = _step()
+
+    final.synchronize(
+        step=step,
+        batch_size=2,
+        output_tokens=torch.tensor([10, 11, 12, 13, 20, 21, 22, 23]),
+        accept_lengths=torch.tensor([4, 2]),
+        nan_flags=torch.tensor([0, 0], dtype=torch.int32),
+        output_token_count=8,
+    )
+    tokens, lengths, flags = first.synchronize(
+        step=step,
+        batch_size=2,
+        output_token_count=8,
+    )
+
+    assert tokens.tolist() == [10, 11, 12, 13, 20, 21, 22, 23]
+    assert lengths.tolist() == [4, 2]
+    assert flags.tolist() == [0, 0]
+
+
+def test_k3_dspark_synchronizer_relays_context_to_pp0_and_candidates_back(
+    monkeypatch,
+):
+    mailbox = {"gloo": [], "nccl": []}
+    candidate_packets = []
+    monkeypatch.setattr(
+        pg_manager,
+        "get_process_group",
+        lambda backend, group, **kwargs: (backend, group, kwargs.get("role")),
+    )
+
+    def isend(tensor, dst, group):
+        del dst
+        mailbox[group[0]].append(tensor.clone())
+        return _ImmediateWork()
+
+    def irecv(tensor, src, group):
+        del src
+        tensor.copy_(mailbox[group[0]].pop(0))
+        return _ImmediateWork()
+
+    def broadcast(tensor, src, group, async_op=False):
+        assert src == 0
+        assert group[0] == "nccl"
+        assert async_op
+        if not candidate_packets:
+            candidate_packets.append(tensor.clone())
+        else:
+            tensor.copy_(candidate_packets[0])
+        return _ImmediateWork()
+
+    monkeypatch.setattr(torch.distributed, "isend", isend)
+    monkeypatch.setattr(torch.distributed, "irecv", irecv)
+    monkeypatch.setattr(torch.distributed, "broadcast", broadcast)
+    first_mapping = Mapping(
+        rank=0,
+        world_size=2,
+        pipeline_parallel_size=2,
+        attn_tp_size=1,
+        dense_tp_size=1,
+        moe_tp_size=1,
+    )
+    final_mapping = Mapping(
+        rank=1,
+        world_size=2,
+        pipeline_parallel_size=2,
+        attn_tp_size=1,
+        dense_tp_size=1,
+        moe_tp_size=1,
+    )
+    control = _Control()
+    first = TorchPipelineDSparkSynchronizer(
+        first_mapping,
+        device="cpu",
+        control=control,
+        context_hidden_size=3,
+        candidate_width=4,
+    )
+    final = TorchPipelineDSparkSynchronizer(
+        final_mapping,
+        device="cpu",
+        control=control,
+        context_hidden_size=3,
+        candidate_width=4,
+    )
+    step = _step()
+    context = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+
+    assert final.relay_context(step=step, context=context) is None
+    received = first.relay_context(step=step)
+    assert torch.equal(received, context)
+
+    local_candidates = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])
+    assert torch.equal(
+        first.broadcast_candidates(step=step, candidates=local_candidates),
+        local_candidates,
+    )
+    assert torch.equal(
+        final.broadcast_candidates(step=step),
+        local_candidates,
+    )

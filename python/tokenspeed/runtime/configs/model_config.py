@@ -488,11 +488,17 @@ class ModelConfig:
                 validate_pipeline_capability,
             )
 
-            validate_pipeline_capability(
-                architecture=resolve_architecture(self.hf_config),
-                activation_dtype=str(self.dtype).removeprefix("torch."),
-                stage_count=self.mapping.pipeline.stage_count,
-            )
+            architecture = resolve_architecture(self.hf_config)
+            # K3 DSpark is a PP0-only auxiliary draft, not a pipeline target.
+            # Its five layers do not execute as an eight-stage model; target
+            # stages consume only their local context-projection slice. Keep
+            # capability validation strict for every real target architecture.
+            if not (is_draft_worker and architecture == "K3DSparkModel"):
+                validate_pipeline_capability(
+                    architecture=architecture,
+                    activation_dtype=str(self.dtype).removeprefix("torch."),
+                    stage_count=self.mapping.pipeline.stage_count,
+                )
 
         # Derive context length
         derived_context_len = get_context_length(self.hf_text_config)

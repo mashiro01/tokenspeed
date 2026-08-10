@@ -160,7 +160,6 @@ def _build_kimi_k3_pipeline_cache_contract(
                 "Kimi-K3 DSpark draft and target must use the same tensor "
                 "parallel size"
             )
-
         num_draft_layers = int(draft_config.num_hidden_layers)
         draft_layer_offset = int(text_config.num_hidden_layers)
         draft_fields = mla_cache_fields(
@@ -224,6 +223,12 @@ def _build_kimi_k3_pipeline_cache_contract(
         mla_cache_dtype=attn_config.kv_cache_dtype,
         conv_dtype=conv_dtype,
         recurrent_dtype=recurrent_dtype,
+        draft_layer_offset=draft_layer_offset,
+        draft_mla_cache_dtype=(
+            draft_attn_config.kv_cache_dtype
+            if draft_attn_config is not None
+            else None
+        ),
     )
     return _KimiK3PipelineCacheContract(
         pipeline_plan=pipeline_plan,
@@ -515,6 +520,8 @@ def _kimi_k3_global_cache_field_dtypes(
     mla_cache_dtype: torch.dtype,
     conv_dtype: torch.dtype,
     recurrent_dtype: torch.dtype,
+    draft_layer_offset: int | None = None,
+    draft_mla_cache_dtype: torch.dtype | None = None,
 ) -> dict[str, torch.dtype]:
     """Return the rank-independent dtype ABI for every logical cache field."""
 
@@ -536,7 +543,18 @@ def _kimi_k3_global_cache_field_dtypes(
     for logical_layer_id, layer_type in enumerate(global_layer_types):
         if layer_type == FULL_ATTENTION:
             expected = {f"layer.{logical_layer_id}.latent_kv"}
-            layer_dtypes = {next(iter(expected)): mla_cache_dtype}
+            is_draft_layer = (
+                draft_layer_offset is not None
+                and logical_layer_id >= draft_layer_offset
+            )
+            if is_draft_layer and draft_mla_cache_dtype is None:
+                raise ValueError(
+                    "Kimi-K3 draft cache layers require an explicit MLA cache dtype"
+                )
+            latent_dtype = (
+                draft_mla_cache_dtype if is_draft_layer else mla_cache_dtype
+            )
+            layer_dtypes = {next(iter(expected)): latent_dtype}
         elif layer_type == LINEAR_ATTENTION:
             conv_field = f"layer.{logical_layer_id}.conv_state"
             recurrent_field = f"layer.{logical_layer_id}.recurrent_state"
@@ -862,6 +880,12 @@ def _prepare_kimi_k3_pipeline_cache(
             if contract.global_layer_types[logical_field.logical_layer_id]
             == LINEAR_ATTENTION
         }
+        field_dtypes = {
+            logical_field.field.field_id: contract.logical_field_dtypes[
+                logical_field.field.field_id
+            ]
+            for logical_field in stage_layout.logical_fields
+        }
         reference_plan = stage_layout.layout.with_num_lcm_blocks(1)
         usable_cache_bytes = cache_budget_bytes - fixed_workspace_bytes
         max_num_lcm_blocks = (
@@ -920,6 +944,7 @@ def _prepare_kimi_k3_pipeline_cache(
             "layer_types": layer_types,
             "group_ids": group_ids,
             "state_dtypes": state_dtypes,
+            "field_dtypes": field_dtypes,
             "reference_plan": reference_plan,
             "max_num_lcm_blocks": max_num_lcm_blocks,
             "local_admitted_tokens": local_admitted_tokens,
@@ -977,6 +1002,7 @@ def _prepare_kimi_k3_pipeline_cache(
                     pd_disaggregation_enabled=attn_config.pd_disaggregation_enabled,
                 ),
                 state_field_dtypes=prepared["state_dtypes"],
+                field_dtypes=prepared["field_dtypes"],
                 token_capacity=admitted_tokens,
                 logical_layer_ids=prepared["logical_layer_ids"],
                 pipeline_plan_digest=prepared["pipeline_plan_digest"],
