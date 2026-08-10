@@ -116,7 +116,19 @@ class ProcessGroupManager:
         backend: str | list[str] | None = None,
         *,
         role: str = "default",
+        timeout_seconds: int | None = None,
     ) -> None:
+        if timeout_seconds is not None:
+            if isinstance(timeout_seconds, bool) or not isinstance(
+                timeout_seconds, int
+            ):
+                raise TypeError("process group timeout must be an integer")
+            if timeout_seconds <= 0:
+                raise ValueError("process group timeout must be positive")
+            group_timeout = timedelta(seconds=timeout_seconds)
+        else:
+            group_timeout = self._pg_timeout
+
         if backend is None:
             backends = ["nccl", "gloo"]
         elif isinstance(backend, str):
@@ -128,7 +140,7 @@ class ProcessGroupManager:
             if self.has_process_group(backend, group, role=role):
                 continue
             for g in _make_all_groups(group):
-                pg = dist.new_group(g, backend=backend, timeout=self._pg_timeout)
+                pg = dist.new_group(g, backend=backend, timeout=group_timeout)
                 if g == group:
                     self.register_process_group(backend, g, pg, role=role)
 

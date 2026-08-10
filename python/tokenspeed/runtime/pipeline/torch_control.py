@@ -45,7 +45,9 @@ from tokenspeed.runtime.pipeline.contracts import (
     PipelineStepDescriptor,
 )
 from tokenspeed.runtime.pipeline.groups import (
-    PIPELINE_FAULT_GROUP_ROLE,
+    PIPELINE_FAULT_DOWNSTREAM_GROUP_ROLE,
+    PIPELINE_FAULT_HEARTBEAT_SECONDS,
+    PIPELINE_FAULT_UPSTREAM_GROUP_ROLE,
     PIPELINE_STEP_META_GROUP_ROLE,
 )
 
@@ -54,6 +56,7 @@ _FAULT_MAGIC = 0x5453504641554C54  # "TSPFAULT"
 _FAULT_PACKET_WORDS = 8
 _FAULT_PACKET_KIND = 1
 _STOP_PACKET_KIND = 2
+_HEARTBEAT_PACKET_KIND = 3
 
 
 @dataclass(frozen=True)
@@ -68,11 +71,13 @@ class _DeadlineWatchdog:
         terminate: Callable[[int], None],
         *,
         clock: Callable[[], float],
+        context: str,
     ) -> None:
         self._terminate = terminate
         self._clock = clock
+        self._context = context
         self._condition = threading.Condition()
-        self._armed: tuple[int, float] | None = None
+        self._armed: tuple[int, float, str] | None = None
         self._closed = False
         self._thread = threading.Thread(
             target=self._run,
@@ -81,11 +86,11 @@ class _DeadlineWatchdog:
         )
         self._thread.start()
 
-    def arm(self, step_id: int, deadline: float) -> None:
+    def arm(self, step_id: int, deadline: float, reason: str) -> None:
         with self._condition:
             if self._closed:
                 raise RuntimeError("pipeline watchdog is closed")
-            self._armed = (step_id, deadline)
+            self._armed = (step_id, deadline, reason)
             self._condition.notify_all()
 
     def disarm(self, step_id: int) -> None:
@@ -109,14 +114,24 @@ class _DeadlineWatchdog:
                 if self._closed:
                     return
                 assert self._armed is not None
-                step_id, deadline = self._armed
+                step_id, deadline, reason = self._armed
                 remaining = deadline - self._clock()
                 if remaining > 0:
                     self._condition.wait(timeout=remaining)
                     continue
-                if self._armed != (step_id, deadline):
+                if self._armed != (step_id, deadline, reason):
                     continue
                 self._closed = True
+                overdue = max(0.0, self._clock() - deadline)
+            diagnostic = (
+                "tokenspeed pipeline watchdog deadline expired: "
+                f"{self._context} step_id={step_id} reason={reason} "
+                f"overdue_seconds={overdue:.6f} exit_code={_PIPELINE_EXIT_CODE}\n"
+            )
+            try:
+                os.write(2, diagnostic.encode("utf-8", errors="replace"))
+            except Exception:
+                pass
             self._terminate(_PIPELINE_EXIT_CODE)
             return
 
@@ -149,20 +164,47 @@ class TorchPipelineControlPlane:
             mapping.world_group,
             role=PIPELINE_STEP_META_GROUP_ROLE,
         )
-        self._fault_group = (
+        self._fault_upstream_group = (
             pg_manager.get_process_group(
                 "gloo",
                 mapping.world_group,
-                role=PIPELINE_FAULT_GROUP_ROLE,
+                role=PIPELINE_FAULT_UPSTREAM_GROUP_ROLE,
             )
             if enable_fault_listener
             else None
         )
+        self._fault_downstream_group = (
+            pg_manager.get_process_group(
+                "gloo",
+                mapping.world_group,
+                role=PIPELINE_FAULT_DOWNSTREAM_GROUP_ROLE,
+            )
+            if enable_fault_listener
+            else None
+        )
+        if mapping.rank == 0:
+            self._fault_in_group = self._fault_upstream_group
+            self._fault_out_group = self._fault_downstream_group
+        else:
+            self._fault_in_group = self._fault_downstream_group
+            self._fault_out_group = self._fault_upstream_group
         self._state_lock = threading.Lock()
+        self._fault_send_lock = threading.Lock()
         self._closed = False
         self._fault_works: list[tuple[object, torch.Tensor]] = []
-        self._watchdog = _DeadlineWatchdog(terminate, clock=clock)
-        self._watchdog.arm(0, self._clock() + self._step_timeout_seconds)
+        self._watchdog = _DeadlineWatchdog(
+            terminate,
+            clock=clock,
+            context=(
+                f"global_rank={mapping.rank} "
+                f"pipeline_stage={mapping.pipeline.stage_index}"
+            ),
+        )
+        self._watchdog.arm(
+            0,
+            self._clock() + self._step_timeout_seconds,
+            "startup-epoch-synchronize",
+        )
         try:
             self._epoch = self._synchronize_epoch()
         finally:
@@ -171,13 +213,22 @@ class TorchPipelineControlPlane:
         self._active: PipelineStepLease | None = None
         self._poison: PipelineStepAborted | None = None
         self._fault_thread = None
-        if self._fault_group is not None:
+        self._fault_heartbeat_stop = threading.Event()
+        self._fault_heartbeat_thread = None
+        if self._fault_in_group is not None:
             self._fault_thread = threading.Thread(
                 target=self._listen_for_fault,
                 name="tokenspeed-pipeline-fault-listener",
                 daemon=True,
             )
             self._fault_thread.start()
+            if mapping.rank in (0, 1):
+                self._fault_heartbeat_thread = threading.Thread(
+                    target=self._run_fault_heartbeat,
+                    name="tokenspeed-pipeline-fault-heartbeat",
+                    daemon=True,
+                )
+                self._fault_heartbeat_thread.start()
 
     def _synchronize_epoch(self) -> int:
         value = torch.zeros(1, dtype=torch.int64)
@@ -241,7 +292,11 @@ class TorchPipelineControlPlane:
             if self._active is not None:
                 raise PipelineProtocolError("a pipeline step is already active")
             self._active = lease
-            self._watchdog.arm(descriptor.step_id, lease.deadline)
+            self._watchdog.arm(
+                descriptor.step_id,
+                lease.deadline,
+                f"pipeline-step-{descriptor.forward_mode.name.lower()}",
+            )
 
         local = torch.tensor(
             (*descriptor.wire_words(), stage_cache_fingerprint), dtype=torch.int64
@@ -302,6 +357,7 @@ class TorchPipelineControlPlane:
             self._watchdog.arm(
                 lease.descriptor.step_id,
                 self._clock() + self._abort_grace_seconds,
+                f"pipeline-abort-{phase}",
             )
             self._report_fault(lease, phase, error)
         return poison
@@ -388,6 +444,7 @@ class TorchPipelineControlPlane:
             self._watchdog.arm(
                 active_to_report.descriptor.step_id,
                 self._clock() + self._abort_grace_seconds,
+                "pipeline-abort-close-active-step",
             )
             self._report_fault(
                 active_to_report,
@@ -398,13 +455,26 @@ class TorchPipelineControlPlane:
             # Keep the independently armed fatal deadline alive while the
             # ordinary event-loop cleanup unwinds. It is the backstop if that
             # cleanup or the external supervisor stalls.
+            self._fault_heartbeat_stop.set()
             return
         shutdown_deadline = self._clock() + self._abort_grace_seconds
+        self._fault_heartbeat_stop.set()
+        heartbeat_thread = self._fault_heartbeat_thread
+        if (
+            heartbeat_thread is not None
+            and heartbeat_thread is not threading.current_thread()
+        ):
+            heartbeat_thread.join(timeout=max(0.0, shutdown_deadline - self._clock()))
         stop_sent = self._send_stop(shutdown_deadline)
         fault_thread = self._fault_thread
         if fault_thread is not None and fault_thread is not threading.current_thread():
             fault_thread.join(timeout=max(0.0, shutdown_deadline - self._clock()))
-        if not stop_sent or (fault_thread is not None and fault_thread.is_alive()):
+        heartbeat_stuck = heartbeat_thread is not None and heartbeat_thread.is_alive()
+        if (
+            not stop_sent
+            or heartbeat_stuck
+            or (fault_thread is not None and fault_thread.is_alive())
+        ):
             error = PipelineStepAborted(
                 "pipeline fault listener did not stop before the shutdown deadline"
             )
@@ -415,26 +485,15 @@ class TorchPipelineControlPlane:
             self._watchdog.arm(
                 self._next_step_id,
                 self._clock() + self._abort_grace_seconds,
+                "pipeline-abort-fault-channel-shutdown",
             )
             raise poison
         self._watchdog.close()
 
     def _send_stop(self, deadline: float) -> bool:
-        if self._fault_group is None or self._fault_thread is None:
+        if self._fault_out_group is None or self._fault_thread is None:
             return True
-        packet = torch.tensor(
-            (
-                _FAULT_MAGIC,
-                _STOP_PACKET_KIND,
-                self._epoch,
-                0,
-                self._mapping.rank,
-                self._mapping.pipeline.stage_index,
-                0,
-                0,
-            ),
-            dtype=torch.int64,
-        )
+        packet = self._control_packet(_STOP_PACKET_KIND)
         if self._mapping.rank == 0:
             destinations = range(1, self._mapping.world_size)
         elif self._mapping.rank == 1:
@@ -444,9 +503,56 @@ class TorchPipelineControlPlane:
         return self._send_packets(
             packet,
             destinations,
+            group=self._fault_out_group,
             wait=True,
             deadline=deadline,
         )
+
+    def _control_packet(self, kind: int) -> torch.Tensor:
+        return torch.tensor(
+            (
+                _FAULT_MAGIC,
+                kind,
+                self._epoch,
+                0,
+                self._mapping.rank,
+                self._mapping.pipeline.stage_index,
+                0,
+                0,
+            ),
+            dtype=torch.int64,
+        )
+
+    def _run_fault_heartbeat(self) -> None:
+        destinations = (
+            tuple(range(1, self._mapping.world_size))
+            if self._mapping.rank == 0
+            else (0,)
+        )
+        while not self._fault_heartbeat_stop.wait(PIPELINE_FAULT_HEARTBEAT_SECONDS):
+            packet = self._control_packet(_HEARTBEAT_PACKET_KIND)
+            deadline = self._clock() + min(5.0, PIPELINE_FAULT_HEARTBEAT_SECONDS / 2)
+            if self._send_packets(
+                packet,
+                destinations,
+                group=self._fault_out_group,
+                wait=True,
+                deadline=deadline,
+            ):
+                continue
+            with self._state_lock:
+                closed = self._closed
+                step_id = (
+                    self._active.descriptor.step_id
+                    if self._active is not None
+                    else self._next_step_id
+                )
+            if not closed:
+                self._poison_from_peer(
+                    PipelineStepAborted("pipeline fault heartbeat failed"),
+                    step_id=step_id,
+                )
+            return
 
     @staticmethod
     def _fault_hash(value: str) -> int:
@@ -479,76 +585,92 @@ class TorchPipelineControlPlane:
         phase: str,
         error: BaseException,
     ) -> None:
-        if self._fault_group is None:
+        if self._fault_out_group is None:
             return
         packet = self._fault_packet(lease, phase, error)
         destinations = (
             range(1, self._mapping.world_size) if self._mapping.rank == 0 else (0,)
         )
-        self._send_packets(packet, destinations, wait=True)
+        self._send_packets(
+            packet,
+            destinations,
+            group=self._fault_out_group,
+            wait=True,
+        )
 
     def _send_packets(
         self,
         packet,
         destinations,
         *,
+        group,
         wait: bool,
         deadline: float | None = None,
     ) -> bool:
         submitted = []
         success = True
-        for destination in destinations:
-            payload = packet.clone()
-            try:
-                work = dist.isend(
-                    payload,
-                    dst=destination,
-                    group=self._fault_group,
-                )
-                self._fault_works.append((work, payload))
-                submitted.append(work)
-            except Exception:
-                # The local hard-exit deadline is already armed. Reporting is
-                # best-effort when the control network itself is broken.
-                success = False
-        if not wait:
-            return success
-        deadline = deadline or (self._clock() + self._abort_grace_seconds)
-        for work in submitted:
-            remaining = deadline - self._clock()
-            if remaining <= 0:
-                return False
-            try:
-                completed = work.wait(timeout=timedelta(seconds=remaining))
-            except Exception:
-                success = False
-                continue
-            if completed is False:
-                success = False
+        with self._fault_send_lock:
+            for destination in destinations:
+                payload = packet.clone()
+                try:
+                    work = dist.isend(payload, dst=destination, group=group)
+                    submitted.append((work, payload))
+                except Exception:
+                    # The local hard-exit deadline is already armed. Reporting
+                    # is best-effort when the control network itself is broken.
+                    success = False
+            if not wait:
+                self._fault_works.extend(submitted)
+                return success
+            deadline = deadline or (self._clock() + self._abort_grace_seconds)
+            for work, _payload in submitted:
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    return False
+                try:
+                    completed = work.wait(timeout=timedelta(seconds=remaining))
+                except Exception:
+                    success = False
+                    continue
+                if completed is False:
+                    success = False
         return success
 
     def _listen_for_fault(self) -> None:
         packet = torch.zeros(_FAULT_PACKET_WORDS, dtype=torch.int64)
         source = 0 if self._mapping.rank != 0 else None
-        try:
-            sender = dist.recv(packet, src=source, group=self._fault_group)
-        except Exception as exc:
-            with self._state_lock:
-                closed = self._closed
-                step_id = (
-                    self._active.descriptor.step_id if self._active is not None else 0
-                )
-            if not closed:
-                self._poison_from_peer(
-                    PipelineStepAborted(
-                        f"pipeline fault channel failed: {type(exc).__name__}: {exc}"
-                    ),
-                    step_id=step_id,
-                )
-            return
-        if source is not None:
-            sender = 0
-        words = tuple(int(value) for value in packet.tolist())
+        while True:
+            packet.zero_()
+            try:
+                sender = dist.recv(packet, src=source, group=self._fault_in_group)
+            except Exception as exc:
+                with self._state_lock:
+                    closed = self._closed
+                    step_id = (
+                        self._active.descriptor.step_id
+                        if self._active is not None
+                        else self._next_step_id
+                    )
+                if not closed:
+                    self._poison_from_peer(
+                        PipelineStepAborted(
+                            "pipeline fault channel failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                        step_id=step_id,
+                    )
+                return
+            if source is not None:
+                sender = 0
+            words = tuple(int(value) for value in packet.tolist())
+            if self._is_control_packet(
+                words,
+                sender=sender,
+                kind=_HEARTBEAT_PACKET_KIND,
+            ):
+                continue
+            break
+
         reported_rank = words[4]
         expected_stage = (
             reported_rank // self._mapping.pipeline.stage_world_size
@@ -564,17 +686,10 @@ class TorchPipelineControlPlane:
                 and reported_rank != sender
             )
         )
-        if (
-            words[0] == _FAULT_MAGIC
-            and words[1] == _STOP_PACKET_KIND
-            and words[2] == self._epoch
-            and words[3] == 0
-            and words[6:] == (0, 0)
-            and is_valid_sender
-            and (
-                (self._mapping.rank == 0 and reported_rank == 1)
-                or (self._mapping.rank != 0 and reported_rank == 0)
-            )
+        if self._is_control_packet(
+            words,
+            sender=sender,
+            kind=_STOP_PACKET_KIND,
         ):
             return
         if (
@@ -600,7 +715,44 @@ class TorchPipelineControlPlane:
                 for destination in range(1, self._mapping.world_size)
                 if destination != reported_rank
             )
-            self._send_packets(packet, destinations, wait=True)
+            self._send_packets(
+                packet,
+                destinations,
+                group=self._fault_out_group,
+                wait=True,
+            )
+
+    def _is_control_packet(
+        self,
+        words: tuple[int, ...],
+        *,
+        sender: int | None,
+        kind: int,
+    ) -> bool:
+        if len(words) != _FAULT_PACKET_WORDS:
+            return False
+        reported_rank = words[4]
+        expected_stage = (
+            reported_rank // self._mapping.pipeline.stage_world_size
+            if 0 <= reported_rank < self._mapping.world_size
+            else -1
+        )
+        if self._mapping.rank == 0:
+            expected_rank = 1
+            valid_sender = sender == expected_rank
+        else:
+            expected_rank = 0
+            valid_sender = sender in (None, expected_rank)
+        return (
+            words[0] == _FAULT_MAGIC
+            and words[1] == kind
+            and words[2] == self._epoch
+            and words[3] == 0
+            and reported_rank == expected_rank
+            and words[5] == expected_stage
+            and words[6:] == (0, 0)
+            and valid_sender
+        )
 
     def _poison_from_peer(
         self,
@@ -619,4 +771,5 @@ class TorchPipelineControlPlane:
             self._watchdog.arm(
                 step_id,
                 self._clock() + self._abort_grace_seconds,
+                "pipeline-abort-peer-fault",
             )
