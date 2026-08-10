@@ -165,12 +165,32 @@ class TorchPipelineTransport:
         header = torch.tensor(wire_header.pack(), dtype=torch.int64)
         header_work = dist.isend(header, dst=destination, group=self._cpu_group)
         self._control.wait_work(header_work, step, "activation-header-send")
-        pending = []
-        for field, value in zip(schema.fields, activation.values):
-            payload = value.contiguous()
-            work = dist.isend(payload, dst=destination, group=self._device_group)
-            pending.append((work, payload, field.field_id))
-        for work, _payload, field_id in pending:
+        payloads = [
+            (value.contiguous(), field.field_id)
+            for field, value in zip(schema.fields, activation.values)
+        ]
+        # Eager NCCL serializes independent P2P calls on one process group.
+        # Submit every field of this activation as one batch before waiting.
+        works = (
+            dist.batch_isend_irecv(
+                [
+                    dist.P2POp(
+                        dist.isend,
+                        payload,
+                        destination,
+                        group=self._device_group,
+                    )
+                    for payload, _field_id in payloads
+                ]
+            )
+            if payloads
+            else []
+        )
+        if len(works) != len(payloads):
+            raise PipelineProtocolError(
+                "activation payload send returned an unexpected work count"
+            )
+        for work, (_payload, field_id) in zip(works, payloads, strict=True):
             self._control.wait_work(
                 work,
                 step,
@@ -244,11 +264,27 @@ class TorchPipelineTransport:
                 "activation header total element count does not match payload"
             )
 
-        pending = []
-        for field, value in zip(schema.fields, values):
-            work = dist.irecv(value, src=source, group=self._device_group)
-            pending.append((work, field.field_id))
-        for work, field_id in pending:
+        payloads = list(zip(values, schema.fields, strict=True))
+        works = (
+            dist.batch_isend_irecv(
+                [
+                    dist.P2POp(
+                        dist.irecv,
+                        value,
+                        source,
+                        group=self._device_group,
+                    )
+                    for value, _field in payloads
+                ]
+            )
+            if payloads
+            else []
+        )
+        if len(works) != len(payloads):
+            raise PipelineProtocolError(
+                "activation payload receive returned an unexpected work count"
+            )
+        for work, (_value, field) in zip(works, payloads, strict=True):
             self._control.wait_work(
                 work,
                 step,

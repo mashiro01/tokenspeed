@@ -40,7 +40,7 @@ class _SubmissionControl:
     def wait_work(self, work, step, phase):
         del step
         if phase.startswith("activation-payload-send"):
-            assert len(self.payload_submissions) == 2
+            assert self.payload_submissions == [2]
         work.wait()
 
 
@@ -81,8 +81,28 @@ def test_torch_transport_sends_fixed_header_then_tensor_payloads(monkeypatch):
         tensor.copy_(value)
         return _ImmediateWork()
 
+    def p2p(op, tensor, peer, group=None, tag=0):
+        del tag
+        return op, tensor, peer, group
+
+    def batch(ops):
+        works = []
+        for op, tensor, peer, group in ops:
+            if op is send:
+                wire.append((peer, group, tensor.clone()))
+            else:
+                dst, sent_group, value = wire.pop(0)
+                assert dst == 1
+                assert peer == 0
+                assert sent_group == group
+                tensor.copy_(value)
+            works.append(_ImmediateWork())
+        return works
+
     monkeypatch.setattr(torch.distributed, "isend", send)
     monkeypatch.setattr(torch.distributed, "irecv", receive)
+    monkeypatch.setattr(torch.distributed, "P2POp", p2p)
+    monkeypatch.setattr(torch.distributed, "batch_isend_irecv", batch)
 
     first_mapping = Mapping(
         rank=0,
@@ -139,10 +159,23 @@ def test_torch_transport_submits_all_payloads_before_waiting(monkeypatch):
     def send(tensor, dst, group):
         del tensor, dst
         if group[0] == "nccl":
-            payload_submissions.append(group)
+            pytest.fail("payload used an unbatched NCCL isend")
         return _ImmediateWork()
 
+    def p2p(op, tensor, peer, group=None, tag=0):
+        del tag
+        return op, tensor, peer, group
+
+    def batch(ops):
+        assert len(ops) == 2
+        assert all(op is send for op, _tensor, _peer, _group in ops)
+        assert all(group[0] == "nccl" for _op, _tensor, _peer, group in ops)
+        payload_submissions.append(len(ops))
+        return [_ImmediateWork() for _ in ops]
+
     monkeypatch.setattr(torch.distributed, "isend", send)
+    monkeypatch.setattr(torch.distributed, "P2POp", p2p)
+    monkeypatch.setattr(torch.distributed, "batch_isend_irecv", batch)
     mapping = Mapping(
         rank=0,
         world_size=2,
