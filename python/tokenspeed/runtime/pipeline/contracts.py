@@ -22,10 +22,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import IntEnum
 from hashlib import sha256
-import json
 from typing import Mapping, Protocol, Sequence
 
 API_VERSION = "tokenspeed.pipeline/v1alpha1"
@@ -223,7 +223,9 @@ def batch_fingerprint(
         ("shifted input ids", shifted_input_ids),
         ("decode input ids", decode_input_ids),
     ):
-        if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) for value in values
+        ):
             raise ValueError(f"pipeline {name} must be integers")
     for name, value in (
         ("sampling_fingerprint", sampling_fingerprint),
@@ -251,7 +253,9 @@ def batch_fingerprint(
             or dimension < 0
             for dimension in shape
         ):
-            raise ValueError("pipeline cache table shapes must be non-negative integers")
+            raise ValueError(
+                "pipeline cache table shapes must be non-negative integers"
+            )
         digest_prefix(digest)
         normalized_cache_tables.append((group_id, dtype, shape, digest))
     return digest_prefix(
@@ -289,9 +293,7 @@ def cache_table_digests(
                 f"pipeline cache table {group_id!r} must be two-dimensional"
             )
         if not array.flags.c_contiguous:
-            raise ValueError(
-                f"pipeline cache table {group_id!r} must be C-contiguous"
-            )
+            raise ValueError(f"pipeline cache table {group_id!r} must be C-contiguous")
         result.append(
             (
                 str(group_id),

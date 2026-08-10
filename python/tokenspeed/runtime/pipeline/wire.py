@@ -22,9 +22,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import IntEnum
-import math
 from typing import Sequence
 
 from tokenspeed.runtime.pipeline.contracts import (
@@ -80,7 +80,9 @@ class ActivationWireHeader:
                 "pipeline activation exceeds the wire leading-dimension limit"
             )
         if any(value < 0 for value in leading_dimensions):
-            raise PipelineProtocolError("pipeline activation dimensions must be non-negative")
+            raise PipelineProtocolError(
+                "pipeline activation dimensions must be non-negative"
+            )
         words = [0] * ACTIVATION_HEADER_WORDS
         words[:20] = (
             WIRE_MAGIC,
@@ -139,14 +141,18 @@ class ActivationWireHeader:
             len(expected_schema.fields),
         )
         if words[:15] != expected_prefix:
-            raise PipelineProtocolError("activation wire identity does not match this step")
+            raise PipelineProtocolError(
+                "activation wire identity does not match this step"
+            )
         leading_count = words[15]
         if not 0 <= leading_count <= MAX_ACTIVATION_LEADING_DIMENSIONS:
             raise PipelineProtocolError("activation leading-dimension count is invalid")
         if words[16] != len(expected_schema.fields):
             raise PipelineProtocolError("activation tensor count does not match schema")
         if words[17] < 0 or words[18] != 0 or words[19] != 0:
-            raise PipelineProtocolError("activation header metadata or flags are invalid")
+            raise PipelineProtocolError(
+                "activation header metadata or flags are invalid"
+            )
         if any(words[ACTIVATION_LEADING_DIMENSION_OFFSET + leading_count :]):
             raise PipelineProtocolError("activation header reserved words must be zero")
         leading_dimensions = words[

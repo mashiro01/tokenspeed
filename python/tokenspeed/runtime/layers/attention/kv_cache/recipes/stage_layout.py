@@ -42,8 +42,7 @@ def _cache_layout_payload(layout: CacheLayout) -> dict[str, object]:
         "logical_block_tokens": layout.logical_block_tokens,
         "lcm_block_bytes": layout.lcm_block_bytes,
         "group_packing": [
-            [group_id, count]
-            for group_id, count in sorted(layout.group_packing)
+            [group_id, count] for group_id, count in sorted(layout.group_packing)
         ],
         "plane_bytes": [
             [plane_id, byte_count]
@@ -266,9 +265,7 @@ class RankCacheLayoutManifest:
     def stage_digest(self) -> str:
         """Return a rank-independent digest for same-stage consensus."""
 
-        return hashlib.sha256(
-            self.stage_canonical_json().encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(self.stage_canonical_json().encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -336,7 +333,10 @@ def _validate_placement(placement: CacheStagePlacement) -> dict[int, int]:
     if (
         not isinstance(placement.pipeline_plan_digest, str)
         or len(placement.pipeline_plan_digest) != 64
-        or any(character not in "0123456789abcdef" for character in placement.pipeline_plan_digest)
+        or any(
+            character not in "0123456789abcdef"
+            for character in placement.pipeline_plan_digest
+        )
     ):
         raise ValueError("pipeline_plan_digest must be a lowercase SHA-256 digest")
 
@@ -367,7 +367,10 @@ def _validate_placement(placement: CacheStagePlacement) -> dict[int, int]:
         for logical_layer_ids in placement.logical_layer_ids_by_stage
         for logical_layer_id in logical_layer_ids
     )
-    if any(not logical_layer_ids for logical_layer_ids in placement.logical_layer_ids_by_stage):
+    if any(
+        not logical_layer_ids
+        for logical_layer_ids in placement.logical_layer_ids_by_stage
+    ):
         raise ValueError("every stage must own at least one logical layer")
     if flattened != tuple(range(placement.num_logical_layers)):
         raise ValueError("stage layer ownership must be ordered and contiguous")
@@ -430,8 +433,7 @@ def pipeline_cache_abi_digest(
             "stage_count": placement.stage_count,
             "num_logical_layers": placement.num_logical_layers,
             "logical_layer_ids_by_stage": [
-                list(layer_ids)
-                for layer_ids in placement.logical_layer_ids_by_stage
+                list(layer_ids) for layer_ids in placement.logical_layer_ids_by_stage
             ],
             "field_owners": sorted(field_owners),
             "field_dtypes": normalized_field_dtypes,

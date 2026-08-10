@@ -22,14 +22,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import timedelta
 import hashlib
 import os
 import secrets
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -211,9 +211,7 @@ class TorchPipelineControlPlane:
             descriptor = PipelineStepDescriptor(
                 epoch=self._epoch,
                 step_id=self._next_step_id,
-                forward_mode=PipelineForwardMode.from_runtime_name(
-                    forward_mode_name
-                ),
+                forward_mode=PipelineForwardMode.from_runtime_name(forward_mode_name),
                 batch_size=batch_size,
                 input_num_tokens=input_num_tokens,
                 num_extends=num_extends,
@@ -485,9 +483,7 @@ class TorchPipelineControlPlane:
             return
         packet = self._fault_packet(lease, phase, error)
         destinations = (
-            range(1, self._mapping.world_size)
-            if self._mapping.rank == 0
-            else (0,)
+            range(1, self._mapping.world_size) if self._mapping.rank == 0 else (0,)
         )
         self._send_packets(packet, destinations, wait=True)
 
@@ -540,9 +536,7 @@ class TorchPipelineControlPlane:
             with self._state_lock:
                 closed = self._closed
                 step_id = (
-                    self._active.descriptor.step_id
-                    if self._active is not None
-                    else 0
+                    self._active.descriptor.step_id if self._active is not None else 0
                 )
             if not closed:
                 self._poison_from_peer(

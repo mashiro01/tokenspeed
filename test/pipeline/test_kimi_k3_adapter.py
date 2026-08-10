@@ -46,12 +46,14 @@ def test_k3_pp4_plan_has_expected_layers_ownership_and_payloads():
         (48, 72),
         (72, 93),
     ]
-    assert [stage.owns_embedding for stage in plan.stages] == [True, False, False, False]
+    assert [stage.owns_embedding for stage in plan.stages] == [
+        True,
+        False,
+        False,
+        False,
+    ]
     assert [stage.owns_head for stage in plan.stages] == [False, False, False, True]
-    assert [
-        len(stage.output_schema.fields)
-        for stage in plan.stages[:-1]
-    ] == [3, 5, 7]
+    assert [len(stage.output_schema.fields) for stage in plan.stages[:-1]] == [3, 5, 7]
 
     for stage in plan.stages[:-1]:
         schema = stage.output_schema
@@ -120,14 +122,15 @@ def test_k3_single_stage_uses_the_generic_empty_boundary_contract():
         (8, (12, 12, 12, 12, 12, 12, 12, 9)),
     ],
 )
-def test_balanced_k3_partitions_use_nearest_attn_res_boundaries(
-    stage_count, expected
-):
-    assert balanced_kimi_k3_stage_layer_counts(
-        num_layers=93,
-        attn_res_block_size=12,
-        stage_count=stage_count,
-    ) == expected
+def test_balanced_k3_partitions_use_nearest_attn_res_boundaries(stage_count, expected):
+    assert (
+        balanced_kimi_k3_stage_layer_counts(
+            num_layers=93,
+            attn_res_block_size=12,
+            stage_count=stage_count,
+        )
+        == expected
+    )
 
     plan = build_balanced_kimi_k3_pipeline_plan(
         num_layers=93,
@@ -135,9 +138,9 @@ def test_balanced_k3_partitions_use_nearest_attn_res_boundaries(
         attn_res_block_size=12,
         stage_count=stage_count,
     )
-    assert tuple(
-        stage.end_layer - stage.first_layer for stage in plan.stages
-    ) == expected
+    assert (
+        tuple(stage.end_layer - stage.first_layer for stage in plan.stages) == expected
+    )
 
 
 def test_balanced_k3_partition_rejects_more_stages_than_legal_boundaries():

@@ -69,7 +69,9 @@ class WholeModelStage:
         incoming: StageActivation | None,
     ) -> StageOutput:
         if incoming is not None:
-            raise PipelineProtocolError("a whole-model stage cannot consume activation input")
+            raise PipelineProtocolError(
+                "a whole-model stage cannot consume activation input"
+            )
         return StageOutput(final_output=self._forward(context, batch))
 
     def idle(self) -> None:
@@ -110,7 +112,9 @@ class LoopbackPipelineExecutor:
             raise ValueError("stage model count does not match the pipeline plan")
         for expected, stage in zip(plan.stages, stages):
             if stage.plan != expected:
-                raise ValueError(f"stage model {stage.plan.stage_id} has a different plan")
+                raise ValueError(
+                    f"stage model {stage.plan.stage_id} has a different plan"
+                )
         self._plan = plan
         self._stages = tuple(stages)
 

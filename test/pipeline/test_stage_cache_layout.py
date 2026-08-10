@@ -24,13 +24,13 @@ import hashlib
 import json
 import unittest
 
-from tokenspeed.runtime.layers.attention.kv_cache.recipes.plan import (
-    CacheFieldSpec,
-    solve_cache_layout,
-)
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.kimi_k3 import (
     kimi_k3_cache_fields,
     kimi_k3_pipeline_workspace_bytes,
+)
+from tokenspeed.runtime.layers.attention.kv_cache.recipes.plan import (
+    CacheFieldSpec,
+    solve_cache_layout,
 )
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.stage_layout import (
     CacheLayerBinding,
@@ -39,7 +39,12 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.stage_layout import (
     pipeline_cache_abi_digest,
     solve_stage_cache_layout,
 )
-from tokenspeed.runtime.pipeline import ActivationFieldSpec, ActivationSchema, PipelinePlan, StagePlan
+from tokenspeed.runtime.pipeline import (
+    ActivationFieldSpec,
+    ActivationSchema,
+    PipelinePlan,
+    StagePlan,
+)
 from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
     build_balanced_kimi_k3_pipeline_plan,
 )
@@ -121,9 +126,11 @@ class StageCacheLayoutTest(unittest.TestCase):
         kda_layers = [layer for layer in range(93) if layer not in full_layers]
         kda_position = {layer: index for index, layer in enumerate(kda_layers)}
         group_ids = tuple(
-            "full_attention"
-            if layer in full_layers
-            else f"linear_attention_{kda_position[layer] // 23}"
+            (
+                "full_attention"
+                if layer in full_layers
+                else f"linear_attention_{kda_position[layer] // 23}"
+            )
             for layer in range(93)
         )
         fields = kimi_k3_cache_fields(
@@ -552,18 +559,10 @@ class StageCacheLayoutTest(unittest.TestCase):
 
     def test_shared_group_packing_and_page_count_are_identical_across_stages(self):
         fields = (
-            LogicalCacheFieldSpec(
-                0, CacheFieldSpec("A", "a0", "shared", (8,), 1)
-            ),
-            LogicalCacheFieldSpec(
-                0, CacheFieldSpec("B", "b0", "shared", (1,), 1)
-            ),
-            LogicalCacheFieldSpec(
-                1, CacheFieldSpec("A", "a1", "stage-1", (8,), 1)
-            ),
-            LogicalCacheFieldSpec(
-                1, CacheFieldSpec("B", "b1", "stage-1", (1,), 1)
-            ),
+            LogicalCacheFieldSpec(0, CacheFieldSpec("A", "a0", "shared", (8,), 1)),
+            LogicalCacheFieldSpec(0, CacheFieldSpec("B", "b0", "shared", (1,), 1)),
+            LogicalCacheFieldSpec(1, CacheFieldSpec("A", "a1", "stage-1", (8,), 1)),
+            LogicalCacheFieldSpec(1, CacheFieldSpec("B", "b1", "stage-1", (1,), 1)),
         )
         layouts = [
             solve_stage_cache_layout(
@@ -575,7 +574,9 @@ class StageCacheLayoutTest(unittest.TestCase):
             for stage_id in range(2)
         ]
 
-        self.assertEqual(layouts[0].global_group_packing, layouts[1].global_group_packing)
+        self.assertEqual(
+            layouts[0].global_group_packing, layouts[1].global_group_packing
+        )
         for group_id in ("A", "B"):
             counts = [
                 layout.layout.with_num_lcm_blocks(4).group(group_id).page_count
