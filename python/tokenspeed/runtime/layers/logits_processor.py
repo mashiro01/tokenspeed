@@ -25,7 +25,11 @@ import dataclasses
 import torch
 import triton
 import triton.language as tl
-from tokenspeed_kernel.ops.communication.triton import all_gather_inner, create_state
+from tokenspeed_kernel.ops.communication.triton import (
+    all_gather_inner,
+    create_state,
+    state_supports_multicast,
+)
 from tokenspeed_kernel.ops.sampling import argmax as sampling_argmax
 from tokenspeed_kernel.ops.sampling.cute_dsl import (
     create_dist_argmax_state,
@@ -319,12 +323,21 @@ class LogitsProcessor(nn.Module):
 
         key = (self.tp_group, vocab_padded)
         if key not in self._LOGITS_AG_STATES:
-            self._LOGITS_AG_STATES[key] = create_state(
+            state = create_state(
                 group=pg_manager.get_process_group("nccl", self.tp_group),
                 rank_in_group=self.tp_rank,
                 max_tokens=self._LOGITS_AG_MAX_TOKENS,
                 hidden_size=vocab_padded,
             )
+            if not state_supports_multicast(state):
+                logger.info(
+                    "Logits Triton all-gather disabled: NVLS multicast mapping "
+                    "is unavailable for TP group %s.",
+                    self.tp_group,
+                )
+                self._LOGITS_AG_STATES[key] = None
+            else:
+                self._LOGITS_AG_STATES[key] = state
         return self._LOGITS_AG_STATES[key]
 
     def _init_dist_argmax_state(self, lm_head: VocabParallelEmbedding):

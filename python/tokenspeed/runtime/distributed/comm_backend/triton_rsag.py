@@ -31,6 +31,7 @@ from tokenspeed_kernel.ops.communication.triton import (
     all_gather_inner,
     create_state,
     reduce_scatter,
+    state_supports_multicast,
 )
 from tokenspeed_kernel.platform import current_platform
 
@@ -70,6 +71,11 @@ class TritonRSAGBackend:
         self._instances[key] = state
         return state
 
+    @staticmethod
+    def _can_use_state(state) -> bool:
+        """Keep NVIDIA multimem on NVLS, and route PCIe-only groups safely."""
+        return not current_platform().is_nvidia or state_supports_multicast(state)
+
     def all_gather(
         self,
         tensor: torch.Tensor,
@@ -93,13 +99,14 @@ class TritonRSAGBackend:
         ):
             hidden_size = tensor.size(-1) * len(group)
             state = self._get_or_create(group, hidden_size)
-            return all_gather_inner(
-                state,
-                tensor,
-                tp_hidden_dim=hidden_size,
-                skip_entry_sync=False,
-                safe=False,
-            )
+            if self._can_use_state(state):
+                return all_gather_inner(
+                    state,
+                    tensor,
+                    tp_hidden_dim=hidden_size,
+                    skip_entry_sync=False,
+                    safe=False,
+                )
 
         return self._fallback.all_gather(tensor, group=group, dim=dim)
 
@@ -110,6 +117,12 @@ class TritonRSAGBackend:
         scattered_num_tokens: list[int],
     ) -> torch.Tensor:
         state = self._get_or_create(group, tensor.size(-1))
+        if not self._can_use_state(state):
+            return self._fallback.token_all_gather(
+                tensor,
+                group=group,
+                scattered_num_tokens=scattered_num_tokens,
+            )
         return all_gather(state, tensor, token_list_in_group=scattered_num_tokens)
 
     def token_reduce_scatter(
@@ -119,6 +132,12 @@ class TritonRSAGBackend:
         scattered_num_tokens: list[int],
     ) -> torch.Tensor:
         state = self._get_or_create(group, tensor.size(-1))
+        if not self._can_use_state(state):
+            return self._fallback.token_reduce_scatter(
+                tensor,
+                group=group,
+                scattered_num_tokens=scattered_num_tokens,
+            )
         return reduce_scatter(state, tensor, token_list_in_group=scattered_num_tokens)
 
     def _get_max_num_gathered_tokens(self):

@@ -36,6 +36,7 @@ __all__ = [
     "reduce_scatter",
     "all_gather",
     "all_gather_inner",
+    "state_supports_multicast",
     "all_reduce_can_run",
     "all_reduce",
     "all_reduce_two_can_run",
@@ -61,6 +62,9 @@ class TritonCommState:
     hidden_dim: int = 0
     comm_buff: torch.Tensor | None = None
     symm_mem_hdl: object | None = None
+    # NVIDIA RS/AG kernels issue multimem instructions and may only run when
+    # symmetric memory exposes an NVLS multicast mapping for this group.
+    multicast_supported: bool = True
 
 
 @dataclass
@@ -1029,7 +1033,14 @@ def nvidia_create_rsag_state(
     logger.info(
         f"Custom Triton RSAG symmetric-memory buffer allocated: {free_gpu_memory_begin - free_gpu_memory_after} GB"
     )
-    symm_mem.rendezvous(comm_buff, group=group)
+    symm_mem_hdl = symm_mem.rendezvous(comm_buff, group=group)
+    multicast_ptr = getattr(symm_mem_hdl, "multicast_ptr", None)
+    multicast_supported = multicast_ptr is not None and multicast_ptr != 0
+    if not multicast_supported:
+        logger.info(
+            "Triton RSAG multicast mapping unavailable; callers must use "
+            "their non-multicast collective backend."
+        )
     return TritonCommState(
         group=group,
         rank_in_group=rank_in_group,
@@ -1038,6 +1049,7 @@ def nvidia_create_rsag_state(
         max_token_num=max_tokens,
         hidden_dim=hidden_size,
         comm_buff=comm_buff,
+        multicast_supported=multicast_supported,
     )
 
 
@@ -1922,6 +1934,16 @@ def create_state(
             hidden_size=hidden_size,
             device=device,
         )
+
+
+def state_supports_multicast(state: TritonCommState) -> bool:
+    """Whether an RS/AG state can legally issue NVIDIA multimem operations.
+
+    AMD states use a peer-pointer implementation and retain the dataclass
+    default. NVIDIA states set the field from the rendezvous handle, whose
+    multicast mapping is absent on PCIe-only topologies.
+    """
+    return bool(getattr(state, "multicast_supported", False))
 
 
 def all_reduce_can_run(state: TritonCommState, tensor: torch.Tensor, op=None) -> bool:

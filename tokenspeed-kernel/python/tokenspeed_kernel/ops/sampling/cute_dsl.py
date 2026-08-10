@@ -907,7 +907,7 @@ def create_dist_argmax_state(
     dtype: torch.dtype = torch.bfloat16,
     device: torch.device | None = None,
     skip_ping_pong: bool = False,
-) -> DistArgmaxState:
+) -> DistArgmaxState | None:
     assert dtype in (
         torch.bfloat16,
         torch.float16,
@@ -942,13 +942,11 @@ def create_dist_argmax_state(
         f"world_size={world_size}"
     )
     if not hdl.multicast_ptr:
-        raise RuntimeError(
-            f"distributed_argmax requires CUDA multicast / NVLS, but the "
-            f"symm-mem handle on device {device} reports multicast_ptr="
-            f"{hdl.multicast_ptr}. The kernel uses multimem.st.release.sys "
-            f"which needs NVSwitch + sm_90+ multicast support; non-NVLS "
-            f"hardware (PCIe-only, passthrough, etc.) cannot run this op."
-        )
+        # This kernel stores through a multimem address. PCIe-only groups have
+        # symmetric peer mappings but no multicast mapping, so gracefully let
+        # the caller choose its ordinary all-gather + argmax path.
+        _dist.barrier(group=group, device_ids=[device.index])
+        return None
     _dist.barrier(group=group, device_ids=[device.index])
     return DistArgmaxState(
         group=group,
