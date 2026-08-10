@@ -9,6 +9,7 @@ ARG MAX_JOBS=16
 ARG CUDA_ARCH_LIST="9.0a 10.0a 12.0a"
 ARG CUDA_HOME=/usr/local/cuda-13.0
 ARG FLASH_LINEAR_ATTENTION_VERSION=0.5.1
+ARG FLASHINFER_JIT_CACHE_VERSION=0.6.16.post3+cu130
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV CUDA_HOME=${CUDA_HOME}
@@ -32,6 +33,9 @@ COPY . /workspace
 # contains the source being built, rather than published package wheels.
 RUN test -x "${CUDA_HOME}/bin/nvcc" && \
     python3 -m pip install cmake ninja && \
+    python3 -m pip install \
+        "flashinfer-jit-cache==${FLASHINFER_JIT_CACHE_VERSION}" \
+        --index-url https://flashinfer.ai/whl/cu130 && \
     TORCH_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}" \
     python3 -m pip install \
         "flash-linear-attention==${FLASH_LINEAR_ATTENTION_VERSION}" \
