@@ -254,6 +254,28 @@ def test_pipeline_validation_allows_stage_local_warmup() -> None:
         args.validate()
 
 
+def test_pipeline_validation_allows_decode_protected_mixed_batch() -> None:
+    with _isolated_server_args_module() as module:
+        args = _server_args(
+            module,
+            world_size=64,
+            pipeline_parallel_size=8,
+            attn_tp_size=8,
+            enforce_eager=True,
+            disable_prefill_graph=True,
+            disable_overlap_schedule=True,
+            disable_autotune=True,
+            enable_prefix_caching=False,
+            enable_kvstore=False,
+            grammar_backend="none",
+            enable_mixed_batch=True,
+            mixed_prefill_token_cap=512,
+        )
+        args.resolve_parallelism()
+
+        args.validate()
+
+
 def test_pipeline_local_warmup_cli_and_pp1_validation() -> None:
     with _isolated_server_args_module() as module:
         parser = argparse.ArgumentParser()

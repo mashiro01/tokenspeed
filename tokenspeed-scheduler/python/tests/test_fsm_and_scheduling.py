@@ -342,6 +342,27 @@ class TestPrefillFirst:
         # r0 decode = 1 token; r1 prefill chunk takes the remaining 15.
         assert op.input_lengths == [15, 1]
 
+    def test_mixed_prefill_decode_caps_prefill_after_decode(self):
+        cfg = make_config(max_scheduled_tokens=16, max_batch_size=8)
+        cfg.enable_mixed_prefill_decode = True
+        cfg.mixed_prefill_token_cap = 4
+        s = Scheduler(cfg)
+
+        submit(s, "r0", list(range(8)))
+        s.next_execution_plan()  # r0 → PrefillDone
+        s.next_execution_plan()  # r0 → Decoding
+        advance_forward(s, "r0", tokens=[99])
+
+        submit(s, "r1", list(range(32)))
+        plan = s.next_execution_plan()
+        op = plan.forward[0]
+
+        # Decode receives priority and only a bounded prefill chunk shares
+        # its batch. ForwardBatch still serializes prefill rows first.
+        assert op.request_ids == ["r1", "r0"]
+        assert op.num_extends() == 1
+        assert op.input_lengths == [4, 1]
+
     def test_max_batch_size_limits_scheduled_requests(self):
         """max_batch_size caps the number of requests per plan."""
         s = Scheduler(make_config(max_scheduled_tokens=512, max_batch_size=2))

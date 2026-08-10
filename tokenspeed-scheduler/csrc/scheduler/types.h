@@ -58,6 +58,9 @@ struct SchedulerConfig {
     bool enable_l3_storage{false};
     bool enable_kv_cache_events{false};
     bool enable_mixed_prefill_decode{false};
+    // When a mixed batch already contains decode work, cap the one admitted
+    // prefill chunk. Zero preserves the legacy unbounded scheduler budget.
+    std::int32_t mixed_prefill_token_cap{0};
 
     Role role{Role::kFused};
     bool enable_pd_cache{false};

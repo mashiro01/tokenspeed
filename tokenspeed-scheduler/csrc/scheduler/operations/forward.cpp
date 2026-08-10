@@ -532,10 +532,10 @@ std::pair<std::vector<ForwardOperation>, std::vector<LoadBackOperation>> Schedul
             return 2;
         }
         if (request->Is<fsm::Prefilling>()) {
-            return 3;
+            return config_.enable_mixed_prefill_decode ? 4 : 3;
         }
         if (request->Is<fsm::Submitted>()) {
-            return 4;
+            return config_.enable_mixed_prefill_decode ? 5 : 4;
         }
         if (request->Is<fsm::Decoding>() || request->Is<fsm::PrefillDone>()) {
             return config_.enable_mixed_prefill_decode ? 3 : 5;
@@ -563,6 +563,13 @@ std::pair<std::vector<ForwardOperation>, std::vector<LoadBackOperation>> Schedul
     std::int32_t token_budget = config_.max_scheduled_tokens;
     bool pushed_prefill = false;
     bool pushed_decode = false;
+    const auto mixed_prefill_budget = [&] {
+        if (!config_.enable_mixed_prefill_decode || !pushed_decode ||
+            config_.mixed_prefill_token_cap == 0) {
+            return token_budget;
+        }
+        return std::min(token_budget, config_.mixed_prefill_token_cap);
+    };
     auto push_operation = [&](auto operation) {
         if (recovery_barrier_ && operation.request_id == *recovery_barrier_) {
             recovery_barrier_.reset();
@@ -599,7 +606,7 @@ std::pair<std::vector<ForwardOperation>, std::vector<LoadBackOperation>> Schedul
                 break;
             }
             const std::int32_t reserve = config_.role == Role::kP ? 0 : config_.decode_input_tokens;
-            if (auto event = schedulePrefill(context, request, token_budget, reserve)) {
+            if (auto event = schedulePrefill(context, request, mixed_prefill_budget(), reserve)) {
                 push_operation(applyEventAndBuildOperation(request, std::move(*event)));
                 // P-side pages stay pinned until the PD transfer completes.
                 // D-side local recovery has no corresponding PD ACK; its
@@ -629,7 +636,10 @@ std::pair<std::vector<ForwardOperation>, std::vector<LoadBackOperation>> Schedul
             if (config_.role == Role::kD && pushed_decode) {
                 break;
             }
-            if (auto event = schedulePrefillFirstChunk(context, request, token_budget, config_.decode_input_tokens)) {
+            const std::int32_t prefill_budget =
+                config_.role == Role::kD ? token_budget : mixed_prefill_budget();
+            if (auto event = schedulePrefillFirstChunk(context, request, prefill_budget,
+                                                        config_.decode_input_tokens)) {
                 push_operation(applyEventAndBuildOperation(request, std::move(*event), load_back_operations));
                 trackPendingForwardResult(request);
                 if (config_.role == Role::kD || request->Is<fsm::Prefilling>()) {
@@ -646,7 +656,8 @@ std::pair<std::vector<ForwardOperation>, std::vector<LoadBackOperation>> Schedul
                 break;
             }
             const std::int32_t decode_input_tokens = config_.role == Role::kP ? 0 : config_.decode_input_tokens;
-            const std::int32_t prefill_budget = config_.role == Role::kD ? request->PrefillSize() : token_budget;
+            const std::int32_t prefill_budget =
+                config_.role == Role::kD ? request->PrefillSize() : mixed_prefill_budget();
             if (auto event = schedulePrefillFirstChunk(context, request, prefill_budget, decode_input_tokens)) {
                 push_operation(applyEventAndBuildOperation(request, std::move(*event), load_back_operations));
                 if (config_.enable_pd_cache) {

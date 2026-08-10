@@ -89,6 +89,11 @@ Scheduler::Scheduler(SchedulerConfig config)
     if (config_.max_scheduled_tokens <= 0) {
         throw std::invalid_argument("Scheduler: max_scheduled_tokens must be > 0");
     }
+    if (config_.mixed_prefill_token_cap < 0 ||
+        config_.mixed_prefill_token_cap > config_.max_scheduled_tokens) {
+        throw std::invalid_argument(
+            "Scheduler: mixed_prefill_token_cap must be in [0, max_scheduled_tokens]");
+    }
     if (config_.overlap_schedule_depth < 0 || config_.overlap_schedule_depth > 1) {
         throw std::invalid_argument("Scheduler: overlap_schedule_depth must be 0 or 1");
     }

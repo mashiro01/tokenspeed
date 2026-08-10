@@ -210,6 +210,7 @@ def make_config(
     disable_prefix_cache: bool = False,
     paged_cache_groups: Sequence["PagedCacheGroupConfig"] | None = None,
     enable_mixed_prefill_decode: bool = False,
+    mixed_prefill_token_cap: int = 0,
 ) -> SchedulerConfig:
     cfg = SchedulerConfig()
     cfg.num_device_pages = num_device_pages
@@ -233,6 +234,7 @@ def make_config(
     cfg.disable_l2_cache = disable_l2_cache
 
     cfg.enable_mixed_prefill_decode = enable_mixed_prefill_decode
+    cfg.mixed_prefill_token_cap = mixed_prefill_token_cap
     if paged_cache_groups:
         cfg.paged_cache_groups = list(paged_cache_groups)
     return cfg

@@ -285,6 +285,7 @@ class TestCLIConfigCompat(unittest.TestCase):
         self.assertEqual(args.max_prefill_tokens, 8192)
         self.assertIsNone(args.chunked_prefill_size)
         self.assertFalse(args.enable_mixed_batch)
+        self.assertEqual(args.mixed_prefill_token_cap, 0)
 
         sa = self._from_cli_args_no_init(args)
         sa.mapping = SimpleNamespace(world_size=1)
@@ -300,8 +301,17 @@ class TestCLIConfigCompat(unittest.TestCase):
         self.assertFalse(sa.enable_mixed_batch)
 
     def test_mixed_batch_can_be_enabled(self):
-        args = self._parse_args(["--model", "test/model", "--enable-mixed-batch"])
+        args = self._parse_args(
+            [
+                "--model",
+                "test/model",
+                "--enable-mixed-batch",
+                "--mixed-prefill-token-cap",
+                "512",
+            ]
+        )
         self.assertTrue(args.enable_mixed_batch)
+        self.assertEqual(args.mixed_prefill_token_cap, 512)
 
     def test_distributed_timeout_seconds_arg(self):
         args = self._parse_args(

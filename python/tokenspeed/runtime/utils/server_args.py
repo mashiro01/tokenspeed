@@ -135,6 +135,7 @@ class ServerArgs:
     chunked_prefill_size: int | None = None
     max_prefill_tokens: int = 8192
     enable_mixed_batch: bool = False
+    mixed_prefill_token_cap: int = 0
     # Kernel page size. Flat scheduler logical pages come from the LCM
     # runtime contract and must not overwrite this value.
     block_size: int = 64
@@ -871,6 +872,12 @@ class ServerArgs:
                 )
 
     def validate(self):
+        if self.mixed_prefill_token_cap < 0:
+            raise ValueError("mixed_prefill_token_cap must be non-negative")
+        if self.mixed_prefill_token_cap and not self.enable_mixed_batch:
+            raise ValueError(
+                "mixed_prefill_token_cap requires --enable-mixed-batch"
+            )
         if self.enable_pipeline_local_warmup:
             if self.mapping.pipeline.stage_count <= 1:
                 raise ValueError(
@@ -1201,6 +1208,15 @@ class ServerArgs:
             dest="enable_mixed_batch",
             default=ServerArgs.enable_mixed_batch,
             help="Allow the scheduler to issue prefill and decode requests in the same iteration.",
+        )
+        parser.add_argument(
+            "--mixed-prefill-token-cap",
+            type=int,
+            default=ServerArgs.mixed_prefill_token_cap,
+            help=(
+                "Maximum prefill tokens admitted alongside active decode work; "
+                "0 preserves the full chunked-prefill budget."
+            ),
         )
         parser.add_argument(
             "--block-size",
