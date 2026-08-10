@@ -326,22 +326,48 @@ def _kimi_k3_global_cache_field_dtypes(
 ) -> dict[str, torch.dtype]:
     """Return the rank-independent dtype ABI for every logical cache field."""
 
-    state_dtypes = {
-        f"layer.{logical_layer_id}.conv_state": conv_dtype
-        for logical_layer_id, layer_type in enumerate(global_layer_types)
-        if layer_type == LINEAR_ATTENTION
-    } | {
-        f"layer.{logical_layer_id}.recurrent_state": recurrent_dtype
-        for logical_layer_id, layer_type in enumerate(global_layer_types)
-        if layer_type == LINEAR_ATTENTION
+    fields_by_layer: dict[int, set[str]] = {
+        layer_id: set() for layer_id in range(len(global_layer_types))
     }
-    return {
-        logical_field.field.field_id: state_dtypes.get(
-            logical_field.field.field_id,
-            mla_cache_dtype,
-        )
-        for logical_field in logical_fields
-    }
+    for logical_field in logical_fields:
+        try:
+            fields_by_layer[logical_field.logical_layer_id].add(
+                logical_field.field.field_id
+            )
+        except KeyError as exc:
+            raise ValueError(
+                "Kimi-K3 global cache field has an out-of-range layer id: "
+                f"{logical_field.logical_layer_id}"
+            ) from exc
+
+    field_dtypes: dict[str, torch.dtype] = {}
+    for logical_layer_id, layer_type in enumerate(global_layer_types):
+        if layer_type == FULL_ATTENTION:
+            expected = {f"layer.{logical_layer_id}.latent_kv"}
+            layer_dtypes = {next(iter(expected)): mla_cache_dtype}
+        elif layer_type == LINEAR_ATTENTION:
+            conv_field = f"layer.{logical_layer_id}.conv_state"
+            recurrent_field = f"layer.{logical_layer_id}.recurrent_state"
+            expected = {conv_field, recurrent_field}
+            layer_dtypes = {
+                conv_field: conv_dtype,
+                recurrent_field: recurrent_dtype,
+            }
+        else:
+            raise ValueError(
+                f"unknown Kimi-K3 cache layer type {layer_type!r} at "
+                f"layer {logical_layer_id}"
+            )
+        if fields_by_layer[logical_layer_id] != expected:
+            raise ValueError(
+                f"Kimi-K3 global cache fields for layer {logical_layer_id} "
+                f"must be {sorted(expected)}, got "
+                f"{sorted(fields_by_layer[logical_layer_id])}"
+            )
+        field_dtypes.update(layer_dtypes)
+    if len(field_dtypes) != len(logical_fields):
+        raise ValueError("Kimi-K3 global cache dtype ABI has duplicate fields")
+    return field_dtypes
 
 
 def solve_kimi_k3_cache_layout(
@@ -653,15 +679,6 @@ def _prepare_kimi_k3_pipeline_cache(
         )
         group_ids = tuple(global_group_ids[layer_id] for layer_id in logical_layer_ids)
         _, _, conv_dtype, recurrent_dtype, _ = text_config.mamba2_cache_params
-        state_dtypes = {
-            f"layer.{logical_layer_id}.conv_state": conv_dtype
-            for logical_layer_id, layer_type in zip(logical_layer_ids, layer_types)
-            if layer_type == LINEAR_ATTENTION
-        } | {
-            f"layer.{logical_layer_id}.recurrent_state": recurrent_dtype
-            for logical_layer_id, layer_type in zip(logical_layer_ids, layer_types)
-            if layer_type == LINEAR_ATTENTION
-        }
         logical_field_dtypes = _kimi_k3_global_cache_field_dtypes(
             logical_fields,
             global_layer_types,
@@ -669,6 +686,13 @@ def _prepare_kimi_k3_pipeline_cache(
             conv_dtype=conv_dtype,
             recurrent_dtype=recurrent_dtype,
         )
+        state_dtypes = {
+            logical_field.field.field_id: logical_field_dtypes[
+                logical_field.field.field_id
+            ]
+            for logical_field in stage_layout.logical_fields
+            if global_layer_types[logical_field.logical_layer_id] == LINEAR_ATTENTION
+        }
         reference_plan = stage_layout.layout.with_num_lcm_blocks(1)
         usable_cache_bytes = cache_budget_bytes - fixed_workspace_bytes
         max_num_lcm_blocks = (
