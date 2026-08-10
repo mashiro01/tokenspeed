@@ -170,6 +170,11 @@ the currently qualified surface:
 --pipeline-parallel-size 8
 --attn-tp-size 8
 --mm-encoder-tp-mode data
+--max-model-len 1048576
+--max-total-tokens 1048576
+--max-num-seqs 4
+--chunked-prefill-size 8192
+--kv-cache-dtype fp8
 --enforce-eager
 --disable-prefill-graph
 --disable-overlap-schedule
@@ -182,6 +187,13 @@ the currently qualified surface:
 Startup rejects incompatible flags instead of silently changing them. Keep the
 first qualification run deterministic and add features one contract and parity
 gate at a time.
+
+The NVIDIA K3 `tokenspeed_mla` backend requires FP8 E4M3 cache storage, so the
+qualification command must not leave `--kv-cache-dtype` at `auto` (BF16 for
+this checkpoint). The 1M model length remains visible while the initial 1M
+global token pool admits either one full-context request or several shorter
+requests; increase the global pool only after measured HBM headroom passes on
+all stages.
 
 Runtime profiling, pause/resume, memory release, and online weight mutation are
 also rejected while PP is active. They need a stage-global transaction and
