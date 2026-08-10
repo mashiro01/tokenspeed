@@ -55,8 +55,12 @@ Module hierarchy matches the checkpoint::
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from collections import Counter
 from collections.abc import Iterable
+from collections.abc import Mapping as MappingABC
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -139,6 +143,15 @@ from tokenspeed.runtime.models.deepseek_v3 import (
     DeepseekV3FusedQkvAProjWithMqa,
     _prepare_mla_kv_b_proj_weights,
 )
+from tokenspeed.runtime.models.kimi_k3_weight_contract import (
+    KimiK3WeightContractError,
+    LoadSlot,
+    assert_loader_target,
+    consumed_load_slot,
+    expected_rank_local_load_slots,
+    parse_moe_checkpoint_slot,
+    validate_source_tensor,
+)
 from tokenspeed.runtime.models.moonvit import MoonViTVisionPath
 from tokenspeed.runtime.multimodal.embedder import (
     EncoderSpec,
@@ -171,6 +184,400 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_KIMI_K3_WEIGHT_AUDIT_EVENT = "kimi_k3_weight_load_audit"
+_KIMI_K3_FINAL_ATTN_RES_WEIGHTS = (
+    "model.output_attn_res_norm.weight",
+    "model.output_attn_res_proj.weight",
+)
+_KIMI_K3_OPTIONAL_CHECKPOINT_SUFFIXES = (".k_scale", ".v_scale")
+_KIMI_K3_OPTIONAL_RUNTIME_PARAM_SUFFIXES = (
+    "._dummy_norm.weight",
+    *_KIMI_K3_OPTIONAL_CHECKPOINT_SUFFIXES,
+)
+_KIMI_K3_TEXT_WEIGHT_PREFIXES = (
+    "model.layers.",
+    "model.embed_tokens.",
+    "model.norm.",
+    "model.output_attn_res_norm.",
+    "model.output_attn_res_proj.",
+    "lm_head.",
+)
+
+
+def _strip_kimi_k3_language_prefix(name: str) -> str:
+    return name.removeprefix("language_model.")
+
+
+def _kimi_k3_checkpoint_layer_id(name: str) -> int | None:
+    name = _strip_kimi_k3_language_prefix(name)
+    if not name.startswith("model.layers."):
+        return None
+    parts = name.split(".", 3)
+    if len(parts) < 4 or not parts[2].isdigit():
+        return None
+    return int(parts[2])
+
+
+def _is_kimi_k3_checkpoint_auxiliary(
+    name: str,
+    *,
+    num_hidden_layers: int,
+    num_nextn_predict_layers: int,
+) -> bool:
+    """Return whether a checkpoint tensor is intentionally not target state."""
+
+    canonical_name = _strip_kimi_k3_language_prefix(name)
+    layer_id = _kimi_k3_checkpoint_layer_id(canonical_name)
+    # Target checkpoints may carry appended MTP/NextN layers. They are loaded
+    # by the draft worker, not by the target stage.
+    return (
+        layer_id is not None
+        and num_hidden_layers <= layer_id < num_hidden_layers + num_nextn_predict_layers
+    )
+
+
+def _classify_kimi_k3_checkpoint_weight(
+    name: str,
+    *,
+    stage_plan,
+    include_vision: bool,
+    num_hidden_layers: int,
+    num_nextn_predict_layers: int = 0,
+    language_enabled: bool = True,
+) -> str:
+    """Classify a checkpoint key before a stage-local loader consumes it."""
+
+    if not isinstance(name, str) or not name:
+        return "unexpected"
+    if _is_kimi_k3_checkpoint_auxiliary(
+        name,
+        num_hidden_layers=num_hidden_layers,
+        num_nextn_predict_layers=num_nextn_predict_layers,
+    ):
+        return "auxiliary"
+    if name.startswith(("vision_tower.", "mm_projector.")):
+        return "owned" if include_vision else "stage_unowned"
+
+    canonical_name = _strip_kimi_k3_language_prefix(name)
+    if not language_enabled:
+        if name.startswith("language_model.") or canonical_name.startswith(
+            _KIMI_K3_TEXT_WEIGHT_PREFIXES
+        ):
+            return "stage_unowned"
+        return "unexpected"
+    if kimi_k3_stage_checkpoint_weight_filter(
+        name,
+        stage_plan=stage_plan,
+        include_vision=include_vision,
+    ):
+        return "owned"
+
+    layer_id = _kimi_k3_checkpoint_layer_id(canonical_name)
+    if layer_id is not None and layer_id < num_hidden_layers:
+        return "stage_unowned"
+    if canonical_name.startswith(_KIMI_K3_TEXT_WEIGHT_PREFIXES[1:]):
+        return "stage_unowned"
+    return "unexpected"
+
+
+def _is_optional_kimi_k3_runtime_param(name: str) -> bool:
+    return name.endswith(_KIMI_K3_OPTIONAL_RUNTIME_PARAM_SUFFIXES)
+
+
+def _kimi_k3_tensor_sha256(tensor: torch.Tensor) -> str:
+    value = tensor.detach()
+    if value.device.type != "cpu":
+        value = value.cpu()
+    value = value.contiguous().view(torch.uint8)
+    return hashlib.sha256(value.numpy().tobytes()).hexdigest()
+
+
+class _KimiK3WeightLoadAudit:
+    """Rank-local, fail-closed audit for one Kimi-K3 pipeline stage."""
+
+    _SAMPLE_LIMIT = 8
+
+    def __init__(self, *, stage_plan, mapping, config) -> None:
+        self.stage_plan = stage_plan
+        self.mapping = mapping
+        self.config = config
+        self.required_targets: set[str] = set()
+        self.expected_target_loads: dict[str, int] = {}
+        self.consumed_targets: set[str] = set()
+        self.target_consumption: Counter[str] = Counter()
+        self.checkpoint_consumption: Counter[str] = Counter()
+        self.expected_slots: set[tuple[str, LoadSlot]] = set()
+        self.consumed_slots: Counter[tuple[str, LoadSlot]] = Counter()
+        self._final_target_parameters: dict[str, torch.Tensor] = {}
+        self.owned_seen = 0
+        self.owned_unexpected = 0
+        self.stage_unowned_skipped = 0
+        self.rank_unowned_skipped = 0
+        self.auxiliary_skipped = 0
+        self.contract_violations = 0
+        self._unexpected_samples: list[str] = []
+        self._stage_unowned_samples: list[str] = []
+        self._rank_unowned_samples: list[str] = []
+        self._auxiliary_samples: list[str] = []
+        self._contract_violation_samples: list[str] = []
+        self._finished = False
+
+    @staticmethod
+    def target_name(namespace: str, name: str) -> str:
+        return f"{namespace}.{name}"
+
+    @staticmethod
+    def _append_sample(samples: list[str], name: str) -> None:
+        if len(samples) < _KimiK3WeightLoadAudit._SAMPLE_LIMIT:
+            samples.append(name)
+
+    def require_targets(
+        self,
+        namespace: str,
+        parameters: MappingABC[str, torch.Tensor],
+    ) -> None:
+        for name, parameter in parameters.items():
+            if _is_optional_kimi_k3_runtime_param(name):
+                continue
+            qualified_name = self.target_name(namespace, name)
+            slots = (
+                expected_rank_local_load_slots(
+                    name,
+                    config=self.config,
+                    mapping=self.mapping,
+                )
+                if namespace == "text"
+                else (LoadSlot(name, "direct", -1, "direct"),)
+            )
+            self.required_targets.add(qualified_name)
+            self.expected_target_loads[qualified_name] = len(slots)
+            self.expected_slots.update((namespace, slot) for slot in slots)
+            if namespace == "text" and name in _KIMI_K3_FINAL_ATTN_RES_WEIGHTS:
+                self._final_target_parameters[name] = parameter
+
+    def prepare_slot(
+        self,
+        checkpoint_name: str,
+        loaded_weight: torch.Tensor,
+        *,
+        namespace: str,
+        target_name: str,
+        component: str | None = None,
+        shard_id: str | int | None = None,
+    ) -> LoadSlot | None:
+        try:
+            slot = (
+                consumed_load_slot(
+                    checkpoint_name,
+                    target_name,
+                    component=component,
+                    shard_id=shard_id,
+                )
+                if namespace == "text"
+                else LoadSlot(target_name, "direct", -1, "direct")
+            )
+            validate_source_tensor(slot, loaded_weight, config=self.config)
+            return slot
+        except KimiK3WeightContractError as error:
+            self.record_contract_violation(checkpoint_name, error)
+            return None
+
+    def prepare_moe_slot(
+        self,
+        checkpoint_name: str,
+        loaded_weight: torch.Tensor,
+    ) -> LoadSlot | None:
+        try:
+            slot = parse_moe_checkpoint_slot(checkpoint_name)
+            validate_source_tensor(slot, loaded_weight, config=self.config)
+            return slot
+        except KimiK3WeightContractError as error:
+            self.record_contract_violation(checkpoint_name, error)
+            return None
+
+    def confirm_loader_target(
+        self,
+        checkpoint_name: str,
+        slot: LoadSlot,
+        loader_target_name: str,
+    ) -> bool:
+        try:
+            assert_loader_target(slot, loader_target_name)
+            return True
+        except KimiK3WeightContractError as error:
+            self.record_contract_violation(checkpoint_name, error)
+            return False
+
+    def record_contract_violation(
+        self,
+        checkpoint_name: str,
+        error: Exception,
+    ) -> None:
+        self.contract_violations += 1
+        self._append_sample(
+            self._contract_violation_samples,
+            f"{checkpoint_name}: {error}",
+        )
+
+    def record_consumed(
+        self,
+        checkpoint_name: str,
+        *,
+        namespace: str,
+        target_name: str,
+        slot: LoadSlot,
+    ) -> None:
+        canonical_name = _strip_kimi_k3_language_prefix(checkpoint_name)
+        qualified_target = self.target_name(namespace, target_name)
+        self.owned_seen += 1
+        self.checkpoint_consumption[canonical_name] += 1
+        self.consumed_targets.add(qualified_target)
+        self.target_consumption[qualified_target] += 1
+        self.consumed_slots[(namespace, slot)] += 1
+
+    def record_unexpected(self, checkpoint_name: str) -> None:
+        self.owned_seen += 1
+        self.owned_unexpected += 1
+        self._append_sample(self._unexpected_samples, checkpoint_name)
+
+    def record_stage_unowned(self, checkpoint_name: str) -> None:
+        self.stage_unowned_skipped += 1
+        self._append_sample(self._stage_unowned_samples, checkpoint_name)
+
+    def record_rank_unowned(self, checkpoint_name: str) -> None:
+        self.rank_unowned_skipped += 1
+        self._append_sample(self._rank_unowned_samples, checkpoint_name)
+
+    def record_auxiliary(self, checkpoint_name: str) -> None:
+        self.auxiliary_skipped += 1
+        self._append_sample(self._auxiliary_samples, checkpoint_name)
+
+    def finish(self) -> None:
+        if self._finished:
+            raise RuntimeError("Kimi-K3 weight load audit was finalized twice")
+        self._finished = True
+
+        missing = sorted(self.required_targets - self.consumed_targets)
+        missing_slots = sorted(self.expected_slots - self.consumed_slots.keys())
+        unexpected_slots = sorted(self.consumed_slots.keys() - self.expected_slots)
+        duplicate_slots = sorted(
+            slot for slot, count in self.consumed_slots.items() if count != 1
+        )
+        target_load_errors = {
+            name: {
+                "actual": self.target_consumption[name],
+                "expected": expected,
+            }
+            for name, expected in sorted(self.expected_target_loads.items())
+            if self.target_consumption[name] != expected
+        }
+        duplicate_sources = sorted(
+            name for name, count in self.checkpoint_consumption.items() if count != 1
+        )
+        output_attn_res_consumption = {
+            name: self.checkpoint_consumption[name]
+            for name in _KIMI_K3_FINAL_ATTN_RES_WEIGHTS
+        }
+        output_attn_res_errors = []
+        output_attn_res_target_sha256 = {
+            name: _kimi_k3_tensor_sha256(parameter)
+            for name, parameter in sorted(self._final_target_parameters.items())
+        }
+        if self.stage_plan.owns_head:
+            output_attn_res_errors = sorted(
+                name
+                for name, count in output_attn_res_consumption.items()
+                if count != 1
+            )
+
+        failed = bool(
+            missing
+            or self.owned_unexpected
+            or self.contract_violations
+            or duplicate_sources
+            or missing_slots
+            or unexpected_slots
+            or duplicate_slots
+            or target_load_errors
+            or output_attn_res_errors
+        )
+        payload = {
+            "auxiliary_samples": self._auxiliary_samples,
+            "auxiliary_skipped": self.auxiliary_skipped,
+            "event": _KIMI_K3_WEIGHT_AUDIT_EVENT,
+            "first_layer": self.stage_plan.first_layer,
+            "global_rank": getattr(self.mapping, "rank", None),
+            "last_layer_exclusive": self.stage_plan.end_layer,
+            "output_attn_res_consumption": output_attn_res_consumption,
+            "output_attn_res_errors": output_attn_res_errors,
+            "output_attn_res_target_sha256": output_attn_res_target_sha256,
+            "owned_checkpoint_tensors_consumed": sum(
+                self.checkpoint_consumption.values()
+            ),
+            "owned_checkpoint_tensors_seen": self.owned_seen,
+            "contract_violations": self.contract_violations,
+            "contract_violation_samples": self._contract_violation_samples,
+            "owned_duplicate": len(duplicate_sources),
+            "owned_duplicate_sample": duplicate_sources[: self._SAMPLE_LIMIT],
+            "owned_missing": len(missing),
+            "owned_missing_sample": missing[: self._SAMPLE_LIMIT],
+            "owned_target_load_mismatch": len(target_load_errors),
+            "owned_target_load_mismatch_sample": dict(
+                list(target_load_errors.items())[: self._SAMPLE_LIMIT]
+            ),
+            "load_slots_duplicate": len(duplicate_slots),
+            "load_slots_duplicate_sample": [
+                f"{namespace}:{slot}"
+                for namespace, slot in duplicate_slots[: self._SAMPLE_LIMIT]
+            ],
+            "load_slots_missing": len(missing_slots),
+            "load_slots_missing_sample": [
+                f"{namespace}:{slot}"
+                for namespace, slot in missing_slots[: self._SAMPLE_LIMIT]
+            ],
+            "load_slots_unexpected": len(unexpected_slots),
+            "load_slots_unexpected_sample": [
+                f"{namespace}:{slot}"
+                for namespace, slot in unexpected_slots[: self._SAMPLE_LIMIT]
+            ],
+            "owned_unexpected": self.owned_unexpected,
+            "owned_unexpected_sample": self._unexpected_samples,
+            "rank_unowned_samples": self._rank_unowned_samples,
+            "rank_unowned_skipped": self.rank_unowned_skipped,
+            "schema": "tokenspeed.qualification",
+            "schema_version": 1,
+            "stage_count": self.stage_plan.stage_count,
+            "stage_id": self.stage_plan.stage_id,
+            "stage_unowned_samples": self._stage_unowned_samples,
+            "stage_unowned_skipped": self.stage_unowned_skipped,
+            "status": "failure" if failed else "success",
+            "tp_rank": getattr(getattr(self.mapping, "attn", None), "tp_rank", None),
+        }
+        log = logger.error if failed else logger.info
+        log(
+            "%s",
+            json.dumps(
+                payload,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+        if failed:
+            raise RuntimeError(
+                "Kimi-K3 strict weight load audit failed: "
+                f"stage={self.stage_plan.stage_id} "
+                f"owned_missing={len(missing)} "
+                f"owned_unexpected={self.owned_unexpected} "
+                f"contract_violations={self.contract_violations} "
+                f"owned_duplicate={len(duplicate_sources)} "
+                f"load_slots_missing={len(missing_slots)} "
+                f"load_slots_duplicate={len(duplicate_slots)} "
+                f"load_slots_unexpected={len(unexpected_slots)} "
+                f"owned_target_load_mismatch={len(target_load_errors)} "
+                f"output_attn_res_errors={output_attn_res_errors}"
+            )
+
 
 # ===----------------------------------------------------------------------=== #
 # Multimodal vision path
@@ -187,21 +594,26 @@ class KimiK3Vision(MoonViTVisionPath):
     CUDA-graph wrapper without changing checkpoint parameter names.
     """
 
+    @staticmethod
+    def checkpoint_parameter_name(name: str) -> str:
+        name = name.replace("wqkv.", "attn.qkv_proj.")
+        name = name.replace("wo.", "attn.proj.")
+        name = name.replace("mm_projector.proj.0", "mm_projector.linear_1")
+        return name.replace("mm_projector.proj.2", "mm_projector.linear_2")
+
     def load_weight(
         self,
         name: str,
         loaded_weight: torch.Tensor,
         params_dict: dict[str, nn.Parameter],
-    ) -> None:
-        name = name.replace("wqkv.", "attn.qkv_proj.")
-        name = name.replace("wo.", "attn.proj.")
-        name = name.replace("mm_projector.proj.0", "mm_projector.linear_1")
-        name = name.replace("mm_projector.proj.2", "mm_projector.linear_2")
+    ) -> str:
+        name = self.checkpoint_parameter_name(name)
         if name not in params_dict:
             raise ValueError(f"Weight {name} not found in Kimi-K3 vision model")
         param = params_dict[name]
         weight_loader = getattr(param, "weight_loader", default_weight_loader)
         weight_loader(param, loaded_weight)
+        return name
 
 
 # ===----------------------------------------------------------------------=== #
@@ -2038,6 +2450,7 @@ class KimiLinearForCausalLM(BaseCausalLM):
     """
 
     model_cls = KimiLinearModel
+    _supports_kimi_k3_strict_weight_audit = True
 
     def resolve_lm_head(
         self,
@@ -2163,7 +2576,12 @@ class KimiLinearForCausalLM(BaseCausalLM):
         self.model._dflash_incremental_callback = incremental_callback
         self.model._dflash_slot_bufs = slot_bufs
 
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
+    def load_weights(
+        self,
+        weights: Iterable[tuple[str, torch.Tensor]],
+        *,
+        _weight_audit: _KimiK3WeightLoadAudit | None = None,
+    ) -> None:
         """Load the ``model.*`` / ``lm_head.*`` text weights.
 
         Reuses the DeepSeek machinery: ``gate_proj``/``up_proj`` stack into
@@ -2191,6 +2609,12 @@ class KimiLinearForCausalLM(BaseCausalLM):
         fuse_qkv_a_proj = config.q_lora_rank is not None
 
         params_dict = dict(self.named_parameters())
+        audit = _weight_audit or _KimiK3WeightLoadAudit(
+            stage_plan=self.model.stage_plan,
+            mapping=self.mapping,
+            config=config,
+        )
+        audit.require_targets("text", params_dict)
         moe_loader = build_moe_checkpoint_loader(
             params_dict=params_dict,
             expert_schema=ExpertCheckpointSchema(
@@ -2201,21 +2625,26 @@ class KimiLinearForCausalLM(BaseCausalLM):
             ep_size=self.mapping.moe.ep_size,
         )
 
-        for name, loaded_weight in weights:
-            if "rotary_emb.inv_freq" in name:
+        for checkpoint_name, loaded_weight in weights:
+            disposition = _classify_kimi_k3_checkpoint_weight(
+                checkpoint_name,
+                stage_plan=self.model.stage_plan,
+                include_vision=False,
+                num_hidden_layers=config.num_hidden_layers,
+                num_nextn_predict_layers=getattr(config, "num_nextn_predict_layers", 0),
+            )
+            if disposition == "stage_unowned":
+                audit.record_stage_unowned(checkpoint_name)
                 continue
-            # MTP checkpoints append NextN draft layer(s) past num_hidden_layers;
-            # the draft worker loads those.
-            if name.startswith("model.layers."):
-                layer_str = name.split(".")[2]
-                if layer_str.isdigit():
-                    layer_id = int(layer_str)
-                    if layer_id >= config.num_hidden_layers or not (
-                        self.model.stage_plan.first_layer
-                        <= layer_id
-                        < self.model.stage_plan.end_layer
-                    ):
-                        continue
+            if disposition == "auxiliary":
+                audit.record_auxiliary(checkpoint_name)
+                continue
+            if disposition == "unexpected":
+                audit.record_unexpected(checkpoint_name)
+                continue
+
+            checkpoint_name = _strip_kimi_k3_language_prefix(checkpoint_name)
+            name = checkpoint_name
             # Compressed-tensors MXFP4 routed experts ship the packed weight as
             # ``...w{1,2,3}.weight_packed``; the mxfp4 MoE param is
             # ``w13_weight`` / ``w2_weight`` (packed uint8), so drop the
@@ -2237,11 +2666,44 @@ class KimiLinearForCausalLM(BaseCausalLM):
                 if mapped not in params_dict:
                     continue
                 param = params_dict[mapped]
+                slot = audit.prepare_slot(
+                    checkpoint_name,
+                    loaded_weight,
+                    namespace="text",
+                    target_name=mapped,
+                    shard_id=shard_id,
+                )
+                if slot is None:
+                    break
                 param.weight_loader(param, loaded_weight, shard_id)
+                audit.record_consumed(
+                    checkpoint_name,
+                    namespace="text",
+                    target_name=mapped,
+                    slot=slot,
+                )
                 break
             else:
                 if moe_loader.matches(name):
-                    moe_loader.load(name, loaded_weight)
+                    slot = audit.prepare_moe_slot(checkpoint_name, loaded_weight)
+                    if slot is None:
+                        continue
+                    mapped = moe_loader.load(name, loaded_weight)
+                    if not audit.confirm_loader_target(
+                        checkpoint_name,
+                        slot,
+                        mapped,
+                    ):
+                        continue
+                    audit.record_consumed(
+                        checkpoint_name,
+                        namespace="text",
+                        target_name=mapped,
+                        slot=slot,
+                    )
+                    continue
+                if moe_loader.is_expert_checkpoint_weight(name):
+                    audit.record_rank_unowned(checkpoint_name)
                     continue
 
                 if fuse_qkv_a_proj and ".g_proj" in name:
@@ -2251,6 +2713,15 @@ class KimiLinearForCausalLM(BaseCausalLM):
                     mapped = name.replace("g_proj", "fused_qkv_a_proj_with_mqa")
                     param = params_dict.get(mapped)
                     if param is not None:
+                        slot = audit.prepare_slot(
+                            checkpoint_name,
+                            loaded_weight,
+                            namespace="text",
+                            target_name=mapped,
+                            component="g",
+                        )
+                        if slot is None:
+                            continue
                         gate_offset = (
                             config.q_lora_rank
                             + config.kv_lora_rank
@@ -2262,7 +2733,15 @@ class KimiLinearForCausalLM(BaseCausalLM):
                         gate_start = self.mapping.attn.tp_rank * gate_rows
                         gate_shard = loaded_weight[gate_start : gate_start + gate_rows]
                         param.weight_loader(param, gate_shard, begin_size=gate_offset)
+                        audit.record_consumed(
+                            checkpoint_name,
+                            namespace="text",
+                            target_name=mapped,
+                            slot=slot,
+                        )
                         continue
+                    audit.record_unexpected(checkpoint_name)
+                    continue
 
                 if fuse_qkv_a_proj and (
                     "q_a_proj" in name or "kv_a_proj_with_mqa" in name
@@ -2281,16 +2760,49 @@ class KimiLinearForCausalLM(BaseCausalLM):
                         )
                     param = params_dict.get(mapped)
                     if param is None:
+                        audit.record_unexpected(checkpoint_name)
+                        continue
+                    component = "q_a" if "q_a_proj" in name else "kv_a"
+                    slot = audit.prepare_slot(
+                        checkpoint_name,
+                        loaded_weight,
+                        namespace="text",
+                        target_name=mapped,
+                        component=component,
+                    )
+                    if slot is None:
                         continue
                     param.weight_loader(param, loaded_weight, begin_size=begin_size)
+                    audit.record_consumed(
+                        checkpoint_name,
+                        namespace="text",
+                        target_name=mapped,
+                        slot=slot,
+                    )
                     continue
 
                 param = params_dict.get(name)
                 if param is None:
+                    audit.record_unexpected(checkpoint_name)
+                    continue
+                slot = audit.prepare_slot(
+                    checkpoint_name,
+                    loaded_weight,
+                    namespace="text",
+                    target_name=name,
+                )
+                if slot is None:
                     continue
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
+                audit.record_consumed(
+                    checkpoint_name,
+                    namespace="text",
+                    target_name=name,
+                    slot=slot,
+                )
 
+        audit.finish()
         self.post_load_weights()
 
     def post_load_weights(self) -> None:
@@ -2616,24 +3128,95 @@ class KimiK3ForConditionalGeneration(nn.Module):
             if self.vision is not None
             else None
         )
+        strict_audit = bool(
+            self.language_model is not None
+            and getattr(
+                self.language_model,
+                "_supports_kimi_k3_strict_weight_audit",
+                False,
+            )
+        )
+        audit = (
+            _KimiK3WeightLoadAudit(
+                stage_plan=self.pipeline_stage_plan,
+                mapping=self.mapping,
+                config=self.config.text_config,
+            )
+            if strict_audit
+            else None
+        )
+        if audit is not None and vision_params is not None:
+            audit.require_targets("vision", vision_params)
 
         def language_weights():
             nonlocal loaded_vision_weights, dropped_vision_weights
             for name, weight in weights:
+                if audit is not None:
+                    disposition = _classify_kimi_k3_checkpoint_weight(
+                        name,
+                        stage_plan=self.pipeline_stage_plan,
+                        include_vision=self.vision is not None,
+                        num_hidden_layers=self.config.text_config.num_hidden_layers,
+                        num_nextn_predict_layers=getattr(
+                            self.config.text_config,
+                            "num_nextn_predict_layers",
+                            0,
+                        ),
+                    )
+                    if disposition == "stage_unowned":
+                        if name.startswith(("vision_tower.", "mm_projector.")):
+                            dropped_vision_weights += 1
+                        audit.record_stage_unowned(name)
+                        continue
+                    if disposition == "auxiliary":
+                        audit.record_auxiliary(name)
+                        continue
+                    if disposition == "unexpected":
+                        audit.record_unexpected(name)
+                        continue
+
                 if name.startswith("vision_tower.") or name.startswith("mm_projector."):
                     if self.vision is None:
                         dropped_vision_weights += 1
                     else:
                         assert vision_params is not None
+                        mapped = self.vision.checkpoint_parameter_name(name)
+                        if audit is not None and mapped not in vision_params:
+                            audit.record_unexpected(name)
+                            continue
+                        slot = (
+                            audit.prepare_slot(
+                                name,
+                                weight,
+                                namespace="vision",
+                                target_name=mapped,
+                            )
+                            if audit is not None
+                            else None
+                        )
+                        if audit is not None and slot is None:
+                            continue
                         self.vision.load_weight(name, weight, vision_params)
+                        if audit is not None:
+                            audit.record_consumed(
+                                name,
+                                namespace="vision",
+                                target_name=mapped,
+                                slot=slot,
+                            )
                         loaded_vision_weights += 1
                     continue
-                if name.startswith("language_model."):
-                    name = name[len("language_model.") :]
+                name = _strip_kimi_k3_language_prefix(name)
                 yield name, weight
 
         if self.language_model is not None:
-            self.language_model.load_weights(language_weights())
+            if audit is None:
+                self.language_model.load_weights(language_weights())
+            else:
+                self.language_model.load_weights(
+                    language_weights(),
+                    _weight_audit=audit,
+                )
         else:
             # Exhaust the stream so interleaved vision weights are still routed.
             for _ in language_weights():
