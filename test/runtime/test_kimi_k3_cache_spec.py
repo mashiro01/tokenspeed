@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(_TEST_DIR))
 
 from test.runtime.conftest import TP8_PAGE_SET_BYTES
 
+import pytest
 import torch
 
 from tokenspeed.runtime.configs.kimi_k3_config import KimiLinearConfig
@@ -131,9 +132,40 @@ def test_pipeline_cache_dtype_abi_is_global_across_stages() -> None:
     }
 
     assert len(digests) == 1
+    assert len(field_dtypes) == 162
+    assert sum(field_id.endswith(".latent_kv") for field_id in field_dtypes) == 24
+    assert sum(field_id.endswith(".conv_state") for field_id in field_dtypes) == 69
+    assert sum(field_id.endswith(".recurrent_state") for field_id in field_dtypes) == 69
     assert field_dtypes["layer.0.conv_state"] == conv_dtype
     assert field_dtypes["layer.0.recurrent_state"] == recurrent_dtype
     assert field_dtypes["layer.3.latent_kv"] == torch.float8_e4m3fn
+
+    bf16_mla_dtypes = _kimi_k3_global_cache_field_dtypes(
+        logical_fields,
+        global_layer_types,
+        mla_cache_dtype=torch.bfloat16,
+        conv_dtype=conv_dtype,
+        recurrent_dtype=recurrent_dtype,
+    )
+    assert bf16_mla_dtypes["layer.3.latent_kv"] == torch.bfloat16
+    assert bf16_mla_dtypes["layer.0.recurrent_state"] == torch.float32
+
+    with pytest.raises(ValueError, match="out-of-range layer id"):
+        _kimi_k3_global_cache_field_dtypes(
+            logical_fields,
+            global_layer_types[:-1],
+            mla_cache_dtype=torch.float8_e4m3fn,
+            conv_dtype=conv_dtype,
+            recurrent_dtype=recurrent_dtype,
+        )
+    with pytest.raises(ValueError, match="global cache fields for layer"):
+        _kimi_k3_global_cache_field_dtypes(
+            logical_fields[:-1],
+            global_layer_types,
+            mla_cache_dtype=torch.float8_e4m3fn,
+            conv_dtype=conv_dtype,
+            recurrent_dtype=recurrent_dtype,
+        )
 
 
 def test_lcm_geometry_packs_two_kda_pages_at_tp16() -> None:
