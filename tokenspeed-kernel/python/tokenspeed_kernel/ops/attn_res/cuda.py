@@ -29,12 +29,13 @@ from tokenspeed_kernel.registry import Priority, register_kernel
 from tokenspeed_kernel.signature import format_signatures
 
 platform = current_platform()
+_SUPPORTED_CUDA_ARCHS = frozenset({ArchVersion(10, 0), ArchVersion(10, 3)})
 
 # Register only when the compiled kernel is actually loadable, so a Blackwell box
 # with a missing/failed build degrades to the torch fallback via select_kernel
 # instead of crashing on the first call.
 _HAS_CUDA_KERNEL = False
-if platform.is_nvidia and platform.is_blackwell:
+if platform.is_nvidia and platform.arch_version in _SUPPORTED_CUDA_ARCHS:
     from tokenspeed_kernel.thirdparty.cuda.attn_res import (
         attn_res_fwd_packed,
         has_attn_res_fwd,
@@ -51,6 +52,7 @@ if _HAS_CUDA_KERNEL:
         solution="cuda",
         capability=CapabilityRequirement(
             min_arch_version=ArchVersion(10, 0),
+            max_arch_version=ArchVersion(10, 3),
             vendors=frozenset({"nvidia"}),
         ),
         signatures=format_signatures(

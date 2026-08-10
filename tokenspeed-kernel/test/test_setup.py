@@ -225,3 +225,16 @@ def test_cuda_include_dirs_fall_back_from_partial_toolkit(
 
     assert str(cuda_include) not in include_dirs
     assert str(wheel_include) in include_dirs
+
+
+def test_cuda_kernel_groups_filter_architectures(monkeypatch) -> None:
+    monkeypatch.setenv("TOKENSPEED_KERNEL_BACKEND", "cuda")
+    monkeypatch.setattr(setuptools, "setup", lambda **_kwargs: None)
+    setup_namespace = runpy.run_path(str(SETUP_PY))
+
+    builder = setup_namespace["CudaKernelBuilder"]([], verbose=False)
+    requested_archs = {"90a", "100a", "120a"}
+
+    assert builder._cuda_archs_for_group("rope", requested_archs) == requested_archs
+    assert builder._cuda_archs_for_group("attn_res", requested_archs) == {"100a"}
+    assert builder._cuda_archs_for_group("attn_res", {"120a"}) == set()

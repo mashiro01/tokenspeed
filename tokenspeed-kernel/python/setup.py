@@ -72,6 +72,13 @@ BACKEND_ENV = "TOKENSPEED_KERNEL_BACKEND"
 VALID_BACKENDS = {"cuda", "rocm"}
 DEFAULT_CUDA_ARCHS = ("100a", "103a")
 
+# Some CUDA sources use architecture-specific PTX that nvcc cannot lower for
+# other GPU families. Unlisted groups are portable across the requested CUDA
+# targets; listed groups are compiled only for the intersection below.
+KERNEL_CUDA_ARCH_ALLOWLISTS = {
+    "attn_res": frozenset({"100a", "103a"}),
+}
+
 # CUDA kernels source and output directories
 CUDA_CSRC_DIR = THIRDPARTY_DIR / "cuda" / "csrc"
 CUDA_OBJS_DIR = THIRDPARTY_DIR / "cuda" / "objs"
@@ -524,6 +531,12 @@ class CudaKernelBuilder:
             archs.update(DEFAULT_CUDA_ARCHS)
         return archs
 
+    def _cuda_archs_for_group(self, name, requested_archs):
+        allowed_archs = KERNEL_CUDA_ARCH_ALLOWLISTS.get(name)
+        if allowed_archs is None:
+            return set(requested_archs)
+        return set(requested_archs).intersection(allowed_archs)
+
     def _site_paths(self):
         paths = []
         try:
@@ -780,12 +793,8 @@ class CudaKernelBuilder:
     def run(self):
         self._prepare_cuda_toolchain_env()
         max_jobs = int(os.environ.get("MAX_JOBS", min(os.cpu_count() or 1, 16)))
-        total_sources = sum(len(entry[1]) for entry in self.kernel_groups)
 
         archs = self._detect_cuda_archs()
-        gencode_flags = [
-            f"-gencode=arch=compute_{a},code=sm_{a}" for a in sorted(archs)
-        ]
         nvcc_flags = [
             "-std=c++17",
             "-O3",
@@ -797,7 +806,7 @@ class CudaKernelBuilder:
             "-DFLASHINFER_ENABLE_F16",
             "-DENABLE_BF16",
             "-DENABLE_FP8",
-        ] + gencode_flags
+        ]
         include_dirs = self._resolve_include_dirs()
         ldflags = ["-shared"] + self._resolve_cuda_lib_flags()
 
@@ -806,26 +815,65 @@ class CudaKernelBuilder:
 
         stale_groups = []
         skipped_groups = 0
+        unsupported_groups = []
+        eligible_groups = []
         for entry in self.kernel_groups:
             name, sources, extra_ldflags = entry[0], entry[1], entry[2]
             extra_cflags = entry[3] if len(entry) > 3 else []
             out_dir = CUDA_OBJS_DIR / name
             out_dir.mkdir(parents=True, exist_ok=True)
             so_path = out_dir / f"{name}.so"
-            if so_path.exists() and all(
-                so_path.stat().st_mtime > src.stat().st_mtime for src in sources
+            arch_stamp_path = out_dir / ".cuda_archs"
+            group_archs = self._cuda_archs_for_group(name, archs)
+            if not group_archs:
+                so_path.unlink(missing_ok=True)
+                arch_stamp_path.unlink(missing_ok=True)
+                unsupported_groups.append(name)
+                continue
+
+            eligible_groups.append(name)
+            arch_stamp = " ".join(sorted(group_archs))
+            try:
+                built_archs = arch_stamp_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                built_archs = None
+            if (
+                so_path.exists()
+                and all(
+                    so_path.stat().st_mtime > src.stat().st_mtime for src in sources
+                )
+                and built_archs == arch_stamp
             ):
                 skipped_groups += 1
                 continue
-            stale_groups.append((name, sources, extra_ldflags, extra_cflags, so_path))
+            stale_groups.append(
+                (
+                    name,
+                    sources,
+                    extra_ldflags,
+                    extra_cflags,
+                    so_path,
+                    arch_stamp_path,
+                    group_archs,
+                )
+            )
 
-        stale_sources = sum(len(srcs) for _, srcs, _, _, _ in stale_groups)
+        total_sources = sum(
+            len(entry[1]) for entry in self.kernel_groups if entry[0] in eligible_groups
+        )
+        stale_sources = sum(len(group[1]) for group in stale_groups)
         print(
-            f"Building {len(stale_groups)}/{len(self.kernel_groups)} kernel group(s) "
+            f"Building {len(stale_groups)}/{len(eligible_groups)} eligible kernel "
+            f"group(s) "
             f"({stale_sources}/{total_sources} files, {max_jobs} parallel jobs)..."
         )
         if skipped_groups and self.verbose:
             print(f"Skipped {skipped_groups} up-to-date kernel group(s)")
+        if unsupported_groups:
+            print(
+                "Skipped kernel group(s) unsupported by requested CUDA "
+                f"architectures {sorted(archs)}: {', '.join(unsupported_groups)}"
+            )
 
         if not stale_groups:
             return
@@ -833,9 +881,21 @@ class CudaKernelBuilder:
         with ThreadPoolExecutor(max_workers=max_jobs) as executor:
             group_meta = []
             futures = []
-            for name, sources, extra_ldflags, extra_cflags, so_path in stale_groups:
+            for (
+                name,
+                sources,
+                extra_ldflags,
+                extra_cflags,
+                so_path,
+                arch_stamp_path,
+                group_archs,
+            ) in stale_groups:
                 out_dir = so_path.parent
                 objects = []
+                group_nvcc_flags = nvcc_flags + [
+                    f"-gencode=arch=compute_{arch},code=sm_{arch}"
+                    for arch in sorted(group_archs)
+                ]
                 for src in sources:
                     obj = out_dir / (src.stem + ".o")
                     objects.append(obj)
@@ -844,17 +904,33 @@ class CudaKernelBuilder:
                             self._compile_one,
                             str(src),
                             str(obj),
-                            nvcc_flags,
+                            group_nvcc_flags,
                             include_dirs,
                             extra_cflags,
                         )
                     )
-                group_meta.append((name, objects, extra_ldflags, so_path))
+                group_meta.append(
+                    (
+                        name,
+                        objects,
+                        extra_ldflags,
+                        so_path,
+                        arch_stamp_path,
+                        " ".join(sorted(group_archs)),
+                    )
+                )
 
             for future in as_completed(futures):
                 future.result()
 
-        for name, objects, extra_ldflags, so_path in group_meta:
+        for (
+            name,
+            objects,
+            extra_ldflags,
+            so_path,
+            arch_stamp_path,
+            arch_stamp,
+        ) in group_meta:
             extra_ldflags = [
                 self._resolve_library_ldflag(ldflag) for ldflag in (extra_ldflags or [])
             ]
@@ -866,6 +942,7 @@ class CudaKernelBuilder:
                 + ["-o", str(so_path)]
             )
             subprocess.check_call(link_cmd)
+            arch_stamp_path.write_text(arch_stamp + "\n", encoding="utf-8")
 
 
 class BuildKernels(build_ext):
