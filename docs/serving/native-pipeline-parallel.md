@@ -191,6 +191,21 @@ Startup rejects incompatible flags instead of silently changing them. Keep the
 first qualification run deterministic and add features one contract and parity
 gate at a time.
 
+For Python-only qualification fixes, `docker/Dockerfile.runtime-overlay` may
+layer the current runtime package over an already qualified SM120 image. This
+path is valid only when the following source guard is empty relative to the
+declared base revision:
+
+```bash
+git diff --exit-code <base-revision>..HEAD -- \
+  tokenspeed-kernel tokenspeed-kernel-amd tokenspeed-mla tokenspeed-scheduler
+```
+
+The overlay removes the old package tree, force-reinstalls `python/` without
+changing dependencies, runs `pip check`, and records both base and overlay
+revisions as OCI labels. Any kernel, scheduler, dependency, or base-image
+change requires the full NVIDIA Dockerfile instead.
+
 The K3 checkpoint does not declare FP8 KV metadata, so the qualification
 command must not leave `--kv-cache-dtype` at `auto` (BF16 for this checkpoint).
 SM120 qualification pins the generic MLA history consumer because the current

@@ -1,0 +1,30 @@
+# Build a qualification image when only the Python runtime changed. The caller
+# must first prove that kernel and scheduler sources match BASE_VCS_REF.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG BASE_IMAGE
+ARG BASE_VCS_REF
+ARG VCS_REF
+ARG VCS_URL=https://github.com/lightseekorg/tokenspeed
+
+USER root
+WORKDIR /workspace
+
+# Replace rather than merge the package tree so removed modules cannot survive
+# from the base image.
+RUN rm -rf /workspace/python
+COPY python /workspace/python
+COPY README.md /workspace/python/README.md
+
+RUN python3 -m pip install \
+        --force-reinstall \
+        --no-build-isolation \
+        --no-deps \
+        /workspace/python && \
+    python3 -m pip check
+
+LABEL org.opencontainers.image.source="${VCS_URL}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      ai.tokenspeed.base-image="${BASE_IMAGE}" \
+      ai.tokenspeed.base-revision="${BASE_VCS_REF}"
