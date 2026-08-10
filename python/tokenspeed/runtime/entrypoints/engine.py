@@ -75,6 +75,9 @@ from tokenspeed.runtime.engine.io_struct import (
     UpdateWeightsFromTensorReqInput,
 )
 from tokenspeed.runtime.entrypoints.engine_base import EngineBase
+from tokenspeed.runtime.entrypoints.scheduler_process_supervisor import (
+    SchedulerProcessSupervisor,
+)
 from tokenspeed.runtime.utils import (
     MultiprocessingSerializer,
     configure_logger,
@@ -124,6 +127,8 @@ class Engine(EngineBase):
                 kwargs["log_level"] = "error"
             server_args = ServerArgs(**kwargs)
 
+        self.scheduler_supervisor: SchedulerProcessSupervisor | None = None
+
         # Shutdown the subprocesses automatically when the program exits
         atexit.register(self.shutdown)
 
@@ -132,13 +137,14 @@ class Engine(EngineBase):
         logger.info("server_args=%r", server_args)
 
         # Launch subprocesses
-        tokenizer_manager, _, scheduler_info = _launch_subprocesses(
+        tokenizer_manager, scheduler_supervisor, scheduler_info = _launch_subprocesses(
             server_args=server_args,
             port_args=self.port_args,
         )
         self.server_args = server_args
         self.tokenizer_manager = tokenizer_manager
         self.scheduler_info = scheduler_info
+        self.scheduler_supervisor = scheduler_supervisor
 
         # Sync facade for blocking callers. Owns its own bg event-loop thread; see runtime/engine/llm.py
         # for the queue-bridge semantics.
@@ -272,23 +278,30 @@ class Engine(EngineBase):
 
     def shutdown(self):
         """Shutdown the engine"""
-        # Stop the sync-facade event loop before subprocess teardown so any
-        # in-flight blocking callers see a clean loop close instead of a
-        # stale-reference error.
-        if getattr(self, "llm", None) is not None:
-            self.llm.shutdown()
-        bootstrap_server = getattr(
-            getattr(self, "tokenizer_manager", None),
-            "bootstrap_server",
-            None,
-        )
-        close_bootstrap = getattr(bootstrap_server, "close", None)
+        scheduler_supervisor = getattr(self, "scheduler_supervisor", None)
+        if scheduler_supervisor is not None:
+            scheduler_supervisor.begin_shutdown()
+
         try:
-            if callable(close_bootstrap):
-                close_bootstrap()
-        except Exception:
-            logger.exception("Failed to close the disaggregation bootstrap server")
+            # Stop the sync-facade event loop before subprocess teardown so any
+            # in-flight blocking callers see a clean loop close instead of a
+            # stale-reference error.
+            if getattr(self, "llm", None) is not None:
+                self.llm.shutdown()
+            bootstrap_server = getattr(
+                getattr(self, "tokenizer_manager", None),
+                "bootstrap_server",
+                None,
+            )
+            close_bootstrap = getattr(bootstrap_server, "close", None)
+            try:
+                if callable(close_bootstrap):
+                    close_bootstrap()
+            except Exception:
+                logger.exception("Failed to close the disaggregation bootstrap server")
         finally:
+            if scheduler_supervisor is not None:
+                scheduler_supervisor.shutdown()
             kill_process_tree(os.getpid(), include_parent=False)
 
     def __enter__(self):
@@ -521,7 +534,11 @@ def _set_envs_and_config(server_args: ServerArgs):
 
 def _launch_subprocesses(
     server_args: ServerArgs, port_args: PortArgs | None = None
-) -> tuple[AsyncLLM, None, dict]:
+) -> tuple[
+    AsyncLLM | None,
+    SchedulerProcessSupervisor | None,
+    dict | None,
+]:
     """
     Launch the TokenizerManager in the main process, the Scheduler in a subprocess, and the DetokenizerManager in another subprocess.
     """
@@ -591,22 +608,23 @@ def _launch_subprocesses(
                     "Initialization failed. Please see the error messages above."
                 )
 
+        scheduler_supervisor = SchedulerProcessSupervisor(scheduler_procs)
+        scheduler_supervisor.start()
+
         if not envs.TOKENSPEED_BLOCK_NONZERO_RANK_CHILDREN.get():
             # When using `Engine` as a Python API, we don't want to block here.
-            return None, None, None
+            return None, scheduler_supervisor, None
 
-        launch_dummy_health_check_server(
-            server_args.host, server_args.port, server_args.enable_metrics
-        )
-
-        for proc in scheduler_procs:
-            proc.join()
-            logger.error(
-                "Scheduler or DataParallelController %s terminated with %s",
-                proc.pid,
-                proc.exitcode,
+        try:
+            launch_dummy_health_check_server(
+                server_args.host,
+                server_args.port,
+                server_args.enable_metrics,
+                health_check=scheduler_supervisor.is_healthy,
             )
-        return None, None, None
+        finally:
+            scheduler_supervisor.shutdown()
+        return None, scheduler_supervisor, None
 
     # Launch the main-process async frontend. The detokenizer runs
     # inline inside AsyncLLM — no separate subprocess.
@@ -638,7 +656,9 @@ def _launch_subprocesses(
         "max_single_request_tokens"
     ]
     tokenizer_manager.context_len = scheduler_info["max_model_len"]
-    return tokenizer_manager, None, scheduler_info
+    scheduler_supervisor = SchedulerProcessSupervisor(scheduler_procs)
+    scheduler_supervisor.start()
+    return tokenizer_manager, scheduler_supervisor, scheduler_info
 
 
 def launch_scheduler_headless(server_args: ServerArgs) -> None:
