@@ -789,6 +789,24 @@ def test_json_and_jsonl_cli_are_deterministic(
     ]
 
 
+def test_summary_only_keeps_exact_totals_without_tensor_records(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _build_checkpoint(tmp_path)
+    tensors = load_checkpoint(checkpoint)
+    plan = parse_plan(_plan_data())
+
+    full = build_ledger(tensors, plan)
+    summary = build_ledger(tensors, plan, include_entries=False)
+
+    assert full["entries_included"] is True
+    assert summary["entries_included"] is False
+    assert summary["entries"] == []
+    assert summary["totals"] == full["totals"]
+    assert summary["stage_summaries"] == full["stage_summaries"]
+    assert summary["rank_summaries"] == full["rank_summaries"]
+
+
 def test_cli_normalizes_malformed_input_errors(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
