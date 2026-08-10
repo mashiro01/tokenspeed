@@ -27,10 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
-COPY . /workspace
-
-# Install every TokenSpeed package from this checkout so the image always
-# contains the source being built, rather than published package wheels.
+# Keep heavyweight third-party dependencies in a source-independent layer so
+# native-kernel iterations can reuse the download and build cache.
 RUN test -x "${CUDA_HOME}/bin/nvcc" && \
     python3 -m pip install cmake ninja && \
     python3 -m pip install \
@@ -39,7 +37,13 @@ RUN test -x "${CUDA_HOME}/bin/nvcc" && \
     TORCH_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}" \
     python3 -m pip install \
         "flash-linear-attention==${FLASH_LINEAR_ATTENTION_VERSION}" \
-        --no-build-isolation && \
+        --no-build-isolation
+
+COPY . /workspace
+
+# Install every TokenSpeed package from this checkout so the image always
+# contains the source being built, rather than published package wheels.
+RUN \
     MAX_JOBS=${MAX_JOBS} \
     FLASHINFER_CUDA_ARCH_LIST="${CUDA_ARCH_LIST}" \
     TOKENSPEED_KERNEL_BACKEND=cuda \
