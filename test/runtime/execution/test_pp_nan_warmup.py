@@ -10,6 +10,11 @@ torch = pytest.importorskip("torch")
 
 from tokenspeed.runtime.execution.model_executor import ModelExecutor
 from tokenspeed.runtime.execution.nan_guard import NanGuard
+from tokenspeed.runtime.pipeline.contracts import (
+    ActivationFieldSpec,
+    ActivationSchema,
+    StagePlan,
+)
 
 
 class _PacketBus:
@@ -148,3 +153,149 @@ def test_pipeline_autotune_uses_stage_executor_and_control_plane():
     assert batch.req_pool_indices.tolist() == [7]
     assert batch.seq_lens.tolist() == [4]
     assert batch.extend_prefix_lens.tolist() == [0]
+
+
+def test_pipeline_local_warmup_bypasses_the_pipeline_control_plane():
+    schema = ActivationSchema(
+        boundary_id="test/stage-0-to-1",
+        fields=(
+            ActivationFieldSpec(
+                field_id="prefix_sum", dtype="bfloat16", trailing_shape=(4,)
+            ),
+        ),
+    )
+    stage_plan = StagePlan(
+        stage_id=1,
+        stage_count=2,
+        first_layer=1,
+        end_layer=2,
+        owns_embedding=False,
+        owns_head=True,
+        input_schema=schema,
+    )
+
+    class Runner:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(pipeline_stage_plan=stage_plan)
+            self.calls = []
+
+        def forward_pipeline_stage(self, **kwargs):
+            schema.validate(kwargs["incoming"])
+            self.calls.append(kwargs)
+            return SimpleNamespace(final_output=None)
+
+    class PrefillGraph:
+        def make_dummy_batch(self, num_tokens, _decode_wrapper):
+            return SimpleNamespace(
+                bs=1,
+                num_extends=1,
+                input_num_tokens=num_tokens,
+            )
+
+    executor = ModelExecutor.__new__(ModelExecutor)
+    executor.config = SimpleNamespace(
+        pipeline_stage_count=2,
+        pipeline_stage_index=1,
+        chunked_prefill_size=8192,
+        pipeline_local_warmup_max_tokens=2048,
+        model_is_mrope=False,
+    )
+    executor.device = "cpu"
+    executor.model_runner = Runner()
+    executor.prefill_graph = PrefillGraph()
+    executor.forward_step = object()
+    executor.input_buffers = SimpleNamespace(
+        input_ids_buf=torch.ones(8192, dtype=torch.int32),
+        positions_buf=torch.arange(8192, dtype=torch.int64),
+        out_cache_loc_buf=torch.zeros(8192, dtype=torch.int32),
+        req_pool_indices_buf=torch.zeros(1, dtype=torch.int64),
+        seq_lens_buf=torch.ones(1, dtype=torch.int32),
+        extend_prefix_lens_buf=torch.zeros(1, dtype=torch.int32),
+    )
+    executor.pipeline_executor = object()
+    executor.pipeline_control = object()
+
+    executor._warm_pipeline_stages_locally()
+
+    assert [call["ctx"].input_num_tokens for call in executor.model_runner.calls] == [
+        1,
+        128,
+        2048,
+    ]
+    assert all(call["incoming"] is not None for call in executor.model_runner.calls)
+
+
+def test_pipeline_local_warmup_first_stage_uses_mrope_token_inputs():
+    schema = ActivationSchema(
+        boundary_id="test/stage-0-to-1",
+        fields=(
+            ActivationFieldSpec(
+                field_id="prefix_sum", dtype="bfloat16", trailing_shape=(4,)
+            ),
+        ),
+    )
+    stage_plan = StagePlan(
+        stage_id=0,
+        stage_count=2,
+        first_layer=0,
+        end_layer=1,
+        owns_embedding=True,
+        owns_head=False,
+        output_schema=schema,
+    )
+
+    class Runner:
+        def __init__(self) -> None:
+            self.model = SimpleNamespace(pipeline_stage_plan=stage_plan)
+            self.calls = []
+
+        def forward_pipeline_stage(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(activation=None)
+
+    input_buffers = SimpleNamespace(
+        input_ids_buf=torch.ones(128, dtype=torch.int32),
+        positions_buf=torch.zeros(128, dtype=torch.int64),
+        mrope_positions_buf=torch.zeros(3, 128, dtype=torch.int64),
+        out_cache_loc_buf=torch.zeros(128, dtype=torch.int32),
+        req_pool_indices_buf=torch.zeros(1, dtype=torch.int64),
+        seq_lens_buf=torch.ones(1, dtype=torch.int32),
+        extend_prefix_lens_buf=torch.zeros(1, dtype=torch.int32),
+    )
+
+    class PrefillGraph:
+        def make_dummy_batch(self, num_tokens, _decode_wrapper):
+            input_buffers.positions_buf[:num_tokens].copy_(
+                torch.arange(num_tokens, dtype=torch.int64)
+            )
+            return SimpleNamespace(
+                bs=1,
+                num_extends=1,
+                input_num_tokens=num_tokens,
+            )
+
+    executor = ModelExecutor.__new__(ModelExecutor)
+    executor.config = SimpleNamespace(
+        pipeline_stage_count=2,
+        pipeline_stage_index=0,
+        chunked_prefill_size=128,
+        pipeline_local_warmup_max_tokens=128,
+        model_is_mrope=True,
+    )
+    executor.device = "cpu"
+    executor.model_runner = Runner()
+    executor.prefill_graph = PrefillGraph()
+    executor.forward_step = object()
+    executor.input_buffers = input_buffers
+
+    executor._warm_pipeline_stages_locally()
+
+    assert [call["ctx"].input_num_tokens for call in executor.model_runner.calls] == [
+        1,
+        128,
+    ]
+    assert all(call["incoming"] is None for call in executor.model_runner.calls)
+    for call in executor.model_runner.calls:
+        num_tokens = call["ctx"].input_num_tokens
+        expected = torch.arange(num_tokens, dtype=torch.int64).expand(3, -1)
+        assert torch.equal(call["positions"], expected)

@@ -292,6 +292,8 @@ class ServerArgs:
     enforce_eager: bool = False
     disable_cuda_graph_padding: bool = False
     disable_autotune: bool = False
+    enable_pipeline_local_warmup: bool = False
+    pipeline_local_warmup_max_tokens: int = 8192
     enable_cudagraph_gc: bool = False
     enable_nccl_nvls: bool = False
     enable_symm_mem: bool = False
@@ -869,6 +871,15 @@ class ServerArgs:
                 )
 
     def validate(self):
+        if self.enable_pipeline_local_warmup:
+            if self.mapping.pipeline.stage_count <= 1:
+                raise ValueError(
+                    "pipeline local warmup requires pipeline_parallel_size > 1"
+                )
+            if self.pipeline_local_warmup_max_tokens <= 0:
+                raise ValueError(
+                    "pipeline_local_warmup_max_tokens must be positive"
+                )
         if self.mapping.pipeline.stage_count > 1:
             if self.pipeline_step_timeout_seconds <= 0:
                 raise ValueError("pipeline_step_timeout_seconds must be positive")
@@ -1833,6 +1844,17 @@ class ServerArgs:
             help="Skip the startup kernel-tuning pass; tunable kernels use each "
             "library's heuristic tactics instead. Speeds up startup for "
             "debugging at the cost of serving performance.",
+        )
+        parser.add_argument(
+            "--enable-pipeline-local-warmup",
+            action="store_true",
+            help="Compile each pipeline stage locally at startup, avoiding serial cold JIT through pipeline P2P.",
+        )
+        parser.add_argument(
+            "--pipeline-local-warmup-max-tokens",
+            type=int,
+            default=ServerArgs.pipeline_local_warmup_max_tokens,
+            help="Largest EXTEND signature for pipeline-local startup warmup.",
         )
         parser.add_argument(
             "--enable-cudagraph-gc",

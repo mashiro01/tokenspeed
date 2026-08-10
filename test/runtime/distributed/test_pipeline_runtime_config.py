@@ -232,6 +232,51 @@ def test_pipeline_validation_allows_stage_synchronous_autotune() -> None:
         args.validate()
 
 
+def test_pipeline_validation_allows_stage_local_warmup() -> None:
+    with _isolated_server_args_module() as module:
+        args = _server_args(
+            module,
+            world_size=64,
+            pipeline_parallel_size=8,
+            attn_tp_size=8,
+            enforce_eager=True,
+            disable_prefill_graph=True,
+            disable_overlap_schedule=True,
+            disable_autotune=True,
+            enable_prefix_caching=False,
+            enable_kvstore=False,
+            grammar_backend="none",
+            enable_pipeline_local_warmup=True,
+            pipeline_local_warmup_max_tokens=8192,
+        )
+        args.resolve_parallelism()
+
+        args.validate()
+
+
+def test_pipeline_local_warmup_cli_and_pp1_validation() -> None:
+    with _isolated_server_args_module() as module:
+        parser = argparse.ArgumentParser()
+        module.ServerArgs.add_cli_args(parser)
+        namespace = parser.parse_args(
+            [
+                "--model",
+                "test/model",
+                "--enable-pipeline-local-warmup",
+                "--pipeline-local-warmup-max-tokens",
+                "4096",
+            ]
+        )
+        assert namespace.enable_pipeline_local_warmup is True
+        assert namespace.pipeline_local_warmup_max_tokens == 4096
+
+        args = _server_args(module, world_size=8, attn_tp_size=8)
+        args.enable_pipeline_local_warmup = True
+        args.resolve_parallelism()
+        with pytest.raises(ValueError, match="pipeline_parallel_size"):
+            args.validate()
+
+
 def test_single_node_pipeline_stage_keeps_allreduce_fusion_eligible() -> None:
     with _isolated_server_args_module() as module:
         args = _server_args(

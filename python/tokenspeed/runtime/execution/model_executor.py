@@ -85,6 +85,11 @@ from tokenspeed.runtime.pipeline.contracts import (
     sampling_params_fingerprint as pp_sampling_params_fingerprint,
 )
 from tokenspeed.runtime.pipeline.executor import DistributedStageExecutor
+from tokenspeed.runtime.pipeline.local_warmup import (
+    DEFAULT_PIPELINE_LOCAL_WARMUP_MAX_TOKENS,
+    get_pipeline_local_warmup_token_sizes,
+    make_pipeline_local_warmup_activation,
+)
 from tokenspeed.runtime.pipeline.model_runner_stage import (
     ModelRunnerPipelineStage,
     PipelineForwardBatch,
@@ -192,6 +197,10 @@ class ModelExecutorConfig:
     model_is_mrope: bool
     enable_nan_detection: bool = False
     disable_autotune: bool = False
+    enable_pipeline_local_warmup: bool = False
+    pipeline_local_warmup_max_tokens: int = (
+        DEFAULT_PIPELINE_LOCAL_WARMUP_MAX_TOKENS
+    )
 
     # ====== DISTRIBUTED =========
     data_parallel_size: int = 1
@@ -303,6 +312,10 @@ class ModelExecutorConfig:
             cudagraph_capture_sizes=server_args.cudagraph_capture_sizes,
             disable_cuda_graph_padding=server_args.disable_cuda_graph_padding,
             disable_autotune=server_args.disable_autotune,
+            enable_pipeline_local_warmup=server_args.enable_pipeline_local_warmup,
+            pipeline_local_warmup_max_tokens=(
+                server_args.pipeline_local_warmup_max_tokens
+            ),
             max_cudagraph_capture_size=server_args.max_cudagraph_capture_size,
             disable_prefill_graph=disable_prefill_graph,
             prefill_graph_max_tokens=_resolve_prefill_graph_max_tokens(server_args),
@@ -621,6 +634,9 @@ class ModelExecutor:
             drafter=self.drafter,
         )
 
+        if config.enable_pipeline_local_warmup:
+            self._warm_pipeline_stages_locally()
+
         self._autotune()
 
         if not self.forward_step.disable:
@@ -675,6 +691,82 @@ class ModelExecutor:
         finally:
             self.forward_step._forward_func = forward_func
             self.nan_guard.reset(0)
+
+    def _warm_pipeline_stages_locally(self) -> None:
+        """Compile PP stage compute without serializing through P2P transport.
+
+        This is startup-only work. It must not call ``pipeline_executor`` or
+        ``pipeline_control``: doing so recreates the cold-start serialization
+        that this path exists to remove. Non-first stages receive a schema-bound
+        synthetic activation with the same token geometry as a real boundary.
+        """
+
+        if self.config.pipeline_stage_count <= 1:
+            return
+        stage_plan = getattr(self.model_runner.model, "pipeline_stage_plan", None)
+        if stage_plan is None:
+            raise RuntimeError("pipeline local warmup requires a stage plan")
+        if stage_plan.stage_id != self.config.pipeline_stage_index:
+            raise RuntimeError(
+                "pipeline local warmup stage plan disagrees with the distributed mapping"
+            )
+        token_sizes = get_pipeline_local_warmup_token_sizes(
+            chunked_prefill_size=self.config.chunked_prefill_size,
+            max_tokens=self.config.pipeline_local_warmup_max_tokens,
+        )
+        if not token_sizes:
+            return
+
+        logger.info(
+            "Pipeline local warmup stage %s/%s for EXTEND token sizes %s",
+            stage_plan.stage_id,
+            stage_plan.stage_count,
+            token_sizes,
+        )
+        tic = time.time()
+        ib = self.input_buffers
+        with maybe_inference_mode():
+            for num_tokens in token_sizes:
+                ctx = self.prefill_graph.make_dummy_batch(
+                    num_tokens, self.forward_step
+                )
+                if self.config.model_is_mrope:
+                    ib.mrope_positions_buf[:, :num_tokens].copy_(
+                        ib.positions_buf[:num_tokens].unsqueeze(0).expand(3, -1)
+                    )
+                    positions = ib.mrope_positions_buf[:, :num_tokens]
+                else:
+                    positions = ib.positions_buf[:num_tokens]
+                incoming = (
+                    None
+                    if stage_plan.owns_embedding
+                    else make_pipeline_local_warmup_activation(
+                        stage_plan.input_schema,
+                        num_tokens=num_tokens,
+                        device=self.device,
+                    )
+                )
+                with active_forward(ctx):
+                    output = self.model_runner.forward_pipeline_stage(
+                        ctx=ctx,
+                        input_ids=ib.input_ids_buf[:num_tokens],
+                        positions=positions,
+                        out_cache_loc=ib.out_cache_loc_buf[:num_tokens],
+                        incoming=incoming,
+                        req_pool_indices=ib.req_pool_indices_buf[: ctx.bs],
+                        seq_lens=ib.seq_lens_buf[: ctx.bs],
+                        extend_prefix_lens=ib.extend_prefix_lens_buf[
+                            : ctx.num_extends
+                        ],
+                    )
+                del output
+                if str(self.device).startswith("cuda") and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+        logger.info(
+            "Pipeline local warmup stage %s finished in %.1fs",
+            stage_plan.stage_id,
+            time.time() - tic,
+        )
 
     def _autotune(self) -> None:
         """Profile tunable kernels over one dummy prefill, before graph capture.
