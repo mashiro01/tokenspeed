@@ -594,15 +594,28 @@ def get_tokenizer(
         except Exception:
             fast_tokenizer = None
 
+    # ``AutoTokenizer`` copies and imports trusted tokenizer code through
+    # Transformers' shared dynamic-module cache. Local scheduler workers start
+    # together, so concurrent imports can observe a partially initialized
+    # module (for example Kimi's ``TikTokenTokenizer``). Serialize only that
+    # startup path; normal tokenizer loading and request-time tokenization are
+    # unaffected.
+    tokenizer_load_lock = contextlib.nullcontext()
+    if trust_remote_code:
+        from tokenspeed.runtime.model_loader.weight_utils import get_lock
+
+        tokenizer_load_lock = get_lock(f"hf-remote-tokenizer-{tokenizer_name}")
+
     try:
-        tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name,
-            *args,
-            trust_remote_code=trust_remote_code,
-            tokenizer_revision=tokenizer_revision,
-            clean_up_tokenization_spaces=False,
-            **kwargs,
-        )
+        with tokenizer_load_lock:
+            tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_name,
+                *args,
+                trust_remote_code=trust_remote_code,
+                tokenizer_revision=tokenizer_revision,
+                clean_up_tokenization_spaces=False,
+                **kwargs,
+            )
     except TypeError as e:
         # The LLaMA tokenizer causes a protobuf error in some environments.
         err_msg = (

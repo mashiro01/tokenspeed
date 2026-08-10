@@ -8,7 +8,7 @@ from contextlib import redirect_stderr
 from io import StringIO
 from types import MethodType, SimpleNamespace
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 # CI Registration (parsed via AST, runtime no-op)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1103,6 +1103,31 @@ class TestDeepseekV4Config(unittest.TestCase):
             ),
             [9],
         )
+
+    def test_trusted_remote_tokenizer_load_is_serialized(self):
+        class DummyTokenizer:
+            def get_added_vocab(self):
+                return {}
+
+        lock = MagicMock()
+        lock.__enter__.return_value = lock
+
+        with tempfile.TemporaryDirectory() as model_dir:
+            with (
+                patch(
+                    "tokenspeed.runtime.utils.hf_transformers_utils.AutoTokenizer.from_pretrained",
+                    return_value=DummyTokenizer(),
+                ),
+                patch(
+                    "tokenspeed.runtime.model_loader.weight_utils.get_lock",
+                    return_value=lock,
+                ) as get_lock,
+            ):
+                get_tokenizer(model_dir, trust_remote_code=True)
+
+        get_lock.assert_called_once_with(f"hf-remote-tokenizer-{model_dir}")
+        lock.__enter__.assert_called_once_with()
+        lock.__exit__.assert_called_once()
 
     def test_deepseek_v4_server_args_cli_flags_round_trip(self):
         # Defaults match dataclass declaration
