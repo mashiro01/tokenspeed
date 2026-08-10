@@ -175,6 +175,9 @@ the currently qualified surface:
 --max-num-seqs 4
 --chunked-prefill-size 8192
 --kv-cache-dtype fp8
+--attention-backend mla
+--kda-backend fla
+--moe-backend marlin
 --enforce-eager
 --disable-prefill-graph
 --disable-overlap-schedule
@@ -188,9 +191,13 @@ Startup rejects incompatible flags instead of silently changing them. Keep the
 first qualification run deterministic and add features one contract and parity
 gate at a time.
 
-The NVIDIA K3 `tokenspeed_mla` backend requires FP8 E4M3 cache storage, so the
-qualification command must not leave `--kv-cache-dtype` at `auto` (BF16 for
-this checkpoint). The 1M model length remains visible while the initial 1M
+The K3 checkpoint does not declare FP8 KV metadata, so the qualification
+command must not leave `--kv-cache-dtype` at `auto` (BF16 for this checkpoint).
+SM120 qualification pins the generic MLA history consumer because the current
+`tokenspeed_mla` prefill kernel only implements SM100 and SM103. KDA similarly
+uses the portable FLA path, while the MXFP4 SiTU experts use the qualified
+SM90+ Marlin path. These are explicit compatibility choices, not the final
+performance ceiling. The 1M model length remains visible while the initial 1M
 global token pool admits either one full-context request or several shorter
 requests; increase the global pool only after measured HBM headroom passes on
 all stages.
