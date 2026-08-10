@@ -156,11 +156,28 @@ class DistributedStageExecutor:
     than serializing an arbitrary Python object through the activation lane.
     """
 
-    def __init__(self, stage: StageModel, transport: PipelineTransport) -> None:
+    def __init__(
+        self,
+        stage: StageModel,
+        transport: PipelineTransport,
+        stage_graph_runner=None,
+    ) -> None:
         if stage.plan.stage_count < 2:
             raise ValueError("DistributedStageExecutor requires multiple stages")
         self._stage = stage
         self._transport = transport
+        self._stage_graph_runner = stage_graph_runner
+
+    @property
+    def stage(self) -> StageModel:
+        """The local stage model, exposed for target-only graph construction."""
+
+        return self._stage
+
+    def set_stage_graph_runner(self, stage_graph_runner) -> None:
+        """Install an optional target-only local compute graph runner."""
+
+        self._stage_graph_runner = stage_graph_runner
 
     def forward(
         self,
@@ -174,7 +191,11 @@ class DistributedStageExecutor:
             if plan.input_schema is None
             else self._transport.receive(step, plan.input_schema)
         )
-        output = self._stage.forward_stage(context, batch, incoming)
+        output = None
+        if self._stage_graph_runner is not None:
+            output = self._stage_graph_runner.try_forward(context, batch, incoming)
+        if output is None:
+            output = self._stage.forward_stage(context, batch, incoming)
         _validate_stage_output(plan, output)
         if output.activation is not None:
             assert plan.output_schema is not None

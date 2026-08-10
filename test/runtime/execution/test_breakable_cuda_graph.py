@@ -85,6 +85,23 @@ class TestBreakableCudaGraph(unittest.TestCase):
         # Two graph segments (before/after relu) + one eager break = 3.
         self.assertEqual(cap.num_segments, 3)
 
+    def test_capture_state_hook_wraps_graph_segments_but_not_eager_breaks(self):
+        transitions = []
+        cap = BreakableCapture(capture_state_hook=transitions.append)
+
+        def forward():
+            h = self.x_static @ self.w1
+            dst = torch.empty_like(h)
+            return break_here(torch.relu, dst, h) @ self.w2
+
+        for _ in range(3):
+            forward()
+        torch.cuda.synchronize()
+        with cap:
+            forward()
+
+        self.assertEqual(transitions, [True, False, True, False])
+
     def test_replay_matches_eager(self):
         cap, captured_out = self._build_capture()
         for trial in range(5):

@@ -154,7 +154,10 @@ class BreakableCapture:
     _default_capture_stream: torch.cuda.Stream | None = None
 
     def __init__(
-        self, pool: Any | None = None, stream: torch.cuda.Stream | None = None
+        self,
+        pool: Any | None = None,
+        stream: torch.cuda.Stream | None = None,
+        capture_state_hook: Callable[[bool], None] | None = None,
     ) -> None:
         self.pool = pool
         self.segments: list[Callable[[], Any]] = []
@@ -166,6 +169,7 @@ class BreakableCapture:
             stream = BreakableCapture._default_capture_stream
         self._stream = stream
         self._stream_ctx: Any | None = None
+        self._capture_state_hook = capture_state_hook
         # Break-output handoff buffers keyed by (shape, dtype, device); see break_point.
         self._handoff: dict[Any, torch.Tensor] = {}
         self._valid_rows: int | None = None
@@ -211,10 +215,17 @@ class BreakableCapture:
     def _begin_segment(self) -> None:
         assert not self._capturing
         graph = torch.cuda.CUDAGraph()
-        if self.pool is not None:
-            graph.capture_begin(pool=self.pool)
-        else:
-            graph.capture_begin()
+        if self._capture_state_hook is not None:
+            self._capture_state_hook(True)
+        try:
+            if self.pool is not None:
+                graph.capture_begin(pool=self.pool)
+            else:
+                graph.capture_begin()
+        except Exception:
+            if self._capture_state_hook is not None:
+                self._capture_state_hook(False)
+            raise
         self._current_graph = graph
         self._capturing = True
 
@@ -222,13 +233,17 @@ class BreakableCapture:
         if not self._capturing:
             return
         assert self._current_graph is not None
-        self._current_graph.capture_end()
+        try:
+            self._current_graph.capture_end()
+        finally:
+            self._capturing = False
+            if self._capture_state_hook is not None:
+                self._capture_state_hook(False)
         self.segments.append(self._current_graph.replay)
         # All segments share one pool so intermediate addresses stay stable.
         if self.pool is None:
             self.pool = self._current_graph.pool()
         self._current_graph = None
-        self._capturing = False
 
     def add_eager(self, fn: Callable[[], Any]) -> Any:
         """End the current segment, run ``fn`` eagerly, record it, start a new one.

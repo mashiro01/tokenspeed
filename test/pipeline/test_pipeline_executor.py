@@ -172,6 +172,42 @@ def test_distributed_stage_executor_moves_only_adjacent_activation():
     assert transport.payloads == []
 
 
+def test_distributed_stage_executor_prefers_a_stage_local_graph_when_available():
+    plan = two_stage_plan()
+    transport = QueueTransport()
+    graph_output = StageOutput(final_output="graphed")
+    stage_calls = []
+
+    class GraphRunner:
+        def __init__(self):
+            self.calls = []
+
+        def try_forward(self, context, batch, incoming):
+            self.calls.append((context, batch, incoming))
+            return graph_output
+
+    stage = FakeStage(
+        plan.stages[1],
+        lambda *_args: stage_calls.append("eager") or StageOutput(final_output="eager"),
+    )
+    graph_runner = GraphRunner()
+    executor = DistributedStageExecutor(
+        stage,
+        transport,
+        stage_graph_runner=graph_runner,
+    )
+    activation = plan.stages[1].input_schema.bind(
+        (FakeTensor("bfloat16", (2, 8)), FakeTensor("float32", (2, 8)))
+    )
+    transport.payloads.append(activation)
+
+    output = executor.forward("ctx", "batch", object())
+
+    assert output is graph_output
+    assert stage_calls == []
+    assert graph_runner.calls == [("ctx", "batch", activation)]
+
+
 def test_model_runner_stage_uses_typed_forward_batch():
     plan = two_stage_plan()
     schema = plan.stages[0].output_schema

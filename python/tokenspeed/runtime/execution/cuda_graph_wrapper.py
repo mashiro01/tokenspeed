@@ -74,6 +74,34 @@ def get_is_cuda_graph_phase() -> bool:
     return _is_cuda_graph_phase
 
 
+class CudaGraphCaptureMode:
+    """Expose capture-only execution flags to one breakable graph runner.
+
+    A breakable graph alternates captured segments with eager attention breaks.
+    K3's MoE stream forks must be enabled only for the captured segments, not
+    for those eager breaks. The object preserves pre-existing global state so
+    it can safely coexist with the regular whole-step graph wrapper.
+    """
+
+    def __init__(self) -> None:
+        self._previous: tuple[bool, bool] | None = None
+
+    def __call__(self, capturing: bool) -> None:
+        global _is_capture_mode
+        global _is_cuda_graph_phase
+        if capturing:
+            if self._previous is not None:
+                raise RuntimeError("CUDA graph capture mode is already active")
+            self._previous = (_is_capture_mode, _is_cuda_graph_phase)
+            _is_capture_mode = True
+            _is_cuda_graph_phase = True
+            return
+        if self._previous is None:
+            raise RuntimeError("CUDA graph capture mode is not active")
+        _is_capture_mode, _is_cuda_graph_phase = self._previous
+        self._previous = None
+
+
 def _should_update_mamba_state_after_mtp_verify(
     drafter, attn_backend, forward_mode: ForwardMode
 ) -> bool:

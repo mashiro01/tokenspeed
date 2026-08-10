@@ -104,6 +104,7 @@ from tokenspeed.runtime.pipeline.torch_transport import (
     TorchPipelineTransport,
     validate_pipeline_plan_consensus,
 )
+from tokenspeed.runtime.pipeline.stage_cuda_graph import PipelineStageCudaGraphRunner
 from tokenspeed.runtime.sampling.backends.base import SamplingBackend
 from tokenspeed.runtime.sampling.dp_sampling_config import (
     DpSamplingRuntimeConfig,
@@ -371,6 +372,7 @@ class ModelExecutor:
         self.pipeline_executor = None
         self.pipeline_result_synchronizer = None
         self.pipeline_dspark_synchronizer = None
+        self.pipeline_stage_graph = None
         self.pipeline_control = None
         self._active_pipeline_step = None
         self._spec_enabled = config.spec_algo is not None
@@ -672,6 +674,19 @@ class ModelExecutor:
             disable_pipeline_graphs=self._pipeline_dspark_enabled,
         )
 
+        if self._pipeline_dspark_enabled and not config.enforce_eager:
+            if self.pipeline_executor is None:
+                raise RuntimeError("K3 DSpark pipeline executor is unavailable")
+            self.pipeline_stage_graph = PipelineStageCudaGraphRunner(
+                stage=self.pipeline_executor.stage,
+                attn_backend=attn_backend,
+                token_to_kv_pool=token_to_kv_pool,
+                input_buffers=self.input_buffers,
+                config=config,
+                prepare_capture_metadata=self.forward_step._init_capture_metadata,
+            )
+            self.pipeline_executor.set_stage_graph_runner(self.pipeline_stage_graph)
+
         if config.enable_pipeline_local_warmup:
             self._warm_pipeline_stages_locally()
 
@@ -679,6 +694,8 @@ class ModelExecutor:
 
         if not self.forward_step.disable:
             self.forward_step.capture()
+        if self.pipeline_stage_graph is not None:
+            self.pipeline_stage_graph.capture()
         if not self.prefill_graph.disable:
             self.prefill_graph.capture(self.forward_step)
 
