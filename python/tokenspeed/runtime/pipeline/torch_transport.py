@@ -288,7 +288,7 @@ class TorchPipelineTransport:
             self._control.wait_work(
                 work,
                 step,
-                f"activation-payload-receive:{field_id}",
+                f"activation-payload-receive:{field.field_id}",
             )
         return schema.bind(values)
 
