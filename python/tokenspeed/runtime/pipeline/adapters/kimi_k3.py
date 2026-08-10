@@ -55,7 +55,14 @@ def kimi_k3_stage_checkpoint_weight_filter(
         return stage_plan.first_layer <= layer_id < stage_plan.end_layer
     if name.startswith("model.embed_tokens."):
         return stage_plan.owns_embedding
-    if name.startswith(("model.norm.", "lm_head.")):
+    if name.startswith(
+        (
+            "model.norm.",
+            "model.output_attn_res_norm.",
+            "model.output_attn_res_proj.",
+            "lm_head.",
+        )
+    ):
         return stage_plan.owns_head
     return False
 
