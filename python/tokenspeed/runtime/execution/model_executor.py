@@ -711,22 +711,62 @@ class ModelExecutor:
         set_autotune_process_group(cpu_group)
         with autotune(), maybe_inference_mode():
             ctx = self.prefill_graph.make_dummy_batch(num_tokens, self.forward_step)
-            positions = (
-                ib.mrope_positions_buf[:, :num_tokens]
-                if self.config.model_is_mrope
-                else ib.positions_buf[:num_tokens]
-            )
+            self._run_autotune_forward(ctx)
+        set_autotune_process_group(None)
+        torch.cuda.synchronize()
+        dist.barrier()
+        logger.info(f"Kernel tuning finished in {time.time() - tic:.1f}s")
+
+    def _run_autotune_forward(self, ctx: ForwardContext):
+        """Run one tuning prefill through the active execution topology."""
+
+        num_tokens = int(ctx.input_num_tokens)
+        ib = self.input_buffers
+        positions = (
+            ib.mrope_positions_buf[:, :num_tokens]
+            if self.config.model_is_mrope
+            else ib.positions_buf[:num_tokens]
+        )
+        if self.pipeline_executor is None:
             with active_forward(ctx):
-                self.model_runner.forward(
+                return self.model_runner.forward(
                     ctx=ctx,
                     input_ids=ib.input_ids_buf[:num_tokens],
                     positions=positions,
                     out_cache_loc=ib.out_cache_loc_buf[:num_tokens],
                 )
-        set_autotune_process_group(None)
-        torch.cuda.synchronize()
-        dist.barrier()
-        logger.info(f"Kernel tuning finished in {time.time() - tic:.1f}s")
+
+        if self.pipeline_control is None:
+            raise RuntimeError("pipeline autotune requires a pipeline control plane")
+
+        step = self.pipeline_control.begin_step(
+            forward_mode_name=ctx.forward_mode.name,
+            batch_size=ctx.bs,
+            input_num_tokens=num_tokens,
+            num_extends=ctx.num_extends,
+            batch_fingerprint=getattr(ctx, "pipeline_batch_fingerprint", 0),
+            stage_cache_fingerprint=0,
+        )
+        try:
+            with active_forward(ctx):
+                output = self.pipeline_executor.forward(
+                    ctx,
+                    PipelineForwardBatch(
+                        input_ids=ib.input_ids_buf[:num_tokens],
+                        positions=positions,
+                        out_cache_loc=ib.out_cache_loc_buf[:num_tokens],
+                        req_pool_indices=ib.req_pool_indices_buf[: ctx.bs],
+                        seq_lens=ib.seq_lens_buf[: ctx.bs],
+                        extend_prefix_lens=ib.extend_prefix_lens_buf[
+                            : ctx.num_extends
+                        ],
+                    ),
+                    step,
+                )
+            self.pipeline_control.complete_step(step)
+            return output.final_output
+        except Exception as exc:
+            raise self.pipeline_control.abort(step, "autotune", exc) from exc
 
     @property
     def capturable_grammar(self):

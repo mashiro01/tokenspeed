@@ -78,3 +78,73 @@ def test_pp2_eager_warmup_resets_nan_flags_to_dummy_batch_and_cleans_up():
     assert first_executor.nan_guard.flags_device.numel() == 0
     assert final_executor.nan_guard.flags.tolist() == [0, 0, 0, 0]
     assert first_executor.nan_guard.flags.tolist() == [0, 0, 0, 0]
+
+
+def test_pipeline_autotune_uses_stage_executor_and_control_plane():
+    class Control:
+        def __init__(self) -> None:
+            self.begin_calls = []
+            self.completed = []
+
+        def begin_step(self, **kwargs):
+            self.begin_calls.append(kwargs)
+            return "autotune-step"
+
+        def complete_step(self, step) -> None:
+            self.completed.append(step)
+
+        def abort(self, step, phase, error):
+            raise AssertionError(f"unexpected abort: {step=} {phase=} {error=}")
+
+    class StageExecutor:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def forward(self, context, batch, step):
+            self.calls.append((context, batch, step))
+            return SimpleNamespace(final_output="tuned")
+
+    executor = ModelExecutor.__new__(ModelExecutor)
+    control = Control()
+    stage_executor = StageExecutor()
+    executor.config = SimpleNamespace(model_is_mrope=False)
+    executor.input_buffers = SimpleNamespace(
+        input_ids_buf=torch.tensor([11, 12, 13, 14, 99]),
+        positions_buf=torch.tensor([0, 1, 2, 3, 99]),
+        out_cache_loc_buf=torch.tensor([21, 22, 23, 24, 99]),
+        req_pool_indices_buf=torch.tensor([7, 99]),
+        seq_lens_buf=torch.tensor([4, 99]),
+        extend_prefix_lens_buf=torch.tensor([0, 99]),
+    )
+    executor.pipeline_control = control
+    executor.pipeline_executor = stage_executor
+    ctx = SimpleNamespace(
+        forward_mode=SimpleNamespace(name="EXTEND"),
+        bs=1,
+        input_num_tokens=4,
+        num_extends=1,
+        pipeline_batch_fingerprint=123,
+    )
+
+    result = executor._run_autotune_forward(ctx)
+
+    assert result == "tuned"
+    assert control.begin_calls == [
+        {
+            "forward_mode_name": "EXTEND",
+            "batch_size": 1,
+            "input_num_tokens": 4,
+            "num_extends": 1,
+            "batch_fingerprint": 123,
+            "stage_cache_fingerprint": 0,
+        }
+    ]
+    assert control.completed == ["autotune-step"]
+    _context, batch, step = stage_executor.calls[0]
+    assert step == "autotune-step"
+    assert batch.input_ids.tolist() == [11, 12, 13, 14]
+    assert batch.positions.tolist() == [0, 1, 2, 3]
+    assert batch.out_cache_loc.tolist() == [21, 22, 23, 24]
+    assert batch.req_pool_indices.tolist() == [7]
+    assert batch.seq_lens.tolist() == [4]
+    assert batch.extend_prefix_lens.tolist() == [0]

@@ -887,8 +887,6 @@ class ServerArgs:
                 incompatible.append("prefill CUDA graphs")
             if not self.disable_overlap_schedule:
                 incompatible.append("overlap scheduling")
-            if not self.disable_autotune:
-                incompatible.append("kernel autotuning")
             if self.enable_prefix_caching:
                 incompatible.append("prefix caching")
             if self.enable_kvstore:

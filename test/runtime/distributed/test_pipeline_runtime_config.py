@@ -212,6 +212,26 @@ def test_pipeline_validation_rejects_online_weight_transfer_explicitly() -> None
             args.validate()
 
 
+def test_pipeline_validation_allows_stage_synchronous_autotune() -> None:
+    with _isolated_server_args_module() as module:
+        args = _server_args(
+            module,
+            world_size=64,
+            pipeline_parallel_size=8,
+            attn_tp_size=8,
+            enforce_eager=True,
+            disable_prefill_graph=True,
+            disable_overlap_schedule=True,
+            disable_autotune=False,
+            enable_prefix_caching=False,
+            enable_kvstore=False,
+            grammar_backend="none",
+        )
+        args.resolve_parallelism()
+
+        args.validate()
+
+
 def test_single_node_pipeline_stage_keeps_allreduce_fusion_eligible() -> None:
     with _isolated_server_args_module() as module:
         args = _server_args(
