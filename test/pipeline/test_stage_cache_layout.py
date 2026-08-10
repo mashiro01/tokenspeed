@@ -77,6 +77,7 @@ def _placement(
     *,
     world_size: int | None = None,
     pipeline_plan_digest: str | None = None,
+    auxiliary_logical_layer_ids_by_stage: tuple[tuple[int, ...], ...] = (),
 ) -> CacheStagePlacement:
     return CacheStagePlacement(
         rank=rank,
@@ -86,6 +87,7 @@ def _placement(
         num_logical_layers=num_logical_layers,
         logical_layer_ids_by_stage=logical_layer_ids_by_stage,
         pipeline_plan_digest=pipeline_plan_digest or "0" * 64,
+        auxiliary_logical_layer_ids_by_stage=auxiliary_logical_layer_ids_by_stage,
     )
 
 
@@ -357,6 +359,56 @@ class StageCacheLayoutTest(unittest.TestCase):
         )
 
         self.assertEqual(projected.logical_to_physical, {0: 0, 1: 1, 2: 2})
+
+    def test_projects_owner_only_auxiliary_layers_after_target_layers(self):
+        fields = (
+            _logical_field(0, "target", "target-0", "target-plane"),
+            _logical_field(1, "target", "target-1", "remote-target-plane"),
+            _logical_field(2, "draft", "draft-0", "draft-plane-0"),
+            _logical_field(3, "draft", "draft-1", "draft-plane-1"),
+        )
+        primary = ((0,), (1,))
+        auxiliary = ((2, 3), ())
+
+        owner = solve_stage_cache_layout(
+            fields,
+            _placement(
+                0,
+                0,
+                2,
+                2,
+                primary,
+                auxiliary_logical_layer_ids_by_stage=auxiliary,
+            ),
+            logical_block_tokens=128,
+            max_padding_fraction=float("inf"),
+        )
+        remote = solve_stage_cache_layout(
+            fields,
+            _placement(
+                8,
+                1,
+                2,
+                2,
+                primary,
+                auxiliary_logical_layer_ids_by_stage=auxiliary,
+            ),
+            logical_block_tokens=128,
+            max_padding_fraction=float("inf"),
+        )
+
+        self.assertEqual(owner.logical_to_physical, {0: 0, 2: 1, 3: 2})
+        self.assertEqual(remote.logical_to_physical, {1: 0})
+        self.assertEqual(
+            {field.field_id for field in owner.layout.fields},
+            {"target-0", "draft-0", "draft-1"},
+        )
+        self.assertEqual(
+            {field.field_id for field in remote.layout.fields}, {"target-1"}
+        )
+        self.assertEqual(
+            owner.manifest.auxiliary_logical_layer_ids_by_stage, auxiliary
+        )
 
     def test_manifest_digest_is_canonical_and_deterministic(self):
         fields = (

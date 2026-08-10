@@ -113,6 +113,11 @@ class CacheStagePlacement:
         num_logical_layers: Number of layers in the unpartitioned model.
         logical_layer_ids_by_stage: Explicit logical layer ids owned by every
             stage, indexed by stage id.
+        auxiliary_logical_layer_ids_by_stage: Optional cache-only logical
+            layers owned by each stage. These sit outside
+            ``[0, num_logical_layers)`` and are useful for a draft whose cache
+            exists on one pipeline stage only. The primary target partition
+            remains complete, ordered, and contiguous.
         pipeline_plan_digest: Digest of the layer ownership plan.
     """
 
@@ -123,6 +128,7 @@ class CacheStagePlacement:
     num_logical_layers: int
     logical_layer_ids_by_stage: tuple[tuple[int, ...], ...]
     pipeline_plan_digest: str
+    auxiliary_logical_layer_ids_by_stage: tuple[tuple[int, ...], ...] = ()
 
     @classmethod
     def from_pipeline_plan(
@@ -131,6 +137,7 @@ class CacheStagePlacement:
         rank: int,
         world_size: int,
         plan: PipelinePlan,
+        auxiliary_logical_layer_ids_by_stage: tuple[tuple[int, ...], ...] = (),
     ) -> "CacheStagePlacement":
         """Derive cache ownership from the validated execution plan."""
 
@@ -154,6 +161,10 @@ class CacheStagePlacement:
                 for stage in plan.stages
             ),
             pipeline_plan_digest=plan.digest,
+            auxiliary_logical_layer_ids_by_stage=tuple(
+                tuple(layer_ids)
+                for layer_ids in auxiliary_logical_layer_ids_by_stage
+            ),
         )
 
 
@@ -199,6 +210,7 @@ class RankCacheLayoutManifest:
     global_group_packing: tuple[tuple[str, int], ...]
     pipeline_plan_digest: str
     layout: CacheLayout
+    auxiliary_logical_layer_ids_by_stage: tuple[tuple[int, ...], ...] = ()
 
     def _canonical_payload(self, *, include_rank: bool) -> dict[str, object]:
         payload = {
@@ -229,6 +241,11 @@ class RankCacheLayoutManifest:
             "pipeline_plan_digest": self.pipeline_plan_digest,
             "layout": _cache_layout_payload(self.layout),
         }
+        if self.auxiliary_logical_layer_ids_by_stage:
+            payload["auxiliary_logical_layer_ids_by_stage"] = [
+                list(layer_ids)
+                for layer_ids in self.auxiliary_logical_layer_ids_by_stage
+            ]
         if include_rank:
             payload["rank"] = self.rank
         return payload
@@ -374,6 +391,34 @@ def _validate_placement(placement: CacheStagePlacement) -> dict[int, int]:
         raise ValueError("every stage must own at least one logical layer")
     if flattened != tuple(range(placement.num_logical_layers)):
         raise ValueError("stage layer ownership must be ordered and contiguous")
+
+    auxiliary_by_stage = placement.auxiliary_logical_layer_ids_by_stage
+    if auxiliary_by_stage:
+        if len(auxiliary_by_stage) != placement.stage_count:
+            raise ValueError(
+                "auxiliary_logical_layer_ids_by_stage must have one entry per stage"
+            )
+        for stage_id, logical_layer_ids in enumerate(auxiliary_by_stage):
+            if tuple(logical_layer_ids) != tuple(sorted(logical_layer_ids)):
+                raise ValueError(
+                    "auxiliary stage layer ownership must be sorted ascending"
+                )
+            for logical_layer_id in logical_layer_ids:
+                if (
+                    not _is_int(logical_layer_id)
+                    or logical_layer_id < placement.num_logical_layers
+                ):
+                    raise ValueError(
+                        "auxiliary logical layer ids must be integers after the "
+                        "primary target layer range"
+                    )
+                previous_stage = owner_by_layer.get(logical_layer_id)
+                if previous_stage is not None:
+                    raise ValueError(
+                        f"duplicate ownership for logical layer {logical_layer_id}: "
+                        f"stages {previous_stage} and {stage_id}"
+                    )
+                owner_by_layer[logical_layer_id] = stage_id
     return owner_by_layer
 
 
@@ -426,21 +471,25 @@ def pipeline_cache_abi_digest(
                 raise ValueError("cache field dtype names must not be empty")
             normalized_field_dtypes.append([field_id, dtype_name])
 
-    return _digest_payload(
-        {
-            "version": _MANIFEST_VERSION,
-            "world_size": placement.world_size,
-            "stage_count": placement.stage_count,
-            "num_logical_layers": placement.num_logical_layers,
-            "logical_layer_ids_by_stage": [
-                list(layer_ids) for layer_ids in placement.logical_layer_ids_by_stage
-            ],
-            "field_owners": sorted(field_owners),
-            "field_dtypes": normalized_field_dtypes,
-            "pipeline_plan_digest": placement.pipeline_plan_digest,
-            "layout": _cache_layout_payload(global_layout),
-        }
-    )
+    payload = {
+        "version": _MANIFEST_VERSION,
+        "world_size": placement.world_size,
+        "stage_count": placement.stage_count,
+        "num_logical_layers": placement.num_logical_layers,
+        "logical_layer_ids_by_stage": [
+            list(layer_ids) for layer_ids in placement.logical_layer_ids_by_stage
+        ],
+        "field_owners": sorted(field_owners),
+        "field_dtypes": normalized_field_dtypes,
+        "pipeline_plan_digest": placement.pipeline_plan_digest,
+        "layout": _cache_layout_payload(global_layout),
+    }
+    if placement.auxiliary_logical_layer_ids_by_stage:
+        payload["auxiliary_logical_layer_ids_by_stage"] = [
+            list(layer_ids)
+            for layer_ids in placement.auxiliary_logical_layer_ids_by_stage
+        ]
+    return _digest_payload(payload)
 
 
 def solve_stage_cache_layout(
@@ -526,7 +575,13 @@ def solve_stage_cache_layout(
     global_packing_by_group = dict(global_group_packing)
 
     local_layer_ids = tuple(
-        sorted(placement.logical_layer_ids_by_stage[placement.stage_id])
+        placement.logical_layer_ids_by_stage[placement.stage_id]
+    ) + (
+        tuple(
+            placement.auxiliary_logical_layer_ids_by_stage[placement.stage_id]
+        )
+        if placement.auxiliary_logical_layer_ids_by_stage
+        else ()
     )
     local_layer_id_set = set(local_layer_ids)
     projected_fields = tuple(
@@ -614,6 +669,9 @@ def solve_stage_cache_layout(
         global_group_packing=global_group_packing,
         pipeline_plan_digest=placement.pipeline_plan_digest,
         layout=layout,
+        auxiliary_logical_layer_ids_by_stage=(
+            placement.auxiliary_logical_layer_ids_by_stage
+        ),
     )
     return StageCacheLayout(
         layout=layout,
