@@ -5,11 +5,21 @@ FROM ${BASE_IMAGE}
 
 ARG BASE_IMAGE
 ARG BASE_VCS_REF
+ARG BASE_IMAGE_ID
+ARG BASE_ROOTFS_SHA256
+ARG PYTHON_GIT_TREE
 ARG VCS_REF
 ARG VCS_URL=https://github.com/lightseekorg/tokenspeed
 
 USER root
 WORKDIR /workspace
+
+RUN : "${BASE_IMAGE_ID:?BASE_IMAGE_ID must be non-empty}" && \
+    : "${BASE_VCS_REF:?BASE_VCS_REF must be non-empty}" && \
+    : "${BASE_ROOTFS_SHA256:?BASE_ROOTFS_SHA256 must be non-empty}" && \
+    : "${PYTHON_GIT_TREE:?PYTHON_GIT_TREE must be non-empty}" && \
+    : "${VCS_REF:?VCS_REF must be non-empty}" && \
+    : "${VCS_URL:?VCS_URL must be non-empty}"
 
 # Replace rather than merge the package tree so removed modules cannot survive
 # from the base image.
@@ -27,4 +37,7 @@ RUN python3 -m pip install \
 LABEL org.opencontainers.image.source="${VCS_URL}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       ai.tokenspeed.base-image="${BASE_IMAGE}" \
-      ai.tokenspeed.base-revision="${BASE_VCS_REF}"
+      ai.tokenspeed.base-revision="${BASE_VCS_REF}" \
+      ai.tokenspeed.base-image-id="${BASE_IMAGE_ID}" \
+      ai.tokenspeed.base-rootfs-sha256="${BASE_ROOTFS_SHA256}" \
+      ai.tokenspeed.python-git-tree="${PYTHON_GIT_TREE}"
