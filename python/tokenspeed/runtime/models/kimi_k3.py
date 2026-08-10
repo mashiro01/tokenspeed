@@ -164,12 +164,17 @@ from tokenspeed.runtime.multimodal.inputs import (
 )
 from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
     build_balanced_kimi_k3_pipeline_plan,
+    build_kimi_k3_pipeline_plan,
     kimi_k3_stage_checkpoint_weight_filter,
 )
 from tokenspeed.runtime.pipeline.contracts import (
     PipelineProtocolError,
     StageActivation,
     StageOutput,
+)
+from tokenspeed.runtime.pipeline.kimi_k3_dspark import (
+    KimiK3DSparkPlacement,
+    KimiK3DSparkStageProjector,
 )
 from tokenspeed.runtime.utils import add_prefix, ceil_div
 from tokenspeed.runtime.utils.cuda_stream import StreamFork
@@ -2265,6 +2270,70 @@ class KimiLinearModel(nn.Module):
         self._dflash_incremental_callback = None
         self._dflash_slot_bufs = None
         self._dflash_capture_idx_map: dict[int, int] = {}
+        self._dspark_pipeline_placement: KimiK3DSparkPlacement | None = None
+        self._dspark_stage_projector: KimiK3DSparkStageProjector | None = None
+
+    @property
+    def dspark_pipeline_placement(self) -> KimiK3DSparkPlacement | None:
+        """The distributed DSpark plan, if this K3 instance was configured for PP."""
+
+        return self._dspark_pipeline_placement
+
+    def configure_dspark_pipeline(
+        self,
+        placement: KimiK3DSparkPlacement,
+        *,
+        projection_weights: MappingABC[int, torch.Tensor],
+    ) -> None:
+        """Install one PP stage's projected DSpark context path.
+
+        Configuration happens after target/draft weights load but before cache
+        sizing and pipeline-plan consensus. Every stage owns only its input
+        columns of ``context_proj`` and forwards the FP32 accumulated output.
+        """
+
+        if self.mapping.pipeline.stage_count <= 1:
+            raise ValueError("Kimi-K3 DSpark pipeline configuration requires PP")
+        if placement.target_hidden_size != self.config.hidden_size:
+            raise ValueError(
+                "Kimi-K3 DSpark target hidden size disagrees with the target: "
+                f"{placement.target_hidden_size} != {self.config.hidden_size}"
+            )
+        if placement.verify_stage_id != self.pipeline_plan.stages[-1].stage_id:
+            raise ValueError("Kimi-K3 DSpark placement has a different final stage")
+        stage_id = self.mapping.pipeline.stage_index
+        for slice_ in placement.projection_slices:
+            if not 0 <= slice_.stage_id < len(self.pipeline_plan.stages):
+                raise ValueError(
+                    "Kimi-K3 DSpark placement references an unknown stage"
+                )
+            owner = self.pipeline_plan.stages[slice_.stage_id]
+            if not owner.first_layer <= slice_.target_layer_id < owner.end_layer:
+                raise ValueError(
+                    "Kimi-K3 DSpark placement assigns target layer "
+                    f"{slice_.target_layer_id} to stage {slice_.stage_id}, "
+                    f"outside [{owner.first_layer}, {owner.end_layer})"
+                )
+
+        counts = tuple(
+            stage.end_layer - stage.first_layer for stage in self.pipeline_plan.stages
+        )
+        self.pipeline_plan = build_kimi_k3_pipeline_plan(
+            num_layers=self.config.num_hidden_layers,
+            hidden_size=self.config.hidden_size,
+            attn_res_block_size=self.config.attn_res_block_size,
+            stage_layer_counts=counts,
+            activation_dtype=str(torch.get_default_dtype()).removeprefix("torch."),
+            dspark_context_hidden_size=placement.context_hidden_size,
+            dspark_context_dtype="float32",
+        )
+        self.stage_plan = self.pipeline_plan.stages[stage_id]
+        self._dspark_pipeline_placement = placement
+        self._dspark_stage_projector = KimiK3DSparkStageProjector(
+            placement,
+            stage_id=stage_id,
+            projection_weights=projection_weights,
+        )
 
     def get_input_embeddings(self) -> nn.Module:
         if self.embed_tokens is None:
@@ -2310,6 +2379,8 @@ class KimiLinearModel(nn.Module):
         num_blocks = ceil_div(
             self.config.num_hidden_layers, self.config.attn_res_block_size
         )
+        dspark_projector = self._dspark_stage_projector
+        dspark_context: torch.Tensor | None = None
         if plan.owns_embedding:
             if incoming is not None:
                 raise PipelineProtocolError(
@@ -2323,6 +2394,10 @@ class KimiLinearModel(nn.Module):
             block_residual = prefix_sum.new_empty(
                 num_blocks, prefix_sum.size(0), prefix_sum.size(1)
             )
+            if dspark_projector is not None:
+                dspark_context = dspark_projector.new_context(
+                    prefix_sum.size(0), device=prefix_sum.device
+                )
         else:
             if input_embeds is not None:
                 raise PipelineProtocolError(
@@ -2342,6 +2417,8 @@ class KimiLinearModel(nn.Module):
                 incoming.values[1 : completed_blocks + 1]
             ):
                 block_residual[block_id].copy_(snapshot)
+            if dspark_projector is not None:
+                dspark_context = incoming.values[1 + completed_blocks]
 
         if plan.stage_count > 1:
             expected_tokens = int(ctx.input_num_tokens)
@@ -2363,7 +2440,7 @@ class KimiLinearModel(nn.Module):
                 )
 
         capture_layers = self.layers_to_capture
-        capture_dflash = bool(capture_layers)
+        capture_dflash = bool(capture_layers) and dspark_projector is None
         capture_eagle3 = bool(self.eagle3_layers_to_capture)
         aux_hidden_states: list[torch.Tensor] | None = (
             [] if capture_dflash or capture_eagle3 else None
@@ -2374,7 +2451,17 @@ class KimiLinearModel(nn.Module):
             prefix_sum, block_residual = layer(
                 positions, prefix_sum, ctx, out_cache_loc, block_residual
             )
-            if capture_dflash and layer_idx in capture_layers:
+            if (
+                dspark_projector is not None
+                and dspark_projector.owns_target_layer(layer_idx)
+            ):
+                assert dspark_context is not None
+                dspark_projector.accumulate(
+                    dspark_context,
+                    target_layer_id=layer_idx,
+                    target_hidden=prefix_sum,
+                )
+            elif capture_dflash and layer_idx in capture_layers:
                 captured = self._dspark_capture_stream(
                     layer_idx, prefix_sum, block_residual
                 )
@@ -2394,11 +2481,15 @@ class KimiLinearModel(nn.Module):
         if not plan.owns_head:
             assert plan.output_schema is not None
             completed_blocks = plan.end_layer // self.config.attn_res_block_size
+            payload = (
+                prefix_sum,
+                *(block_residual[index] for index in range(completed_blocks)),
+            )
+            if dspark_projector is not None:
+                assert dspark_context is not None
+                payload = (*payload, dspark_context)
             activation = plan.output_schema.bind(
-                (
-                    prefix_sum,
-                    *(block_residual[index] for index in range(completed_blocks)),
-                )
+                payload
             )
             return StageOutput(activation=activation)
 
@@ -2413,6 +2504,9 @@ class KimiLinearModel(nn.Module):
             num_blocks,
             out_norm=self.norm,
         )
+        if dspark_projector is not None:
+            assert dspark_context is not None
+            aux_hidden_states = [dspark_context]
         return StageOutput(final_output=(hidden_states, aux_hidden_states))
 
     @torch.no_grad()
@@ -2451,6 +2545,18 @@ class KimiLinearForCausalLM(BaseCausalLM):
 
     model_cls = KimiLinearModel
     _supports_kimi_k3_strict_weight_audit = True
+
+    def configure_dspark_pipeline(
+        self,
+        placement: KimiK3DSparkPlacement,
+        *,
+        projection_weights: MappingABC[int, torch.Tensor],
+    ) -> None:
+        """Install K3's stage-local DSpark context projection contract."""
+
+        self.model.configure_dspark_pipeline(
+            placement, projection_weights=projection_weights
+        )
 
     def resolve_lm_head(
         self,
@@ -2553,9 +2659,31 @@ class KimiLinearForCausalLM(BaseCausalLM):
         prefix stream, matching vLLM's target-side capture contract.
         """
         if self.mapping.pipeline.stage_count > 1:
-            raise ValueError(
-                "DFLASH target capture is not supported with pipeline parallelism"
-            )
+            placement = self.model.dspark_pipeline_placement
+            if placement is None:
+                raise ValueError(
+                    "Kimi-K3 DFLASH pipeline capture requires a configured "
+                    "DSpark placement before executor construction"
+                )
+            requested = tuple(sorted(layer_ids))
+            if requested != placement.target_layer_ids:
+                raise ValueError(
+                    "Kimi-K3 DFLASH pipeline taps disagree with its configured "
+                    f"DSpark placement: {requested} != {placement.target_layer_ids}"
+                )
+            if incremental_callback is not None or slot_bufs is not None:
+                raise ValueError(
+                    "Kimi-K3 DFLASH pipeline capture does not support raw "
+                    "per-tap incremental callbacks"
+                )
+            self.capture_aux_hidden_states = True
+            self.model.layers_to_capture = list(requested)
+            self.model._dflash_capture_idx_map = {
+                layer_idx: index for index, layer_idx in enumerate(requested)
+            }
+            self.model._dflash_incremental_callback = None
+            self.model._dflash_slot_bufs = None
+            return
         num_layers = len(self.model.layers)
         if len(set(layer_ids)) != len(layer_ids):
             raise ValueError("DFLASH target_layer_ids must be unique.")
@@ -2926,6 +3054,22 @@ class KimiK3ForConditionalGeneration(nn.Module):
                 "Kimi-K3 pipeline stages do not colocate embeddings and LM head"
             )
         return self.language_model.get_embed_and_head()
+
+    def configure_dspark_pipeline(
+        self,
+        placement: KimiK3DSparkPlacement,
+        *,
+        projection_weights: MappingABC[int, torch.Tensor],
+    ) -> None:
+        """Configure the local K3 target stage for projected PP DSpark."""
+
+        if self.language_model is None:
+            raise AttributeError(
+                "Kimi-K3 encoder-only mode cannot configure DSpark pipeline state."
+            )
+        self.language_model.configure_dspark_pipeline(
+            placement, projection_weights=projection_weights
+        )
 
     def set_dflash_layers_to_capture(
         self,

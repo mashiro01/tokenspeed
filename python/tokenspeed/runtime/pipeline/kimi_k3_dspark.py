@@ -174,6 +174,11 @@ class KimiK3DSparkStageProjector(nn.Module):
             device=device,
         )
 
+    def owns_target_layer(self, target_layer_id: int) -> bool:
+        """Return whether this stage owns a DSpark target-layer tap."""
+
+        return target_layer_id in self._weight_names
+
     @torch.no_grad()
     def accumulate(
         self,
