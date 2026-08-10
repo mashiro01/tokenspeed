@@ -1429,26 +1429,27 @@ def _empty_summary() -> dict[str, int]:
     return {f"{classification}_bytes": 0 for classification in CLASSIFICATIONS}
 
 
-def build_ledger(tensors: Sequence[TensorInfo], plan: LedgerPlan) -> dict[str, Any]:
+def build_ledger(
+    tensors: Sequence[TensorInfo],
+    plan: LedgerPlan,
+    *,
+    include_entries: bool = True,
+) -> dict[str, Any]:
     """Route checkpoint tensors through a validated stage and rank plan.
 
     Args:
         tensors: Tensor metadata returned by :func:`load_checkpoint`.
         plan: Validated module ownership and TP/EP routing plan.
+        include_entries: Retain per-tensor/rank records. Disable this for large
+            checkpoints when only exact stage, rank, and total summaries are
+            required.
 
     Returns:
         A deterministic JSON-compatible ledger with tensor entries, stage and
         rank summaries, and source/rank totals.
     """
     ordered_tensors = sorted(tensors, key=lambda tensor: (tensor.name, tensor.file))
-    entries = sorted(
-        [
-            entry
-            for tensor in ordered_tensors
-            for entry in _ledger_entries(tensor, plan)
-        ],
-        key=_entry_sort_key,
-    )
+    entries: list[dict[str, Any]] = []
 
     rank_summary_by_rank: dict[int, dict[str, Any]] = {}
     stage_summary_by_id: dict[str, dict[str, Any]] = {}
@@ -1464,13 +1465,31 @@ def build_ledger(tensors: Sequence[TensorInfo], plan: LedgerPlan) -> dict[str, A
             }
 
     classification_totals = _empty_summary()
-    for entry in entries:
-        field = f"{entry['classification']}_bytes"
-        classification_totals[field] += entry["bytes"]
-        if entry["stage"] is not None:
-            stage_summary_by_id[entry["stage"]][field] += entry["bytes"]
-        if entry["rank"] is not None:
-            rank_summary_by_rank[entry["rank"]][field] += entry["bytes"]
+    entry_count = 0
+    rank_attributed_bytes = 0
+    unknown_source_bytes = 0
+    unassigned_unknown_bytes = 0
+    for tensor in ordered_tensors:
+        tensor_entries = _ledger_entries(tensor, plan)
+        entry_count += len(tensor_entries)
+        if include_entries:
+            entries.extend(tensor_entries)
+        tensor_is_unknown = False
+        for entry in tensor_entries:
+            field = f"{entry['classification']}_bytes"
+            classification_totals[field] += entry["bytes"]
+            if entry["stage"] is not None:
+                stage_summary_by_id[entry["stage"]][field] += entry["bytes"]
+            if entry["rank"] is not None:
+                rank_summary_by_rank[entry["rank"]][field] += entry["bytes"]
+                rank_attributed_bytes += entry["bytes"]
+            elif entry["classification"] == "unknown":
+                unassigned_unknown_bytes += entry["bytes"]
+            tensor_is_unknown |= entry["classification"] == "unknown"
+        if tensor_is_unknown:
+            unknown_source_bytes += tensor.nbytes
+    if include_entries:
+        entries.sort(key=_entry_sort_key)
 
     rank_summaries = [
         rank_summary_by_rank[rank] for rank in sorted(rank_summary_by_rank)
@@ -1482,33 +1501,22 @@ def build_ledger(tensors: Sequence[TensorInfo], plan: LedgerPlan) -> dict[str, A
         summary["total_bytes"] = sum(
             summary[f"{classification}_bytes"] for classification in CLASSIFICATIONS
         )
-    unknown_tensors = {
-        entry["tensor"] for entry in entries if entry["classification"] == "unknown"
-    }
-    tensor_by_name = {tensor.name: tensor for tensor in ordered_tensors}
     totals = {
         "checkpoint_source_bytes": sum(tensor.nbytes for tensor in ordered_tensors),
         "tensor_count": len(ordered_tensors),
-        "entry_count": len(entries),
+        "entry_count": entry_count,
         **classification_totals,
         "known_rank_bytes": sum(
             classification_totals[f"{classification}_bytes"]
             for classification in ("exact", "replicated", "sharded")
         ),
-        "rank_attributed_bytes": sum(
-            entry["bytes"] for entry in entries if entry["rank"] is not None
-        ),
-        "unknown_source_bytes": sum(
-            tensor_by_name[name].nbytes for name in unknown_tensors
-        ),
-        "unassigned_unknown_bytes": sum(
-            entry["bytes"]
-            for entry in entries
-            if entry["classification"] == "unknown" and entry["rank"] is None
-        ),
+        "rank_attributed_bytes": rank_attributed_bytes,
+        "unknown_source_bytes": unknown_source_bytes,
+        "unassigned_unknown_bytes": unassigned_unknown_bytes,
     }
     return {
         "schema_version": SCHEMA_VERSION,
+        "entries_included": include_entries,
         "entries": entries,
         "stage_summaries": stage_summaries,
         "rank_summaries": rank_summaries,
@@ -1557,6 +1565,11 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output", help="Output path. Omit or use '-' to write to stdout."
     )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Validate every tensor but omit per-tensor/rank records from output.",
+    )
     return parser
 
 
@@ -1574,7 +1587,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         plan = load_plan(arguments.plan)
         tensors = load_checkpoint(arguments.checkpoint)
-        ledger = build_ledger(tensors, plan)
+        ledger = build_ledger(tensors, plan, include_entries=not arguments.summary_only)
     except LedgerError as error:
         parser.error(str(error))
 

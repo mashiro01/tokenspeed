@@ -128,9 +128,13 @@ python -m tokenspeed.tools.kimi_k3_checkpoint_plan \
 python -m tokenspeed.tools.checkpoint_ledger \
   --checkpoint /path/to/model.safetensors.index.json \
   --plan ownership-plan.json \
-  --format jsonl \
-  --output checkpoint-ledger.jsonl
+  --summary-only \
+  --output checkpoint-ledger-summary.json
 ```
+
+Omit `--summary-only` when a full per-tensor/rank audit trail is required. The
+summary path still validates and accounts for every source tensor but avoids
+retaining millions of expanded TP records in memory.
 
 The K3 generator mirrors the runtime's AttnRes-aligned layer partition and
 accounts for the checkpoint-padded `A_log` buffer. PP8 qualification requires
