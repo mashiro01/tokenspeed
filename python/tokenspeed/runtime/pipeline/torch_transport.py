@@ -186,16 +186,12 @@ class TorchPipelineTransport:
             if payloads
             else []
         )
-        if len(works) != len(payloads):
-            raise PipelineProtocolError(
-                "activation payload send returned an unexpected work count"
-            )
-        for work, (_payload, field_id) in zip(works, payloads, strict=True):
-            self._control.wait_work(
-                work,
-                step,
-                f"activation-payload-send:{field_id}",
-            )
+        self._wait_payload_works(
+            works,
+            step,
+            direction="send",
+            field_ids=[field_id for _payload, field_id in payloads],
+        )
 
     def receive(
         self,
@@ -280,17 +276,49 @@ class TorchPipelineTransport:
             if payloads
             else []
         )
-        if len(works) != len(payloads):
-            raise PipelineProtocolError(
-                "activation payload receive returned an unexpected work count"
+        self._wait_payload_works(
+            works,
+            step,
+            direction="receive",
+            field_ids=[field.field_id for _value, field in payloads],
+        )
+        return schema.bind(values)
+
+    def _wait_payload_works(
+        self,
+        works,
+        step: PipelineStepLease,
+        *,
+        direction: str,
+        field_ids: list[str],
+    ) -> None:
+        if not field_ids:
+            if works:
+                raise PipelineProtocolError(
+                    f"activation payload {direction} returned work for no fields"
+                )
+            return
+
+        # NCCL coalescing returns one aggregate Work for a whole P2P batch,
+        # whereas non-coalescing backends return one Work per P2POp.
+        if len(works) == 1:
+            self._control.wait_work(
+                works[0],
+                step,
+                f"activation-payload-{direction}-batch",
             )
-        for work, (_value, field) in zip(works, payloads, strict=True):
+            return
+        if len(works) != len(field_ids):
+            raise PipelineProtocolError(
+                f"activation payload {direction} returned {len(works)} work items "
+                f"for {len(field_ids)} fields"
+            )
+        for work, field_id in zip(works, field_ids, strict=True):
             self._control.wait_work(
                 work,
                 step,
-                f"activation-payload-receive:{field.field_id}",
+                f"activation-payload-{direction}:{field_id}",
             )
-        return schema.bind(values)
 
     def _validate_leading_dimensions(self, dimensions) -> None:
         if any(

@@ -28,8 +28,12 @@ class _ImmediateWork:
 
 
 class _Control:
+    def __init__(self):
+        self.phases = []
+
     def wait_work(self, work, step, phase):
-        del step, phase
+        del step
+        self.phases.append(phase)
         work.wait()
 
 
@@ -86,7 +90,6 @@ def test_torch_transport_sends_fixed_header_then_tensor_payloads(monkeypatch):
         return op, tensor, peer, group
 
     def batch(ops):
-        works = []
         for op, tensor, peer, group in ops:
             if op is send:
                 wire.append((peer, group, tensor.clone()))
@@ -96,8 +99,8 @@ def test_torch_transport_sends_fixed_header_then_tensor_payloads(monkeypatch):
                 assert peer == 0
                 assert sent_group == group
                 tensor.copy_(value)
-            works.append(_ImmediateWork())
-        return works
+        # NCCL coalescing reports a single aggregate Work for a P2P batch.
+        return [_ImmediateWork()]
 
     monkeypatch.setattr(torch.distributed, "isend", send)
     monkeypatch.setattr(torch.distributed, "irecv", receive)
@@ -146,6 +149,12 @@ def test_torch_transport_sends_fixed_header_then_tensor_payloads(monkeypatch):
     assert wire == []
     assert torch.equal(received.values[0], activation.values[0])
     assert torch.equal(received.values[1], activation.values[1])
+    assert control.phases == [
+        "activation-header-send",
+        "activation-payload-send-batch",
+        "activation-header-receive",
+        "activation-payload-receive-batch",
+    ]
 
 
 def test_torch_transport_submits_all_payloads_before_waiting(monkeypatch):
