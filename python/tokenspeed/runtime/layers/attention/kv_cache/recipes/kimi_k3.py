@@ -316,6 +316,34 @@ def build_kimi_k3_logical_cache_fields(
     return tuple(logical_fields)
 
 
+def _kimi_k3_global_cache_field_dtypes(
+    logical_fields: tuple[LogicalCacheFieldSpec, ...],
+    global_layer_types: tuple[str, ...],
+    *,
+    mla_cache_dtype: torch.dtype,
+    conv_dtype: torch.dtype,
+    recurrent_dtype: torch.dtype,
+) -> dict[str, torch.dtype]:
+    """Return the rank-independent dtype ABI for every logical cache field."""
+
+    state_dtypes = {
+        f"layer.{logical_layer_id}.conv_state": conv_dtype
+        for logical_layer_id, layer_type in enumerate(global_layer_types)
+        if layer_type == LINEAR_ATTENTION
+    } | {
+        f"layer.{logical_layer_id}.recurrent_state": recurrent_dtype
+        for logical_layer_id, layer_type in enumerate(global_layer_types)
+        if layer_type == LINEAR_ATTENTION
+    }
+    return {
+        logical_field.field.field_id: state_dtypes.get(
+            logical_field.field.field_id,
+            mla_cache_dtype,
+        )
+        for logical_field in logical_fields
+    }
+
+
 def solve_kimi_k3_cache_layout(
     text_config: KimiLinearConfig,
     *,
@@ -634,13 +662,13 @@ def _prepare_kimi_k3_pipeline_cache(
             for logical_layer_id, layer_type in zip(logical_layer_ids, layer_types)
             if layer_type == LINEAR_ATTENTION
         }
-        logical_field_dtypes = {
-            logical_field.field.field_id: state_dtypes.get(
-                logical_field.field.field_id,
-                attn_config.kv_cache_dtype,
-            )
-            for logical_field in logical_fields
-        }
+        logical_field_dtypes = _kimi_k3_global_cache_field_dtypes(
+            logical_fields,
+            global_layer_types,
+            mla_cache_dtype=attn_config.kv_cache_dtype,
+            conv_dtype=conv_dtype,
+            recurrent_dtype=recurrent_dtype,
+        )
         reference_plan = stage_layout.layout.with_num_lcm_blocks(1)
         usable_cache_bytes = cache_budget_bytes - fixed_workspace_bytes
         max_num_lcm_blocks = (

@@ -12,9 +12,21 @@ import torch
 
 from tokenspeed.runtime.configs.kimi_k3_config import KimiLinearConfig
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.kimi_k3 import (
+    FULL_ATTENTION,
+    LINEAR_ATTENTION,
+    _kimi_k3_global_cache_field_dtypes,
+    build_kimi_k3_logical_cache_fields,
+    kimi_k3_layer_group_ids,
     kimi_k3_lcm_blocks_needed,
     kimi_k3_token_capacity_for_cache_pool,
     solve_kimi_k3_cache_layout,
+)
+from tokenspeed.runtime.layers.attention.kv_cache.recipes.stage_layout import (
+    CacheStagePlacement,
+    pipeline_cache_abi_digest,
+)
+from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
+    build_balanced_kimi_k3_pipeline_plan,
 )
 
 
@@ -65,6 +77,62 @@ def test_lcm_reference_geometry_is_exact() -> None:
         assert {field.plane_id for field in fields_by_group[group_id]} == {
             f"slot.{slot}" for slot in range(23)
         }
+
+
+def test_pipeline_cache_dtype_abi_is_global_across_stages() -> None:
+    text_config = KimiLinearConfig()
+    group_ids = kimi_k3_layer_group_ids(text_config)
+    global_layer_types = tuple(
+        FULL_ATTENTION if group_id == FULL_ATTENTION else LINEAR_ATTENTION
+        for group_id in group_ids
+    )
+    logical_fields = build_kimi_k3_logical_cache_fields(
+        text_config,
+        tp_size=8,
+        mla_cache_dtype=torch.float8_e4m3fn,
+        mla_quant_method=None,
+    )
+    global_layout = solve_kimi_k3_cache_layout(
+        text_config,
+        tp_size=8,
+        mla_cache_dtype=torch.float8_e4m3fn,
+        mla_quant_method=None,
+    )
+    _, _, conv_dtype, recurrent_dtype, _ = text_config.mamba2_cache_params
+    field_dtypes = _kimi_k3_global_cache_field_dtypes(
+        logical_fields,
+        global_layer_types,
+        mla_cache_dtype=torch.float8_e4m3fn,
+        conv_dtype=conv_dtype,
+        recurrent_dtype=recurrent_dtype,
+    )
+    plan = build_balanced_kimi_k3_pipeline_plan(
+        num_layers=text_config.num_hidden_layers,
+        hidden_size=text_config.hidden_size,
+        attn_res_block_size=text_config.attn_res_block_size,
+        stage_count=8,
+        activation_dtype="bfloat16",
+    )
+    placements = (
+        CacheStagePlacement.from_pipeline_plan(rank=0, world_size=64, plan=plan),
+        CacheStagePlacement.from_pipeline_plan(rank=8, world_size=64, plan=plan),
+        CacheStagePlacement.from_pipeline_plan(rank=56, world_size=64, plan=plan),
+    )
+
+    digests = {
+        pipeline_cache_abi_digest(
+            logical_fields,
+            placement,
+            global_layout,
+            field_dtypes=field_dtypes,
+        )
+        for placement in placements
+    }
+
+    assert len(digests) == 1
+    assert field_dtypes["layer.0.conv_state"] == conv_dtype
+    assert field_dtypes["layer.0.recurrent_state"] == recurrent_dtype
+    assert field_dtypes["layer.3.latent_kv"] == torch.float8_e4m3fn
 
 
 def test_lcm_geometry_packs_two_kda_pages_at_tp16() -> None:
