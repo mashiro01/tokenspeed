@@ -207,6 +207,29 @@ also rejected while PP is active. They need a stage-global transaction and
 status-reduction protocol before their API result can be trusted. Use external
 Nsight/CUPTI capture for the first PP8 qualification run.
 
+## Qualification Events
+
+Startup success boundaries emit compact, single-line JSON payloads through the
+normal rank-local logger. Every payload has `schema="tokenspeed.qualification"`,
+`schema_version=1`, `status="success"`, and a stable `event` name. The payloads
+contain topology identifiers and digests only; they never include requests,
+tokens, prompts, images, or model tensor values.
+
+- `distributed_topology` is emitted after distributed initialization and the
+  stage-local memory-balance check. It records global, local, stage, TP, and
+  vision TP/DP rank and group membership, plus the CUDA device and world
+  process-group backend.
+- `pipeline_plan_consensus` is emitted on every rank only after the global plan
+  comparison succeeds. `pipeline_plan_digest` is the complete lowercase
+  SHA-256 digest.
+- `kimi_k3_cache_abi_consensus` is emitted after both `layout` and `runtime`
+  cache consensus. `consensus_phase` distinguishes the rounds, while
+  `global_abi_digest` and `stage_abi_digest` retain the complete SHA-256 values.
+
+A failed consensus raises before its corresponding success event. Qualification
+collectors must require the expected event count and rank set, not just search
+for one successful line.
+
 ## Bring-Up Gates
 
 The first multi-stage runtime must fail startup when any of these are enabled:

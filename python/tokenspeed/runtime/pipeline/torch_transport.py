@@ -31,6 +31,9 @@ from tokenspeed.runtime.distributed.mapping import Mapping
 from tokenspeed.runtime.distributed.process_group_manager import (
     process_group_manager as pg_manager,
 )
+from tokenspeed.runtime.distributed.qualification_events import (
+    emit_pipeline_plan_consensus_success,
+)
 from tokenspeed.runtime.pipeline.contracts import (
     ActivationSchema,
     PipelinePlan,
@@ -68,19 +71,25 @@ if hasattr(torch, "float8_e4m3fn"):
 def validate_pipeline_plan_consensus(plan: PipelinePlan, mapping: Mapping) -> None:
     """Fail startup unless every global rank constructed the same plan."""
 
-    if mapping.world_size == 1:
-        return
-    local = torch.tensor(list(bytes.fromhex(plan.digest)), dtype=torch.uint8)
-    gathered = [torch.empty_like(local) for _ in range(mapping.world_size)]
-    group = pg_manager.get_process_group("gloo", mapping.world_group)
-    dist.all_gather(gathered, local, group=group)
-    divergent = [
-        rank for rank, digest in enumerate(gathered) if not torch.equal(digest, local)
-    ]
-    if divergent:
-        raise PipelineProtocolError(
-            f"pipeline plan digest differs on global ranks {divergent}"
-        )
+    if mapping.world_size > 1:
+        local = torch.tensor(list(bytes.fromhex(plan.digest)), dtype=torch.uint8)
+        gathered = [torch.empty_like(local) for _ in range(mapping.world_size)]
+        group = pg_manager.get_process_group("gloo", mapping.world_group)
+        dist.all_gather(gathered, local, group=group)
+        divergent = [
+            rank
+            for rank, digest in enumerate(gathered)
+            if not torch.equal(digest, local)
+        ]
+        if divergent:
+            raise PipelineProtocolError(
+                f"pipeline plan digest differs on global ranks {divergent}"
+            )
+
+    emit_pipeline_plan_consensus_success(
+        mapping,
+        pipeline_plan_digest=plan.digest,
+    )
 
 
 class TorchPipelineTransport:

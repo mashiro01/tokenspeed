@@ -26,6 +26,9 @@ import torch
 from tokenspeed.runtime.distributed.process_group_manager import (
     process_group_manager as pg_manager,
 )
+from tokenspeed.runtime.distributed.qualification_events import (
+    emit_distributed_topology_success,
+)
 from tokenspeed.runtime.pipeline.groups import (
     PIPELINE_FAULT_GROUP_ROLE,
     PIPELINE_RESULT_GROUP_ROLE,
@@ -267,5 +270,11 @@ class DistributedInitializer:
                     "The memory capacity is unbalanced. "
                     "Some GPUs may be occupied by other processes."
                 )
+
+        emit_distributed_topology_success(
+            mapping,
+            cuda_device=str(device_id),
+            process_group_backend=str(torch.distributed.get_backend()),
+        )
 
         return min_per_gpu_memory
