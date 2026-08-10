@@ -22,6 +22,7 @@ def _isolated_server_args_module():
         "tokenspeed.runtime.distributed",
         "tokenspeed.runtime.distributed.mapping",
         "tokenspeed.runtime.utils",
+        "tokenspeed.runtime.utils.env",
         "tokenspeed.runtime.utils.launcher",
         "tokenspeed.runtime.utils.network",
         "tokenspeed_kernel",
@@ -93,6 +94,12 @@ def _isolated_server_args_module():
         network_module = ModuleType("tokenspeed.runtime.utils.network")
         network_module.is_port_available = lambda *args, **kwargs: True
         sys.modules[network_module.__name__] = network_module
+
+        env_module = ModuleType("tokenspeed.runtime.utils.env")
+        env_module.envs = SimpleNamespace(
+            TOKENSPEED_MAMBA_SSM_DTYPE=SimpleNamespace(set=lambda value: None)
+        )
+        sys.modules[env_module.__name__] = env_module
 
         server_args_spec = importlib.util.spec_from_file_location(
             "_pipeline_server_args_under_test",

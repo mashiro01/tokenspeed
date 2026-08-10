@@ -288,7 +288,10 @@ class TestCLIConfigCompat(unittest.TestCase):
         self.assertEqual(args.mixed_prefill_token_cap, 0)
 
         sa = self._from_cli_args_no_init(args)
-        sa.mapping = SimpleNamespace(world_size=1)
+        sa.mapping = SimpleNamespace(
+            world_size=1,
+            pipeline=SimpleNamespace(stage_world_size=1),
+        )
         platform = SimpleNamespace(is_amd=False, is_nvidia=False)
         with patch(
             "tokenspeed.runtime.utils.server_args.current_platform",
