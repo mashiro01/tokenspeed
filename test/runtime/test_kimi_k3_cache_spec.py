@@ -98,7 +98,8 @@ def test_pipeline_cache_dtype_abi_is_global_across_stages() -> None:
         mla_cache_dtype=torch.float8_e4m3fn,
         mla_quant_method=None,
     )
-    _, _, conv_dtype, recurrent_dtype, _ = text_config.mamba2_cache_params
+    conv_dtype = torch.bfloat16
+    recurrent_dtype = torch.float32
     field_dtypes = _kimi_k3_global_cache_field_dtypes(
         logical_fields,
         global_layer_types,
