@@ -859,22 +859,30 @@ def is_valid_ipv6_address(address: str) -> bool:
         return False
 
 
-def launch_dummy_health_check_server(host, port, enable_metrics):
+def launch_dummy_health_check_server(
+    host,
+    port,
+    enable_metrics,
+    health_check: Callable[[], bool] | None = None,
+):
 
     import uvicorn
     from fastapi import FastAPI, Response
 
     app = FastAPI()
 
+    def health_status_code() -> int:
+        return 200 if health_check is None or health_check() else 503
+
     @app.get("/health")
     async def health():
         """Check the health of the http server."""
-        return Response(status_code=200)
+        return Response(status_code=health_status_code())
 
     @app.get("/health_generate")
     async def health_generate():
         """Check the health of the http server."""
-        return Response(status_code=200)
+        return Response(status_code=health_status_code())
 
     # Add prometheus middleware
     if enable_metrics:
