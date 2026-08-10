@@ -18,7 +18,10 @@ import argparse
 import contextlib
 import io
 import unittest
+from unittest import mock
 from types import SimpleNamespace
+
+from tokenspeed_kernel.platform import ArchVersion
 
 from tokenspeed.runtime.configs.model_config import AttentionArch
 from tokenspeed.runtime.layers.attention import registry
@@ -121,6 +124,36 @@ class TestAttentionBackendChoices(unittest.TestCase):
 
     def test_defaults_to_mla_for_mla(self):
         self.assertEqual(registry._get_default_backend_name(AttentionArch.MLA), "mla")
+
+    @mock.patch.object(registry, "current_platform")
+    def test_k3_default_history_backend_uses_generic_mla_on_sm120(self, platform):
+        platform.return_value = SimpleNamespace(
+            is_amd=False,
+            is_nvidia=True,
+            arch_version=ArchVersion(12, 0),
+        )
+
+        self.assertEqual(
+            registry._resolve_hybrid_full_backend_name(
+                None, is_kda=True, has_cache_plan=True
+            ),
+            "mla",
+        )
+
+    @mock.patch.object(registry, "current_platform")
+    def test_k3_default_history_backend_uses_cutedsl_on_sm100(self, platform):
+        platform.return_value = SimpleNamespace(
+            is_amd=False,
+            is_nvidia=True,
+            arch_version=ArchVersion(10, 0),
+        )
+
+        self.assertEqual(
+            registry._resolve_hybrid_full_backend_name(
+                None, is_kda=True, has_cache_plan=True
+            ),
+            "tokenspeed_mla",
+        )
 
     def test_lcm_kernel_page_size_is_validated_without_rewriting_it(self):
         config = SimpleNamespace(page_size=64)

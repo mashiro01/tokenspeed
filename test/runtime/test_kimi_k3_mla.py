@@ -201,18 +201,22 @@ def backend_factory(cuda_env, gpu_pool):
     from tokenspeed.runtime.layers.attention.configs.mla import MLAConfig
 
     def make():
-        if current_platform().is_amd:
-            from tokenspeed.runtime.layers.attention.backends.mla import MLAAttnBackend
-
-            backend_cls = MLAAttnBackend
-            backend_name = "mla"
-        else:
+        platform = current_platform()
+        if platform.is_nvidia and (
+            platform.arch_version.major,
+            platform.arch_version.minor,
+        ) in ((10, 0), (10, 3)):
             from tokenspeed.runtime.layers.attention.backends.tokenspeed_mla import (
                 CuteDSLMLABackend,
             )
 
             backend_cls = CuteDSLMLABackend
             backend_name = "tokenspeed_mla"
+        else:
+            from tokenspeed.runtime.layers.attention.backends.mla import MLAAttnBackend
+
+            backend_cls = MLAAttnBackend
+            backend_name = "mla"
         config = MLAConfig(
             device="cuda",
             backend_name=backend_name,

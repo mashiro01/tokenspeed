@@ -3221,7 +3221,9 @@ class KimiK3ForConditionalGeneration(nn.Module):
             # Exhaust the stream so interleaved vision weights are still routed.
             for _ in language_weights():
                 pass
-        if dropped_vision_weights and self.mapping.pipeline.stage_count == 1:
+        pipeline = getattr(getattr(self, "mapping", None), "pipeline", None)
+        stage_count = getattr(pipeline, "stage_count", 1)
+        if dropped_vision_weights and stage_count == 1:
             logger.warning(
                 "Dropping %d vision weights: multimodal path is inactive.",
                 dropped_vision_weights,

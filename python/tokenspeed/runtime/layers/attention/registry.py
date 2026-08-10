@@ -365,10 +365,18 @@ def _resolve_hybrid_full_backend_name(
     name = _BACKEND_ALIASES.get(requested_name, requested_name)
     if name == "hybrid_linear_attn":
         name = None
-    # NVIDIA K3 defaults to its CuteDSL history consumer. AMD keeps the
-    # generic MLA backend; explicit user choices remain authoritative.
-    if has_cache_plan and is_kda and name is None and not current_platform().is_amd:
-        return "tokenspeed_mla"
+    # CuteDSL MLA has prefill kernels only for SM100 and SM103. Keep the
+    # generic MLA history consumer as the portable default for SM120 (and any
+    # future NVIDIA architecture) rather than selecting a backend that fails
+    # during its constructor. Explicit user choices remain authoritative.
+    if has_cache_plan and is_kda and name is None:
+        platform = current_platform()
+        if platform.is_nvidia and (platform.arch_version.major, platform.arch_version.minor) in (
+            (10, 0),
+            (10, 3),
+        ):
+            return "tokenspeed_mla"
+        return "mla"
     return name
 
 
