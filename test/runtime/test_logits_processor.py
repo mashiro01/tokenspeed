@@ -177,6 +177,11 @@ def test_tp_logits_all_gather_skips_non_multicast_state(monkeypatch):
         "create_state",
         lambda **kwargs: SimpleNamespace(multicast_supported=False),
     )
+    monkeypatch.setattr(
+        logits_processor_module.pg_manager,
+        "get_process_group",
+        lambda *_: object(),
+    )
 
     assert processor._init_all_gather_state(lm_head) is None
 
