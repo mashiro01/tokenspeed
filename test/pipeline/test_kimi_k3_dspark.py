@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import tokenspeed.runtime.models.kimi_k3 as kimi_k3_module
 from tokenspeed.runtime.layers.vocab_parallel_embedding import ParallelLMHead
 from tokenspeed.runtime.models.kimi_k3 import KimiK3ForConditionalGeneration
 from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
@@ -226,3 +227,45 @@ def test_k3_dspark_rejects_an_actually_quantized_head() -> None:
         _k3_final_stage_with_head(head).get_pipeline_dspark_source_head_weight(
             expected_dtype=torch.bfloat16
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_k3_dspark_installs_head_on_the_broadcast_weight_device(monkeypatch) -> None:
+    model = KimiK3ForConditionalGeneration.__new__(
+        KimiK3ForConditionalGeneration
+    )
+    torch.nn.Module.__init__(model)
+    model.mapping = SimpleNamespace(
+        pipeline=SimpleNamespace(is_first_stage=True),
+        attn=SimpleNamespace(
+            has_dp=False,
+            tp_rank=0,
+            tp_size=1,
+            tp_group=(0,),
+        ),
+    )
+    model.language_model = SimpleNamespace(
+        config=SimpleNamespace(hidden_size=16, vocab_size=64)
+    )
+    model._pipeline_dspark_lm_head = None
+    model._pipeline_dspark_logits_processor = None
+    monkeypatch.setattr(
+        kimi_k3_module,
+        "LogitsProcessor",
+        lambda *args, **kwargs: object(),
+    )
+    source_weight = torch.arange(
+        64 * 16,
+        device="cuda",
+        dtype=torch.bfloat16,
+    ).reshape(64, 16)
+
+    model.install_pipeline_dspark_draft_head(source_weight)
+
+    installed_weight = model._pipeline_dspark_lm_head.weight
+    assert installed_weight.device == source_weight.device
+    torch.testing.assert_close(installed_weight, source_weight)
+    hidden_states = torch.ones((2, 16), device="cuda", dtype=torch.bfloat16)
+    logits = torch.matmul(hidden_states, installed_weight.T)
+    assert logits.shape == (2, 64)
+    assert logits.device == source_weight.device

@@ -3081,24 +3081,25 @@ class KimiK3ForConditionalGeneration(nn.Module):
             raise ValueError("Kimi-K3 DSpark LM head weight must be a rank-2 tensor")
 
         text_config = self.language_model.config
-        if self.mapping.attn.has_dp:
-            head = ReplicatedLinear(
-                text_config.hidden_size,
-                text_config.vocab_size,
-                bias=False,
-                params_dtype=weight.dtype,
-                prefix="pipeline_dspark_lm_head",
-            )
-        else:
-            head = ParallelLMHead(
-                text_config.vocab_size,
-                text_config.hidden_size,
-                params_dtype=weight.dtype,
-                prefix="pipeline_dspark_lm_head",
-                tp_rank=self.mapping.attn.tp_rank,
-                tp_size=self.mapping.attn.tp_size,
-                tp_group=self.mapping.attn.tp_group,
-            )
+        with torch.device(weight.device):
+            if self.mapping.attn.has_dp:
+                head = ReplicatedLinear(
+                    text_config.hidden_size,
+                    text_config.vocab_size,
+                    bias=False,
+                    params_dtype=weight.dtype,
+                    prefix="pipeline_dspark_lm_head",
+                )
+            else:
+                head = ParallelLMHead(
+                    text_config.vocab_size,
+                    text_config.hidden_size,
+                    params_dtype=weight.dtype,
+                    prefix="pipeline_dspark_lm_head",
+                    tp_rank=self.mapping.attn.tp_rank,
+                    tp_size=self.mapping.attn.tp_size,
+                    tp_group=self.mapping.attn.tp_group,
+                )
         if tuple(head.weight.shape) != tuple(weight.shape):
             raise ValueError(
                 "Kimi-K3 DSpark LM head shard shape disagrees with PP0: "
