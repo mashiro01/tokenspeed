@@ -3121,9 +3121,11 @@ class KimiK3ForConditionalGeneration(nn.Module):
     ) -> torch.Tensor:
         """Validate and return PP7's portable K3 DSpark vocabulary shard.
 
-        The PP0 draft currently reuses a plain ``ParallelLMHead`` shard. Do
-        not silently treat this as support for a quantized or stateful head:
-        those would require a manifest and transfer of every parameter/buffer.
+        The PP0 draft currently reuses a plain ``ParallelLMHead`` shard. A
+        checkpoint-wide quantization config may still leave this layer in
+        BF16, so validate the head's active method and state rather than the
+        model-level config. Quantized or stateful heads require a manifest and
+        transfer of every parameter/buffer.
         """
 
         if not self.mapping.pipeline.is_last_stage:
@@ -3139,9 +3141,7 @@ class KimiK3ForConditionalGeneration(nn.Module):
             )
         if source_head.bias is not None:
             raise ValueError("Kimi-K3 DSpark pipeline LM head must not have a bias")
-        if source_head.quant_config is not None or type(
-            source_head.linear_method
-        ) is not UnquantizedEmbeddingMethod:
+        if type(source_head.linear_method) is not UnquantizedEmbeddingMethod:
             raise ValueError(
                 "Kimi-K3 DSpark pipeline does not support a quantized LM head"
             )

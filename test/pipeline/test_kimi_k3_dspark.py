@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
+from tokenspeed.runtime.layers.vocab_parallel_embedding import ParallelLMHead
+from tokenspeed.runtime.models.kimi_k3 import KimiK3ForConditionalGeneration
 from tokenspeed.runtime.pipeline.adapters.kimi_k3 import (
     build_balanced_kimi_k3_pipeline_plan,
 )
@@ -170,4 +174,55 @@ def test_k3_dspark_stage_projector_rejects_non_local_taps() -> None:
             torch.zeros((1, 4), dtype=torch.float32),
             target_layer_id=23,
             target_hidden=torch.zeros((1, 2), dtype=torch.float32),
+        )
+
+
+def _k3_final_stage_with_head(head: ParallelLMHead):
+    model = KimiK3ForConditionalGeneration.__new__(
+        KimiK3ForConditionalGeneration
+    )
+    torch.nn.Module.__init__(model)
+    model.mapping = SimpleNamespace(
+        pipeline=SimpleNamespace(is_last_stage=True)
+    )
+    model.language_model = SimpleNamespace(lm_head=head)
+    return model
+
+
+def test_k3_dspark_exports_bf16_head_under_global_quantization() -> None:
+    head = ParallelLMHead(
+        64,
+        16,
+        params_dtype=torch.bfloat16,
+        quant_config=object(),
+        tp_rank=0,
+        tp_size=1,
+        tp_group=(0,),
+    )
+
+    weight = _k3_final_stage_with_head(
+        head
+    ).get_pipeline_dspark_source_head_weight(expected_dtype=torch.bfloat16)
+
+    assert weight.data_ptr() == head.weight.data_ptr()
+    assert weight.shape == head.weight.shape
+    assert weight.dtype == torch.bfloat16
+    assert not weight.requires_grad
+
+
+def test_k3_dspark_rejects_an_actually_quantized_head() -> None:
+    head = ParallelLMHead(
+        64,
+        16,
+        params_dtype=torch.bfloat16,
+        quant_config=object(),
+        tp_rank=0,
+        tp_size=1,
+        tp_group=(0,),
+    )
+    head.linear_method = object()
+
+    with pytest.raises(ValueError, match="does not support a quantized LM head"):
+        _k3_final_stage_with_head(head).get_pipeline_dspark_source_head_weight(
+            expected_dtype=torch.bfloat16
         )
