@@ -525,6 +525,24 @@ class ModelExecutor:
             device=self.device,
             output_length=config.output_length,
         )
+        self._compact_spec_candidate_rows_buf = None
+        self._compact_spec_output_tokens_buf = None
+        self._compact_spec_accept_lengths_buf = None
+        self._compact_spec_logprobs_buf = None
+        if self._spec_enabled:
+            max_verify_width = int(config.spec_num_tokens or 1)
+            self._compact_spec_candidate_rows_buf = torch.empty(
+                (max_bs, max_verify_width), dtype=torch.int32, device=self.device
+            )
+            self._compact_spec_output_tokens_buf = torch.empty(
+                (max_bs, max_verify_width), dtype=torch.int32, device=self.device
+            )
+            self._compact_spec_accept_lengths_buf = torch.empty(
+                max_bs, dtype=torch.int32, device=self.device
+            )
+            self._compact_spec_logprobs_buf = torch.empty(
+                (max_bs, max_verify_width), dtype=torch.float32, device=self.device
+            )
         # Sized like InputBuffers.max_bs so the padded graph-bucket bs fits.
         self.nan_guard = NanGuard.create(
             config.enable_nan_detection,
@@ -1022,6 +1040,60 @@ class ModelExecutor:
             multimodal_context=self._active_multimodal_context,
         )
 
+    def _spec_verify_widths(self, forward_op, num_extends: int) -> tuple[int, ...] | None:
+        """Validate the scheduler-selected target widths for this forward."""
+
+        if not self._spec_enabled:
+            return None
+        widths = tuple(int(width) for width in forward_op.input_lengths[num_extends:])
+        if not widths:
+            return None
+        max_width = int(self.config.spec_num_tokens or 0)
+        if max_width < 1 or any(width < 1 or width > max_width for width in widths):
+            raise RuntimeError(
+                "speculative verify widths must be in [1, spec_num_tokens]"
+            )
+        return widths
+
+    def _is_compact_spec_verify(self, widths: tuple[int, ...] | None) -> bool:
+        if widths is None:
+            return False
+        max_width = int(self.config.spec_num_tokens or 0)
+        return any(width != max_width for width in widths)
+
+    def _stage_compact_spec_candidate_rows(
+        self,
+        *,
+        batch_size: int,
+        num_extends: int,
+    ) -> torch.Tensor:
+        """Stage fixed-width candidate rows for grammar and compact sampling.
+
+        Target input remains packed. This separate rectangular staging buffer
+        exists only for components whose external ABI is one row per request:
+        grammar walks and the verifier's candidate comparison.
+        """
+        rows = self._compact_spec_candidate_rows_buf
+        if rows is None:
+            raise RuntimeError("compact speculative buffers are not initialized")
+        max_width = int(self.config.spec_num_tokens or 0)
+        if rows.shape[1] != max_width:
+            raise RuntimeError("compact speculative candidate buffer width mismatch")
+        rows = rows[:batch_size]
+        rows.fill_(1)
+        if num_extends < batch_size:
+            req_pool_indices = self.input_buffers.req_pool_indices_buf[
+                num_extends:batch_size
+            ]
+            source = self.runtime_states.future_input_map.index_select(
+                0, req_pool_indices
+            )
+            if source.shape[1] < max_width:
+                raise RuntimeError("future speculative candidate window is too narrow")
+            rows[num_extends:batch_size].copy_(source[:, :max_width])
+        rows.clamp_(0, self.runtime_states.vocab_size - 1)
+        return rows
+
     def _spec_output_token_count(self, ctx: ForwardContext) -> int:
         """Return the flat target-output width for this sample/verify step."""
 
@@ -1041,7 +1113,15 @@ class ModelExecutor:
         verify_width = int(self.config.spec_num_tokens or 0)
         if verify_width < 1:
             raise RuntimeError("speculative decoding requires a positive verify width")
-        num_decode_tokens = num_decodes * verify_width
+        widths = ctx.spec_verify_widths or (verify_width,) * num_decodes
+        if len(widths) != num_decodes:
+            raise RuntimeError("speculative verify widths do not match decode rows")
+        if ctx.compact_spec_verify:
+            rows = self._compact_spec_candidate_rows_buf
+            if rows is None:
+                raise RuntimeError("compact speculative candidate rows are unavailable")
+            return rows[ctx.num_extends : ctx.bs]
+        num_decode_tokens = sum(widths)
         num_prefill_tokens = ctx.input_num_tokens - num_decode_tokens
         if num_prefill_tokens < 0:
             raise RuntimeError(
@@ -1050,6 +1130,110 @@ class ModelExecutor:
         return self.input_buffers.input_ids_buf[
             num_prefill_tokens : ctx.input_num_tokens
         ].reshape(num_decodes, verify_width)
+
+    def _verify_compact_spec_candidates(
+        self,
+        *,
+        logits: torch.Tensor,
+        sampling_info: SamplingBatchInfo,
+        ctx: ForwardContext,
+        candidates: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Verify packed target rows in width-homogeneous sampler groups.
+
+        The target forward stays one ragged launch. Grouping happens only in
+        the lightweight verifier so existing sampling backends, grammar masks,
+        TP synchronization, and sampling semantics remain valid.
+        """
+        widths = ctx.spec_verify_widths
+        if widths is None:
+            raise RuntimeError("compact speculative verify is missing per-request widths")
+        num_decodes = ctx.bs - ctx.num_extends
+        if len(widths) != num_decodes or candidates.shape[0] != num_decodes:
+            raise RuntimeError("compact speculative candidates do not match decode rows")
+        max_width = int(self.config.spec_num_tokens or 0)
+        if candidates.shape[1] < max_width:
+            raise RuntimeError("compact speculative candidate width is too small")
+        if logits.shape[0] != sum(widths):
+            raise RuntimeError(
+                "compact speculative logits do not match the packed target rows"
+            )
+
+        output_tokens_buf = self._compact_spec_output_tokens_buf
+        accept_lengths_buf = self._compact_spec_accept_lengths_buf
+        logprobs_buf = self._compact_spec_logprobs_buf
+        if (
+            output_tokens_buf is None
+            or accept_lengths_buf is None
+            or logprobs_buf is None
+        ):
+            raise RuntimeError("compact speculative output buffers are not initialized")
+        output_tokens = output_tokens_buf[:num_decodes].view(num_decodes, max_width)
+        accept_lengths = accept_lengths_buf[:num_decodes]
+        output_tokens.zero_()
+        accept_lengths.zero_()
+
+        want_logprobs = bool(getattr(self.config, "enable_output_logprobs", False))
+        output_logprobs = logprobs_buf[:num_decodes].view(num_decodes, max_width)
+        if want_logprobs:
+            output_logprobs.zero_()
+        logprobs_complete = want_logprobs
+
+        width_groups: dict[int, list[int]] = {}
+        for row, width in enumerate(widths):
+            width_groups.setdefault(width, []).append(row)
+        packed_offsets = []
+        offset = 0
+        for width in widths:
+            packed_offsets.append(offset)
+            offset += width
+
+        for width, local_rows_list in width_groups.items():
+            local_rows = torch.tensor(
+                local_rows_list, dtype=torch.long, device=logits.device
+            )
+            batch_rows = local_rows + ctx.num_extends
+            packed_rows = torch.tensor(
+                [
+                    packed_offsets[row] + position
+                    for row in local_rows_list
+                    for position in range(width)
+                ],
+                dtype=torch.long,
+                device=logits.device,
+            )
+            group_logits = logits.index_select(0, packed_rows)
+            group_candidates = candidates.index_select(0, local_rows)[
+                :, :width
+            ].contiguous()
+            group_sampling_info = sampling_info.select_spec_rows(
+                batch_rows,
+                full_num_tokens_per_req=max_width,
+                num_tokens_per_req=width,
+            )
+            group_output = LogitsProcessorOutput(next_token_logits=group_logits)
+            group_tokens, group_accept_lengths = self.sampling_backend.verify(
+                group_output,
+                group_sampling_info,
+                group_candidates,
+            )
+            output_tokens[local_rows, :width] = group_tokens.view(-1, width)
+            accept_lengths.index_copy_(0, local_rows, group_accept_lengths)
+
+            if want_logprobs:
+                group_logprobs = group_output.next_token_logprobs
+                if group_logprobs is None:
+                    logprobs_complete = False
+                else:
+                    output_logprobs[local_rows, :width] = group_logprobs.view(
+                        -1, width
+                    )
+
+        return (
+            output_tokens.flatten(),
+            accept_lengths,
+            output_logprobs.flatten() if logprobs_complete else None,
+        )
 
     def _run_pipeline_dspark_step(
         self,
@@ -1175,6 +1359,65 @@ class ModelExecutor:
         if num_decodes == 0:
             return self.sampling_backend.sample(logits_output, sampling_info)
 
+        if ctx.compact_spec_verify:
+            if candidates is None:
+                raise RuntimeError("compact speculative verify requires candidates")
+            logits = logits_output.next_token_logits
+            max_width = int(self.config.spec_num_tokens or 0)
+            if num_extends == 0:
+                output_tokens, accept_lengths, output_logprobs = (
+                    self._verify_compact_spec_candidates(
+                        logits=logits,
+                        sampling_info=sampling_info,
+                        ctx=ctx,
+                        candidates=candidates,
+                    )
+                )
+                logits_output.next_token_logprobs = output_logprobs
+                accept_lengths = self._apply_force_single_token_verify(
+                    accept_lengths, 0, num_decodes, ctx.decode_input_ids
+                )
+                return output_tokens, accept_lengths
+
+            prefill_logits = LogitsProcessorOutput(
+                next_token_logits=logits[:num_extends]
+            )
+            prefill_rows = torch.arange(
+                num_extends, dtype=torch.long, device=logits.device
+            )
+            prefill_sampling_info = sampling_info.select_spec_rows(
+                prefill_rows,
+                full_num_tokens_per_req=max_width,
+                num_tokens_per_req=1,
+            )
+            prefill_tokens, prefill_accept = self.sampling_backend.sample(
+                prefill_logits, prefill_sampling_info
+            )
+            decode_tokens, decode_accept, decode_logprobs = (
+                self._verify_compact_spec_candidates(
+                    logits=logits[num_extends:],
+                    sampling_info=sampling_info,
+                    ctx=ctx,
+                    candidates=candidates,
+                )
+            )
+            decode_accept = self._apply_force_single_token_verify(
+                decode_accept, num_extends, num_decodes, ctx.decode_input_ids
+            )
+            if (
+                prefill_logits.next_token_logprobs is not None
+                and decode_logprobs is not None
+            ):
+                logits_output.next_token_logprobs = torch.cat(
+                    [prefill_logits.next_token_logprobs, decode_logprobs]
+                )
+            else:
+                logits_output.next_token_logprobs = None
+            return (
+                torch.cat([prefill_tokens, decode_tokens]),
+                torch.cat([prefill_accept, decode_accept]),
+            )
+
         if num_extends == 0:
             output_tokens, accept_lengths = self.sampling_backend.verify(
                 logits_output, sampling_info, candidates
@@ -1291,10 +1534,16 @@ class ModelExecutor:
         # attention/MoE. Rejoined at wait_bitmask() before apply_mask.
         if self.capturable_grammar is not None:
             n = self.capturable_grammar.max_tokens_per_req
-            is_spec_verify = n > 1 and ctx.forward_mode.is_decode()
-            slice_ = (
-                self.input_buffers.input_ids_buf[: bs * n] if is_spec_verify else None
-            )
+            if ctx.compact_spec_verify:
+                # Compact mixed batches still need the complete candidate rows
+                # for grammar's CPU-side tentative walk.
+                slice_ = self._compact_spec_candidate_rows_buf[:bs].flatten()
+            elif n > 1 and ctx.forward_mode.is_decode():
+                slice_ = (
+                    self.input_buffers.input_ids_buf[: bs * n]
+                )
+            else:
+                slice_ = None
             self.capturable_grammar.schedule_fill(input_ids_buf_slice=slice_)
 
         if (
@@ -1915,6 +2164,12 @@ class ModelExecutor:
     ) -> ModelExecutionResult:
         num_extends = forward_op.num_extends()
         total_tokens = sum(forward_op.input_lengths)
+        spec_verify_widths = self._spec_verify_widths(forward_op, num_extends)
+        compact_spec_verify = self._is_compact_spec_verify(spec_verify_widths)
+        if compact_spec_verify and self.config.data_parallel_size > 1:
+            raise RuntimeError(
+                "compact speculative verify does not yet support data-parallel sampling"
+            )
         pipeline_batch_id = (
             self._active_pipeline_step.descriptor.batch_fingerprint
             if self._active_pipeline_step is not None
@@ -1972,6 +2227,12 @@ class ModelExecutor:
                 total_tokens=total_tokens,
                 page_table=page_table,
             )
+            compact_candidate_rows = None
+            if compact_spec_verify:
+                compact_candidate_rows = self._stage_compact_spec_candidate_rows(
+                    batch_size=bs,
+                    num_extends=num_extends,
+                )
             if self.drafter is not None and hasattr(
                 self.drafter, "prepare_request_state"
             ):
@@ -2010,8 +2271,11 @@ class ModelExecutor:
                     num_decodes = bs - num_extends
                     if self._spec_enabled and num_decodes > 0:
                         # MIXED + spec: prefill rows pruned to last token,
-                        # decode block kept full at verify width.
-                        num_decode_tokens = num_decodes * self.config.spec_num_tokens
+                        # decode rows retain their scheduler-selected widths.
+                        num_decode_tokens = sum(
+                            spec_verify_widths
+                            or (int(self.config.spec_num_tokens or 1),) * num_decodes
+                        )
                         num_prefill_tokens = total_tokens - num_decode_tokens
                         gather_ids = torch.empty(
                             num_extends + num_decode_tokens,
@@ -2055,6 +2319,8 @@ class ModelExecutor:
                     ),
                     gather_ids=gather_ids,
                     decode_input_ids=decode_input_ids,
+                    spec_verify_widths=spec_verify_widths,
+                    compact_spec_verify=compact_spec_verify,
                     pipeline_batch_fingerprint=pipeline_batch_id,
                 )
                 if self.config.data_parallel_size > 1:
@@ -2077,7 +2343,11 @@ class ModelExecutor:
                         spec_num_tokens=self.config.spec_num_tokens or 1,
                         grammar_inputs=grammar_inputs,
                         grammar_runtime=self.grammar_runtime,
-                        input_ids_buf=self.input_buffers.input_ids_buf,
+                        input_ids_buf=(
+                            compact_candidate_rows.flatten()
+                            if compact_candidate_rows is not None
+                            else self.input_buffers.input_ids_buf
+                        ),
                         grammar_backend=self.config.grammar_backend,
                     )
                     extend_with_prefix = num_extends > 0 and any(
@@ -2168,9 +2438,16 @@ class ModelExecutor:
                     and self.config.spec_num_steps
                     and num_extends == 0
                 ):
-                    spec_candidate_tokens = self.input_buffers.input_ids_buf[
-                        : bs * self.config.spec_num_tokens
-                    ].to("cpu", non_blocking=True)
+                    candidate_tokens = (
+                        self._compact_spec_candidate_rows_buf[:bs].flatten()
+                        if compact_spec_verify
+                        else self.input_buffers.input_ids_buf[
+                            : bs * self.config.spec_num_tokens
+                        ]
+                    )
+                    spec_candidate_tokens = candidate_tokens.to(
+                        "cpu", non_blocking=True
+                    )
 
                 # Defensive clamp into the valid vocab range (kept from the
                 # pre-pack path). An out-of-range token id -- e.g. a stale/corrupt

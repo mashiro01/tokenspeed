@@ -52,6 +52,11 @@ class ForwardContext:
     capture_hidden_mode: CaptureHiddenMode | None = CaptureHiddenMode.NULL
     # Normalized explicit decode input overrides for this forward, if any.
     decode_input_ids: list[int] | None = None
+    # Per-decode-request target verify widths. Normally every entry is the
+    # configured speculative block width; compact entries describe a packed
+    # target forward with fewer rows than the fixed output ABI.
+    spec_verify_widths: tuple[int, ...] | None = None
+    compact_spec_verify: bool = False
     # Stable CPU-side identity of request ids and input lengths. Native PP
     # compares this globally before any activation or result NCCL operation.
     pipeline_batch_fingerprint: int = 0

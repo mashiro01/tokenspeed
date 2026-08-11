@@ -137,6 +137,20 @@ class NanGuard:
         if ne > 0:
             self.flags[:ne] |= rows[:ne].to(torch.int32)
         if nd > 0:
+            widths = getattr(ctx, "spec_verify_widths", None)
+            ragged_rows = ne + sum(widths or ())
+            if (
+                getattr(ctx, "compact_spec_verify", False)
+                and widths is not None
+                and rows.shape[0] == ragged_rows
+            ):
+                offset = ne
+                for row, width in enumerate(widths or ()):
+                    self.flags[ne + row] |= rows[offset : offset + width].any().to(
+                        torch.int32
+                    )
+                    offset += width
+                return
             n = (rows.shape[0] - ne) // nd
             self.flags[ne : ctx.bs] |= rows[ne:].view(nd, n).any(dim=-1).to(torch.int32)
 

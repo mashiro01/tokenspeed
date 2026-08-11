@@ -442,8 +442,18 @@ class FlashInferFullSamplingBackend(FlashInferSamplingBackend):
 
         target_probs = target_probs.reshape(bs, num_tokens_per_req, -1)
 
-        coins = self._coins_buf[:bs, :num_tokens_per_req]
-        coins_for_final_sampling = self._final_coins_buf[:bs]
+        verify_rows = sampling_info.verify_row_indices
+        if verify_rows is None:
+            coins = self._coins_buf[:bs, :num_tokens_per_req]
+            coins_for_final_sampling = self._final_coins_buf[:bs]
+        else:
+            # Preserve per-request RNG continuity across compact groups.
+            coins = self._coins_buf.index_select(0, verify_rows)[
+                :, :num_tokens_per_req
+            ]
+            coins_for_final_sampling = self._final_coins_buf.index_select(
+                0, verify_rows
+            )
 
         chain_speculative_sampling_target_only(
             predicts=predict,

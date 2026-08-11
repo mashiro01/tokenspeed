@@ -27,6 +27,7 @@ import torch
 from tokenspeed.runtime.execution.cache_loc_kernel import (
     compute_out_cache_loc,
     fused_decode_input_prep,
+    pack_ragged_decode_input_ids,
 )
 from tokenspeed.runtime.execution.forward_batch_info import compute_position_triton
 from tokenspeed.runtime.utils import get_colorful_logger
@@ -193,6 +194,17 @@ class InputBuffers:
         # Get valid cache lengths for requests
         req_pool_indices_device = self.req_pool_indices_buf[:batch_size]
         input_lengths_device = self.input_lengths_buf[:batch_size]
+        decode_input_lengths = forward_op.input_lengths[num_extends:]
+        candidate_width = runtime_states.future_input_map.shape[1]
+        compact_decode_inputs = bool(decode_input_lengths) and all(
+            0 < width <= candidate_width for width in decode_input_lengths
+        ) and any(width != candidate_width for width in decode_input_lengths)
+        uniform_decode_input_length = (
+            decode_input_lengths[0]
+            if decode_input_lengths
+            and all(width == decode_input_lengths[0] for width in decode_input_lengths)
+            else None
+        )
 
         def write_decode_input_ids(
             decode_req_pool_indices: torch.Tensor,
@@ -244,15 +256,20 @@ class InputBuffers:
         # Decode-only fast path: one fused Triton kernel writes out_cache_loc,
         # positions, and seq_lens in a single launch and reads
         # valid_cache_lengths[pool_idx] directly, so the indexSelect + cumsum
-        # path + compute_position + seq_lens add are all gone.
-        if num_extends == 0 and batch_size > 0:
+        # path + compute_position + seq_lens add are all gone. It applies to
+        # any uniform decode width, including a compact speculative block.
+        if (
+            num_extends == 0
+            and batch_size > 0
+            and uniform_decode_input_length is not None
+        ):
             fused_decode_input_prep(
                 out_cache_loc_ptr=self.out_cache_loc_buf[:total_tokens],
                 positions_ptr=self.positions_buf[:total_tokens],
                 seq_lens_out_ptr=self.seq_lens_buf[:batch_size],
                 req_pool_indices=req_pool_indices_device,
                 valid_cache_lengths=runtime_states.valid_cache_lengths,
-                uniform_input_length=total_tokens // batch_size,
+                uniform_input_length=uniform_decode_input_length,
                 page_table=page_table,
                 page_size=self.page_size,
             )
@@ -323,17 +340,24 @@ class InputBuffers:
                         batch_size - num_extends,
                         "mixed forward",
                     )
-                decode_ids = runtime_states.future_input_map[
-                    decode_req_pool_indices
-                ].flatten()
-                self.input_ids_buf[prefill_token_count:total_tokens].copy_(
-                    decode_ids,
-                    non_blocking=True,
-                )
-                self.shifted_prefill_ids_buf[prefill_token_count:total_tokens].copy_(
-                    decode_ids,
-                    non_blocking=True,
-                )
+                input_ids_out = self.input_ids_buf[prefill_token_count:total_tokens]
+                shifted_ids_out = self.shifted_prefill_ids_buf[
+                    prefill_token_count:total_tokens
+                ]
+                if compact_decode_inputs:
+                    pack_ragged_decode_input_ids(
+                        future_input_map=runtime_states.future_input_map,
+                        req_pool_indices=decode_req_pool_indices,
+                        input_lengths=input_lengths_device[num_extends:batch_size],
+                        input_ids_out=input_ids_out,
+                        shifted_input_ids_out=shifted_ids_out,
+                    )
+                else:
+                    decode_ids = runtime_states.future_input_map[
+                        decode_req_pool_indices
+                    ].flatten()
+                    input_ids_out.copy_(decode_ids, non_blocking=True)
+                    shifted_ids_out.copy_(decode_ids, non_blocking=True)
         else:
             # If the scheduler provides explicit decode input ids (!= -1), write
             # them into future_input_map before reading, so that they take effect
@@ -346,10 +370,18 @@ class InputBuffers:
                     batch_size,
                     "decode forward",
                 )
-            self.input_ids_buf[:total_tokens].copy_(
-                runtime_states.future_input_map[req_pool_indices_device].flatten(),
-                non_blocking=True,
-            )
+            if compact_decode_inputs:
+                pack_ragged_decode_input_ids(
+                    future_input_map=runtime_states.future_input_map,
+                    req_pool_indices=req_pool_indices_device,
+                    input_lengths=input_lengths_device,
+                    input_ids_out=self.input_ids_buf[:total_tokens],
+                )
+            else:
+                self.input_ids_buf[:total_tokens].copy_(
+                    runtime_states.future_input_map[req_pool_indices_device].flatten(),
+                    non_blocking=True,
+                )
 
         # Defensive clamp of the target-model IDs into the valid vocab range.
         # Decode IDs come from future_input_map, written by the previous

@@ -1134,6 +1134,11 @@ class CudaGraphWrapper:
     def _can_use_graph(self, bs: int, ctx: ForwardContext) -> bool:
         if self.disable:
             return False
+        # Captures have one fixed target row count per request. A compact
+        # speculative verify is intentionally ragged, so replaying the full
+        # block would reintroduce the compute this path is meant to remove.
+        if ctx.compact_spec_verify:
+            return False
         if not ctx.forward_mode.is_decode():
             return False
         if self.dp_size > 1:

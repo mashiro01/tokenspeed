@@ -437,8 +437,15 @@ class FlashInferSamplingBackend(SamplingBackend):
             accept_length = self._accept_length_local_buf[:bs]
         else:
             pool_indices = sampling_info.req_pool_indices
-            coins = self._coins_buf
-            final_coins = self._final_coins_buf
+            verify_rows = sampling_info.verify_row_indices
+            if verify_rows is None:
+                coins = self._coins_buf
+                final_coins = self._final_coins_buf
+            else:
+                # Preserve the random draws assigned to the original batch
+                # rows when this verify runs in a compact width group.
+                coins = self._coins_buf.index_select(0, verify_rows)
+                final_coins = self._final_coins_buf.index_select(0, verify_rows)
             predict = self._predict_buf[: bs * num_tokens_per_req]
             accept_index = (
                 self._accept_index_buf[: bs * num_tokens_per_req]

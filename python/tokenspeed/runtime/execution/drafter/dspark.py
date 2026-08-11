@@ -70,9 +70,11 @@ class DSpark(DFlash):
     ) -> torch.Tensor:
         """Semi-autoregressive greedy proposal over the block positions."""
         next_tokens[:, 0] = block_ids[:, 0]
+        confidence_head = getattr(self, "confidence_head", None)
+        confidence_logits_buf = getattr(self, "confidence_logits_buf", None)
         confidence_logits = (
-            self.confidence_logits_buf[: draft_hidden.shape[0]]
-            if self.confidence_head is not None
+            confidence_logits_buf[: draft_hidden.shape[0]]
+            if confidence_head is not None and confidence_logits_buf is not None
             else None
         )
         for k in range(1, self.spec_num_tokens):
@@ -104,7 +106,7 @@ class DSpark(DFlash):
     def get_last_confidence_logits(self) -> torch.Tensor | None:
         """Return the last drafted block's [batch, draft_tokens] head logits."""
 
-        return self._last_confidence_logits
+        return getattr(self, "_last_confidence_logits", None)
 
     def _make_step_bias_fn(self, prev_tokens: torch.Tensor):
         """Build the per-position additive-bias hook for the Markov head.

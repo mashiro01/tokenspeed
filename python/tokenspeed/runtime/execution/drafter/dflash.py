@@ -478,12 +478,16 @@ class DFlash(BaseDrafter):
             )
 
         bs = base_ctx.bs
-        # The target verify forward emits spec_num_tokens hidden states per
-        # decode request (the candidate block); input_lengths_buf only tracks
-        # the committed-token count there, so split decode rows by
-        # spec_num_tokens. Prefill rows keep their real chunk lengths.
+        # Static verify emits spec_num_tokens hidden states per decode request.
+        # Compact verify instead packs each scheduler-selected prefix, so the
+        # input buffer is the authoritative row layout in that mode.
         lengths = self.input_buffers.input_lengths_buf[:bs].to(torch.int64).clone()
-        lengths[base_ctx.num_extends :] = self.spec_num_tokens
+        if base_ctx.compact_spec_verify:
+            widths = base_ctx.spec_verify_widths
+            if widths is None or len(widths) != bs - base_ctx.num_extends:
+                raise RuntimeError("compact DFLASH verify widths do not match decode rows")
+        else:
+            lengths[base_ctx.num_extends :] = self.spec_num_tokens
         req_pool_indices = self.input_buffers.req_pool_indices_buf[:bs]
         positions = self.input_buffers.positions_buf[: base_ctx.input_num_tokens]
         cache_locs = self.input_buffers.out_cache_loc_buf[: base_ctx.input_num_tokens]
@@ -965,6 +969,13 @@ class DFlash(BaseDrafter):
         num_decodes = base_ctx.bs - num_extends
         if num_decodes == 0:
             return None
+        if base_ctx.compact_spec_verify:
+            req_pool_indices = self.input_buffers.req_pool_indices_buf[
+                num_extends : base_ctx.bs
+            ]
+            return self.runtime_states.future_input_map.index_select(
+                0, req_pool_indices
+            )[:, : self.spec_num_tokens]
         num_decode_tokens = num_decodes * self.spec_num_tokens
         num_prefill_tokens = base_ctx.input_num_tokens - num_decode_tokens
         return self.input_buffers.input_ids_buf[

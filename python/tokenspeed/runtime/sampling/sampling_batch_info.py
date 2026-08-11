@@ -68,6 +68,10 @@ class SamplingBatchInfo:
     # index_select inside the captured graph.
     valid_cache_lengths: torch.Tensor | None = None
 
+    # Compact speculative verify groups use this to retain each request's
+    # original random-coin row in stateful sampling backends.
+    verify_row_indices: torch.Tensor | None = None
+
     # Device
     device: str = "cuda"
 
@@ -101,4 +105,51 @@ class SamplingBatchInfo:
             req_pool_indices=_slice(self.req_pool_indices),
             vocab_mask=_slice(self.vocab_mask),
             grammars=_slice(self.grammars),
+            verify_row_indices=_slice(self.verify_row_indices),
+        )
+
+    def select_spec_rows(
+        self,
+        rows: torch.Tensor,
+        *,
+        full_num_tokens_per_req: int,
+        num_tokens_per_req: int,
+    ) -> SamplingBatchInfo:
+        """Select a compact verifier group from a fixed-width spec batch.
+
+        ``rows`` refer to original batch rows. Grammar masks are gathered from
+        the first ``num_tokens_per_req`` positions of each full-width row,
+        while the original rows remain attached for per-request RNG state.
+        """
+        if rows.ndim != 1:
+            raise ValueError("speculative row selection expects a 1-D index tensor")
+        if num_tokens_per_req < 1 or num_tokens_per_req > full_num_tokens_per_req:
+            raise ValueError("invalid compact speculative verify width")
+        if self.req_pool_indices is None:
+            raise RuntimeError("compact speculative verify needs request-pool indices")
+
+        rows = rows.to(dtype=torch.long)
+
+        def _select(t):
+            return t.index_select(0, rows) if t is not None else None
+
+        vocab_mask = self.vocab_mask
+        if vocab_mask is not None:
+            token_offsets = torch.arange(
+                num_tokens_per_req, device=rows.device, dtype=rows.dtype
+            )
+            mask_rows = (
+                rows.unsqueeze(1) * full_num_tokens_per_req + token_offsets
+            ).reshape(-1)
+            vocab_mask = vocab_mask.index_select(0, mask_rows)
+
+        return dataclasses.replace(
+            self,
+            temperatures=_select(self.temperatures),
+            top_ps=_select(self.top_ps),
+            top_ks=_select(self.top_ks),
+            min_ps=_select(self.min_ps),
+            req_pool_indices=self.req_pool_indices.index_select(0, rows),
+            vocab_mask=vocab_mask,
+            verify_row_indices=rows,
         )

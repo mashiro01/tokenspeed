@@ -269,6 +269,76 @@ def fused_decode_input_prep(
 
 
 @triton.jit
+def pack_ragged_decode_input_ids_kernel(
+    future_input_map_ptr,  # [req_pool_size + 1, candidate_width]
+    req_pool_indices_ptr,  # [batch_size]
+    input_lengths_ptr,  # [batch_size]
+    input_ids_out_ptr,  # [sum(input_lengths)]
+    shifted_input_ids_out_ptr,  # same shape as input_ids_out, or None
+    candidate_width: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Pack each decode request's live candidate prefix into one flat row."""
+    row = tl.program_id(0)
+    width = tl.load(input_lengths_ptr + row)
+    pool_index = tl.load(req_pool_indices_ptr + row)
+
+    output_start = tl.cast(0, tl.int64)
+    for previous_row in range(row):
+        output_start += tl.load(input_lengths_ptr + previous_row).to(tl.int64)
+
+    num_blocks = tl.cdiv(width, BLOCK_SIZE)
+    for block_index in range(num_blocks):
+        offsets = block_index * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < width
+        ids = tl.load(
+            future_input_map_ptr + pool_index * candidate_width + offsets,
+            mask=mask,
+        )
+        output_ptrs = input_ids_out_ptr + output_start + offsets
+        tl.store(output_ptrs, ids, mask=mask)
+        if shifted_input_ids_out_ptr is not None:
+            tl.store(shifted_input_ids_out_ptr + output_start + offsets, ids, mask=mask)
+
+
+def pack_ragged_decode_input_ids(
+    *,
+    future_input_map: torch.Tensor,
+    req_pool_indices: torch.Tensor,
+    input_lengths: torch.Tensor,
+    input_ids_out: torch.Tensor,
+    shifted_input_ids_out: torch.Tensor | None = None,
+) -> None:
+    """Pack ragged decode candidates without materializing padded target rows.
+
+    ``future_input_map`` stays pool-indexed and rectangular for draft-state
+    ownership. Only the active prefix of each row is copied into the target
+    model's flat token layout. The caller has already validated that every
+    requested width is positive and does not exceed ``candidate_width``.
+    """
+    if req_pool_indices.ndim != 1 or input_lengths.ndim != 1:
+        raise ValueError("ragged decode packing expects 1-D request and length tensors")
+    if req_pool_indices.shape[0] != input_lengths.shape[0]:
+        raise ValueError("ragged decode packing request/length batch mismatch")
+    if shifted_input_ids_out is not None and shifted_input_ids_out.shape != input_ids_out.shape:
+        raise ValueError("ragged decode packing output buffers must have matching shape")
+
+    batch_size = input_lengths.shape[0]
+    if batch_size == 0:
+        return
+    candidate_width = future_input_map.shape[1]
+    pack_ragged_decode_input_ids_kernel[(batch_size,)](
+        future_input_map,
+        req_pool_indices,
+        input_lengths,
+        input_ids_out,
+        shifted_input_ids_out,
+        candidate_width=candidate_width,
+        BLOCK_SIZE=128,
+    )
+
+
+@triton.jit
 def dflash_prepare_decode_kernel(
     output_tokens_ptr,
     accept_lengths_ptr,
