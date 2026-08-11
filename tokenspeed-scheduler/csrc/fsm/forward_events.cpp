@@ -102,8 +102,9 @@ Decoding ScheduleDecodeEvent::decode(State&& state) {
     auto req_pool_index = std::move(state).TakeRequestPoolIndex();
     auto block_tables = std::move(state).TakeBlockTables();
     return Decoding{token_container,           page_size,
-                    std::move(req_pool_index), decode_input_tokens_,
-                    std::move(block_tables),   std::move(cache_progress_)};
+                    std::move(req_pool_index), reserve_num_tokens_in_next_schedule_event_,
+                    std::move(block_tables),   std::move(cache_progress_),
+                    next_decode_input_tokens_};
 }
 
 Decoding ScheduleDecodeEvent::operator()(PrefillDone&& state) {

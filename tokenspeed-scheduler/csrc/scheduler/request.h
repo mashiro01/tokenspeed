@@ -118,6 +118,19 @@ public:
             state_);
     }
 
+    std::int32_t NextDecodeInputTokens() const {
+        return std::visit(
+            Overloaded{
+                [](const fsm::PrefillDone& state) { return state.NextDecodeInputTokens(); },
+                [](const fsm::Decoding& state) { return state.NextDecodeInputTokens(); },
+                [this](const auto&) -> std::int32_t {
+                    throw std::logic_error(
+                        "Request::NextDecodeInputTokens: expected PrefillDone or Decoding; got " + StateName());
+                },
+            },
+            state_);
+    }
+
     std::string StateName() const {
         return std::visit(Overloaded{
                               [](const fsm::Bootstrapping&) -> std::string { return "Bootstrapping"; },

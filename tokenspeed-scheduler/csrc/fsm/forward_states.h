@@ -158,13 +158,18 @@ private:
 struct PrefillDone : public ForwardState {
     PrefillDone(TokenContainer* token_container, std::int32_t page_size, std::unique_ptr<ReqPoolIndex> req_pool_index,
                 TokenContainer::Window window, std::int32_t reserve_num_tokens_in_next_schedule_event,
-                std::vector<BlockTable> block_tables, CacheProgress cache_progress)
+                std::vector<BlockTable> block_tables, CacheProgress cache_progress,
+                std::int32_t next_decode_input_tokens = -1)
         : ForwardState(token_container, page_size, std::move(req_pool_index), std::move(block_tables),
                        std::move(cache_progress)),
           window{window},
-          reserve_num_tokens_in_next_schedule_event_{reserve_num_tokens_in_next_schedule_event} {}
+          reserve_num_tokens_in_next_schedule_event_{reserve_num_tokens_in_next_schedule_event},
+          next_decode_input_tokens_{next_decode_input_tokens >= 0 ? next_decode_input_tokens
+                                                                  : reserve_num_tokens_in_next_schedule_event} {}
 
     std::int32_t ReserveNumTokensInNextScheduleEvent() const { return reserve_num_tokens_in_next_schedule_event_; }
+    std::int32_t NextDecodeInputTokens() const { return next_decode_input_tokens_; }
+    void SetNextDecodeInputTokens(std::int32_t value) { next_decode_input_tokens_ = value; }
     std::span<const std::int32_t> PrefillInputIds() const { return token_container_->TokenSlice(window); }
     std::vector<std::int32_t> ShiftedInputIds() const { return ComputeShiftedInputIds(token_container_, window); }
     PrefillInfo CurrentPrefillInfo() const {
@@ -181,15 +186,18 @@ struct PrefillDone : public ForwardState {
 
 private:
     std::int32_t reserve_num_tokens_in_next_schedule_event_{};
+    std::int32_t next_decode_input_tokens_{};
 };
 
 struct Decoding : public ForwardState {
     Decoding(TokenContainer* token_container, std::int32_t page_size, std::unique_ptr<ReqPoolIndex> req_pool_index,
              std::int32_t reserve_num_tokens_in_next_schedule_event, std::vector<BlockTable> block_tables,
-             CacheProgress cache_progress)
+             CacheProgress cache_progress, std::int32_t next_decode_input_tokens = -1)
         : ForwardState(token_container, page_size, std::move(req_pool_index), std::move(block_tables),
                        std::move(cache_progress)),
-          reserve_num_tokens_in_next_schedule_event_{reserve_num_tokens_in_next_schedule_event} {}
+          reserve_num_tokens_in_next_schedule_event_{reserve_num_tokens_in_next_schedule_event},
+          next_decode_input_tokens_{next_decode_input_tokens >= 0 ? next_decode_input_tokens
+                                                                  : reserve_num_tokens_in_next_schedule_event} {}
 
     std::int32_t ReserveNumTokensInNextScheduleEvent() const {
         _assert(reserve_num_tokens_in_next_schedule_event_ >= 0);
@@ -198,10 +206,13 @@ struct Decoding : public ForwardState {
     void SetReserveNumTokensInNextScheduleEvent(std::int32_t value) {
         reserve_num_tokens_in_next_schedule_event_ = value;
     }
+    std::int32_t NextDecodeInputTokens() const { return next_decode_input_tokens_; }
+    void SetNextDecodeInputTokens(std::int32_t value) { next_decode_input_tokens_ = value; }
     void ExtendResultTokens(const std::vector<std::int32_t>& result_tokens) { token_container_->Extend(result_tokens); }
 
 private:
     std::int32_t reserve_num_tokens_in_next_schedule_event_{-1};
+    std::int32_t next_decode_input_tokens_{-1};
 };
 
 struct Retracted {

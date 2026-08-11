@@ -65,6 +65,7 @@ class _ForwardOp:
     request_ids = ["prefill", "decode"]
     request_pool_indices = [0, 1]
     input_lengths = [4, 1]
+    prefill_lengths = [4]
     extend_prefix_lens = [0]
 
     def num_extends(self):
@@ -78,6 +79,7 @@ class _ExecutionResult:
     output_nan_flags = None
     grammar_completion = None
     next_input_ids = None
+    next_verify_widths = None
 
     def sync(self):
         return None
@@ -112,6 +114,31 @@ def test_mixed_forward_updates_reserve_for_decode_slots_only():
     assert len(reserve_events) == 1
     assert reserve_events[0].request_id == "decode"
     assert reserve_events[0].reserve_num_tokens_in_next_schedule_event == 1
+
+
+def test_speculative_next_widths_become_scheduler_events():
+    sender = _Sender()
+    processor = OutputProcesser(
+        sender,
+        attn_tp_rank=0,
+        spec_algorithm="dspark",
+        spec_num_tokens=4,
+        metrics=_Metrics(),
+    )
+    processor.rid_to_state["prefill"] = _state([1, 2, 3, 4])
+    processor.rid_to_state["decode"] = _state([5, 6, 7], computed_length=3)
+    result = _ExecutionResult()
+    result.next_verify_widths = torch.tensor([3, 2], dtype=torch.int32)
+
+    events = processor.post_process_forward_op(_ForwardOp(), result)
+
+    width_events = [
+        event for event in events if type(event).__name__ == "UpdateDecodeInputTokens"
+    ]
+    assert [(event.request_id, event.decode_input_tokens) for event in width_events] == [
+        ("prefill", 3),
+        ("decode", 2),
+    ]
 
 
 def test_mark_abort_notify_client_flag():
@@ -196,6 +223,7 @@ def test_nan_flag_keeps_single_sanitized_token():
         request_ids = ["decode"]
         request_pool_indices = [0]
         input_lengths = [1]
+        prefill_lengths = []
         extend_prefix_lens = []
 
         def num_extends(self):
@@ -271,6 +299,7 @@ def test_log_request_stats_disabled_by_default():
             request_ids = ["d"]
             request_pool_indices = [0]
             input_lengths = [1]
+            prefill_lengths = []
             extend_prefix_lens = []
 
             def num_extends(self):
@@ -438,6 +467,7 @@ def test_log_request_stats_records_timestamps_through_forward():
             request_ids = ["d"]
             request_pool_indices = [0]
             input_lengths = [1]
+            prefill_lengths = []
             extend_prefix_lens = []
 
             def num_extends(self):

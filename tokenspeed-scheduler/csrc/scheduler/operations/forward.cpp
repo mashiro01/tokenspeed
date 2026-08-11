@@ -360,6 +360,10 @@ std::optional<fsm::SchedulePrefillEvent> Scheduler::schedulePrefill(
 std::optional<fsm::ScheduleDecodeEvent> Scheduler::scheduleDecode(PlanBuildContext& context, Request* request) {
     std::vector<BlockTable>& tables = request->BlockTablesRef();
     const std::int32_t reserve_tokens = request->ReserveNumTokensInNextScheduleEvent();
+    const std::int32_t decode_input_tokens = request->NextDecodeInputTokens();
+    if (decode_input_tokens < 0) {
+        throw std::logic_error("decode input width must be non-negative");
+    }
     fsm::CacheProgress cache_progress = request->CacheProgress();
     std::int32_t num_computed_tokens = 0;
     if (request->Is<fsm::PrefillDone>()) {
@@ -390,7 +394,11 @@ std::optional<fsm::ScheduleDecodeEvent> Scheduler::scheduleDecode(PlanBuildConte
         }
     }
 
-    return fsm::ScheduleDecodeEvent{config_.decode_input_tokens, std::move(cache_progress)};
+    return fsm::ScheduleDecodeEvent{
+        config_.decode_input_tokens,
+        std::move(cache_progress),
+        decode_input_tokens,
+    };
 }
 
 PrefillOperation Scheduler::applyEventAndBuildOperation(Request* request, fsm::SchedulePrefillFirstChunkEvent event,
@@ -412,8 +420,9 @@ PrefillOperation Scheduler::applyEventAndBuildOperation(Request* request, fsm::S
 DecodeOperation Scheduler::applyEventAndBuildOperation(Request* request, fsm::ScheduleDecodeEvent event) {
     const bool needs_bootstrap_token = request->Is<fsm::PrefillDone>() && config_.role == Role::kD;
     const std::int32_t bootstrap_token = needs_bootstrap_token ? request->LastToken() : -1;
+    const std::int32_t decode_input_tokens = request->NextDecodeInputTokens();
     DecodeOperation operation =
-        applyDecodeEvent(*request, std::move(event), config_.decode_input_tokens, coordinator_, cache_group_ids_);
+        applyDecodeEvent(*request, std::move(event), decode_input_tokens, coordinator_, cache_group_ids_);
     if (needs_bootstrap_token) {
         operation.decode_input_id = bootstrap_token;
     }

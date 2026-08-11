@@ -42,6 +42,7 @@ from tokenspeed.runtime.engine.scheduler_utils import (
     make_abort_event,
     make_extend_result_event,
     make_finish_event,
+    make_update_decode_input_tokens_event,
     make_update_reserve_tokens_event,
 )
 from tokenspeed.runtime.sampling.sampling_params import SamplingParams
@@ -651,6 +652,15 @@ class OutputProcesser:
             if model_execution_results.output_nan_flags is not None
             else None
         )
+        next_verify_widths = getattr(model_execution_results, "next_verify_widths", None)
+        if next_verify_widths is not None:
+            next_verify_widths = next_verify_widths.tolist()
+            if len(next_verify_widths) != len(forward_op.request_ids):
+                raise RuntimeError(
+                    "next_verify_widths must align with the forward batch: "
+                    f"got {len(next_verify_widths)} widths for "
+                    f"{len(forward_op.request_ids)} requests"
+                )
         # Per-slot total prefill length as the OP sees it (C++ Request::PrefillSize()).
         # After a retract the victim's generated tokens are rebased into the
         # prefill window (RebasePrefill), so this can exceed the original prompt
@@ -845,6 +855,18 @@ class OutputProcesser:
                 if is_decode_slot:
                     request_changes.append(
                         make_update_reserve_tokens_event(rid, output_length)
+                    )
+                if next_verify_widths is not None:
+                    next_width = int(next_verify_widths[i])
+                    if self.spec_num_tokens is None or not (
+                        1 <= next_width <= self.spec_num_tokens
+                    ):
+                        raise RuntimeError(
+                            "invalid next speculative verify width "
+                            f"{next_width} for request {rid}"
+                        )
+                    request_changes.append(
+                        make_update_decode_input_tokens_event(rid, next_width)
                     )
 
         self.stream_output(stream_out_rids, stream_out_states)

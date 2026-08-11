@@ -125,6 +125,15 @@ void Scheduler::handleEvent(const forward::UpdateReserveNumTokens& event) {
     }
 }
 
+void Scheduler::handleEvent(const forward::UpdateDecodeInputTokens& event) {
+    if (event.decode_input_tokens < 1) {
+        throw std::invalid_argument("UpdateDecodeInputTokens requires a positive verify width");
+    }
+    if (Request* request = findRequest(event.request_id)) {
+        request->Apply(fsm::UpdateDecodeInputTokensEvent{event.decode_input_tokens});
+    }
+}
+
 void Scheduler::handleEvent(const forward::ExtendResult& event) {
     if (auto it = pending_forward_results_.find(event.request_id);
         it != pending_forward_results_.end() && --it->second <= 0) {

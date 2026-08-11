@@ -43,12 +43,18 @@ struct UpdateReserveNumTokens {
     std::int32_t reserve_num_tokens_in_next_schedule_event;
 };
 
+struct UpdateDecodeInputTokens {
+    std::string request_id;
+    std::int32_t decode_input_tokens;
+};
+
 struct Abort {
     std::string request_id;
 };
 }  // namespace forward
 
 using ForwardEvent =
-    std::variant<forward::ExtendResult, forward::Finish, forward::Abort, forward::UpdateReserveNumTokens>;
+    std::variant<forward::ExtendResult, forward::Finish, forward::Abort, forward::UpdateReserveNumTokens,
+                 forward::UpdateDecodeInputTokens>;
 
 }  // namespace tokenspeed

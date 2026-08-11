@@ -62,6 +62,10 @@ class ModelExecutionResult:
     # Optional verify-input snapshot used by speculative diagnostics. Layout is
     # [batch, verify_width]: anchor followed by draft candidate token ids.
     spec_candidate_tokens: torch.Tensor | None = None
+    # Optional per-request width for the next speculative target forward.
+    # Kept separate from output_lengths: it is chosen from the next draft
+    # block's confidence, not from this target block's acceptance result.
+    next_verify_widths: torch.Tensor | None = None
 
     def sync(self) -> None:
         if self.copy_event is None:

@@ -96,8 +96,11 @@ private:
 struct ScheduleDecodeEvent : InvalidTransitionHandler<ScheduleDecodeEvent> {
     using InvalidTransitionHandler<ScheduleDecodeEvent>::operator();
 
-    ScheduleDecodeEvent(std::int32_t decode_input_tokens, CacheProgress cache_progress)
-        : decode_input_tokens_{decode_input_tokens}, cache_progress_{std::move(cache_progress)} {}
+    ScheduleDecodeEvent(std::int32_t reserve_num_tokens_in_next_schedule_event, CacheProgress cache_progress,
+                        std::int32_t next_decode_input_tokens = -1)
+        : reserve_num_tokens_in_next_schedule_event_{reserve_num_tokens_in_next_schedule_event},
+          next_decode_input_tokens_{next_decode_input_tokens},
+          cache_progress_{std::move(cache_progress)} {}
 
     Decoding operator()(PrefillDone&& state);
     Decoding operator()(Decoding&& state);
@@ -106,7 +109,8 @@ private:
     template <typename State>
     Decoding decode(State&& state);
 
-    std::int32_t decode_input_tokens_{};
+    std::int32_t reserve_num_tokens_in_next_schedule_event_{};
+    std::int32_t next_decode_input_tokens_{-1};
     CacheProgress cache_progress_;
 };
 
@@ -183,6 +187,28 @@ struct UpdateReserveNumTokensEvent : InvalidTransitionHandler<UpdateReserveNumTo
 
     Decoding operator()(Decoding&& state) {
         state.SetReserveNumTokensInNextScheduleEvent(value_);
+        return std::move(state);
+    }
+    Finished operator()(Finished&& state) { return std::move(state); }
+
+private:
+    std::int32_t value_{};
+};
+
+// Target verify width is distinct from cache reservation. The latter remains
+// sized for the full speculative block so a shorter ragged verify never
+// changes KV allocation or recovery semantics.
+struct UpdateDecodeInputTokensEvent : InvalidTransitionHandler<UpdateDecodeInputTokensEvent> {
+    using InvalidTransitionHandler<UpdateDecodeInputTokensEvent>::operator();
+
+    explicit UpdateDecodeInputTokensEvent(std::int32_t value) : value_{value} {}
+
+    PrefillDone operator()(PrefillDone&& state) {
+        state.SetNextDecodeInputTokens(value_);
+        return std::move(state);
+    }
+    Decoding operator()(Decoding&& state) {
+        state.SetNextDecodeInputTokens(value_);
         return std::move(state);
     }
     Finished operator()(Finished&& state) { return std::move(state); }

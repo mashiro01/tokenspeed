@@ -151,6 +151,46 @@ protected:
     }
 };
 
+class VariableDecodeWidthSuite : public SchedulerTestSuite {
+protected:
+    SchedulerConfig MakeConfig() override {
+        SchedulerConfig cfg = SchedulerTestSuite::MakeConfig();
+        cfg.decode_input_tokens = 4;
+        cfg.max_batch_size = 1;
+        return cfg;
+    }
+
+    void SendNextDecodeWidth(const std::string& request_id, std::int32_t width) {
+        ExecutionEvent event;
+        event.With(ForwardEvent{forward::UpdateDecodeInputTokens{
+            .request_id = request_id,
+            .decode_input_tokens = width,
+        }});
+        scheduler_->Advance(std::move(event));
+    }
+};
+
+TEST_F(VariableDecodeWidthSuite, UsesPerRequestWidthWithoutChangingFullBlockReservation) {
+    Submit(MakeRequestSpec("r1", /*num_pages=*/1));
+    PlanOnce();
+    SendForwardDone("r1", {42});
+
+    // The first draft block can be scheduled from the prefill result too.
+    SendNextDecodeWidth("r1", /*width=*/2);
+    const ExecutionPlan first_decode = PlanOnce();
+    const ForwardBatch* first = FindForwardBatch(first_decode);
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->request_ids, (std::vector<std::string>{"r1"}));
+    EXPECT_EQ(first->input_lengths, (std::vector<std::int32_t>{2}));
+
+    SendForwardDone("r1", {43});
+    SendNextDecodeWidth("r1", /*width=*/3);
+    const ExecutionPlan second_decode = PlanOnce();
+    const ForwardBatch* second = FindForwardBatch(second_decode);
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(second->input_lengths, (std::vector<std::int32_t>{3}));
+}
+
 TEST_F(StableCandidateOrderingSuite, ForwardOperationsTieBreakOnRequestId) {
     // TP-determinism regression: requests_ is unordered_map<string, ...> so
     // candidates are visited in per-process random order. Without the request-id

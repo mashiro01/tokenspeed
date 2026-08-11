@@ -339,6 +339,13 @@ def make_update_reserve_tokens_event(request_id: str, new_reserve_num_tokens: in
     return fe
 
 
+def make_update_decode_input_tokens_event(request_id: str, decode_input_tokens: int):
+    fe = ForwardEvent.UpdateDecodeInputTokens()
+    fe.request_id = request_id
+    fe.decode_input_tokens = decode_input_tokens
+    return fe
+
+
 def advance_forward(scheduler, forward_events: list) -> None:
     ec = ExecutionEvent()
     for fe in forward_events:

@@ -187,6 +187,11 @@ NB_MODULE(tokenspeed_scheduler_ext, m) {
         .def_rw("reserve_num_tokens_in_next_schedule_event",
                 &tokenspeed::forward::UpdateReserveNumTokens::reserve_num_tokens_in_next_schedule_event);
 
+    nb::class_<tokenspeed::forward::UpdateDecodeInputTokens>(forward_event, "UpdateDecodeInputTokens")
+        .def(nb::init<>())
+        .def_rw("request_id", &tokenspeed::forward::UpdateDecodeInputTokens::request_id)
+        .def_rw("decode_input_tokens", &tokenspeed::forward::UpdateDecodeInputTokens::decode_input_tokens);
+
     // ─── ExecutionEvent ─────────────────────────────────────────────
 
     nb::module_ pd = m.def_submodule("PD");

@@ -557,6 +557,17 @@ def send_reserve_num_tokens(scheduler: Scheduler, request_id: str, n: int = 0) -
     scheduler.advance(make_update_reserve_event(request_id, n))
 
 
+def make_update_decode_width_event(
+    request_id: str, decode_input_tokens: int
+) -> ExecutionEvent:
+    ec = ExecutionEvent()
+    ev = ForwardEvent.UpdateDecodeInputTokens()
+    ev.request_id = request_id
+    ev.decode_input_tokens = decode_input_tokens
+    ec.add_event(ev)
+    return ec
+
+
 class TestUpdateReserveNumTokens:
     def test_binding_fields_readable_and_writable(self):
         """UpdateReserveNumTokens event fields can be set and read back."""
@@ -694,6 +705,42 @@ class TestUpdateReserveNumTokens:
         first_table = next(iter(dict(op.block_tables).values()))
         assert len([page for page in first_table[r0_idx] if page >= 0]) == 2
         assert len([page for page in first_table[r1_idx] if page >= 0]) == 1
+
+
+# ---------------------------------------------------------------------------
+# UpdateDecodeInputTokens
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateDecodeInputTokens:
+    def test_binding_fields_readable_and_writable(self):
+        ev = ForwardEvent.UpdateDecodeInputTokens()
+        ev.request_id = "r0"
+        ev.decode_input_tokens = 3
+        assert ev.request_id == "r0"
+        assert ev.decode_input_tokens == 3
+
+    def test_width_applies_to_prefill_done_and_decoding(self):
+        cfg = make_config(page_size=16, num_device_pages=1024)
+        cfg.decode_input_tokens = 4
+        s = Scheduler(cfg)
+        submit(s, "r0", list(range(8)))
+        s.next_execution_plan()  # Submitted -> PrefillDone
+
+        s.advance(make_update_decode_width_event("r0", 2))
+        first_decode = s.next_execution_plan()
+        assert first_decode.forward[0].input_lengths == [2]
+
+        s.advance(make_update_decode_width_event("r0", 3))
+        second_decode = s.next_execution_plan()
+        assert second_decode.forward[0].input_lengths == [3]
+
+    def test_rejects_non_positive_width(self):
+        s = Scheduler(make_config())
+        submit(s, "r0", list(range(8)))
+        s.next_execution_plan()  # Submitted -> PrefillDone
+        with pytest.raises(Exception):
+            s.advance(make_update_decode_width_event("r0", 0))
 
 
 # ---------------------------------------------------------------------------

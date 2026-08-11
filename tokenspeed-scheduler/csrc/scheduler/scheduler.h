@@ -152,6 +152,7 @@ private:
     void handleEvent(const forward::Abort& event);
     void handleEvent(const forward::Finish& event);
     void handleEvent(const forward::UpdateReserveNumTokens& event);
+    void handleEvent(const forward::UpdateDecodeInputTokens& event);
 
     std::int32_t calculateMaxSingleRequestTokens(std::int64_t usable_parents) const;
     std::int64_t singleRequestParentsRequired(std::int32_t token_limit) const;
