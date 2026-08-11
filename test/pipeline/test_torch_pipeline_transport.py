@@ -534,3 +534,17 @@ def test_k3_dspark_synchronizer_relays_context_to_pp0_and_candidates_back(
         final.broadcast_candidates(step=step),
         local_candidates,
     )
+
+    candidate_packets.clear()
+    local_widths = torch.tensor([4, 2], dtype=torch.int32)
+    first_candidates, first_widths = first.broadcast_candidates_and_widths(
+        step=step,
+        candidates=local_candidates,
+        verify_widths=local_widths,
+    )
+    final_candidates, final_widths = final.broadcast_candidates_and_widths(step=step)
+
+    assert torch.equal(first_candidates, local_candidates)
+    assert torch.equal(first_widths, local_widths)
+    assert torch.equal(final_candidates, local_candidates)
+    assert torch.equal(final_widths, local_widths)

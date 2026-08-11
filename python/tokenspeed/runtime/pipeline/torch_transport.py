@@ -538,7 +538,9 @@ class TorchPipelineDSparkSynchronizer:
 
     _CONTEXT_FLAG = 1
     _CANDIDATES_FLAG = 2
+    _CANDIDATES_AND_WIDTHS_FLAG = 3
     _FIELD_COUNT = 1
+    _CANDIDATES_AND_WIDTHS_FIELD_COUNT = 2
 
     def __init__(
         self,
@@ -701,3 +703,79 @@ class TorchPipelineDSparkSynchronizer:
             batch_size,
             self._candidate_width,
         )
+
+    def broadcast_candidates_and_widths(
+        self,
+        *,
+        step: PipelineStepLease,
+        candidates: torch.Tensor | None = None,
+        verify_widths: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Broadcast PP0's candidate rows and next verify widths atomically.
+
+        Candidate ids and widths describe the same future target forward. They
+        must travel in one packet so a delayed control message can never pair a
+        fresh candidate block with a stale ragged layout on another PP stage.
+        """
+
+        batch_size = step.descriptor.batch_size
+        candidate_elements = batch_size * self._candidate_width
+        packet = torch.empty(
+            RESULT_HEADER_WORDS + candidate_elements + batch_size,
+            dtype=torch.int64,
+            device=self._device,
+        )
+        if self._mapping.pipeline.is_first_stage:
+            if candidates is None or verify_widths is None:
+                raise PipelineProtocolError(
+                    "PP0 must publish K3 DSpark candidates and verify widths"
+                )
+            expected_candidates = (batch_size, self._candidate_width)
+            if tuple(candidates.shape) != expected_candidates:
+                raise PipelineProtocolError(
+                    "K3 DSpark candidates must have shape "
+                    f"{expected_candidates}, got {tuple(candidates.shape)}"
+                )
+            if tuple(verify_widths.shape) != (batch_size,):
+                raise PipelineProtocolError(
+                    "K3 DSpark verify widths must have shape "
+                    f"{(batch_size,)}, got {tuple(verify_widths.shape)}"
+                )
+            packet[:RESULT_HEADER_WORDS].copy_(
+                torch.tensor(
+                    ResultWireHeader(
+                        step.descriptor,
+                        source_stage=0,
+                        field_count=self._CANDIDATES_AND_WIDTHS_FIELD_COUNT,
+                        flags=self._CANDIDATES_AND_WIDTHS_FLAG,
+                    ).pack(),
+                    dtype=torch.int64,
+                    device=self._device,
+                )
+            )
+            payload = packet[RESULT_HEADER_WORDS:]
+            payload[:candidate_elements].copy_(
+                candidates.reshape(-1).to(torch.int64)
+            )
+            payload[candidate_elements:].copy_(verify_widths.to(torch.int64))
+        work = dist.broadcast(
+            packet,
+            src=self._draft_owner,
+            group=self._device_group,
+            async_op=True,
+        )
+        self._control.wait_work(work, step, "dspark-candidate-width-broadcast")
+        ResultWireHeader.validate(
+            packet[:RESULT_HEADER_WORDS].to(device="cpu").tolist(),
+            expected_step=step.descriptor,
+            expected_source_stage=0,
+            expected_field_count=self._CANDIDATES_AND_WIDTHS_FIELD_COUNT,
+            expected_flags=self._CANDIDATES_AND_WIDTHS_FLAG,
+        )
+        payload = packet[RESULT_HEADER_WORDS:]
+        candidate_rows = payload[:candidate_elements].to(torch.int32).view(
+            batch_size,
+            self._candidate_width,
+        )
+        widths = payload[candidate_elements:].to(torch.int32)
+        return candidate_rows, widths

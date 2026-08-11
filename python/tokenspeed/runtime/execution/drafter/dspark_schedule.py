@@ -21,9 +21,164 @@ ragged target-forward plumbing consumes it.
 
 from __future__ import annotations
 
+import json
+import math
 from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
 
 import torch
+
+
+@dataclass(frozen=True)
+class DSparkScheduleProfile:
+    """Calibrated confidence and target-throughput data for DSpark.
+
+    The profile is intentionally data-only. Keeping it separate from model
+    configuration means a deployment can collect a new calibration on its
+    exact hardware and enable it without changing draft weights or runtime
+    code.
+    """
+
+    candidate_count: int
+    sts_temperatures: tuple[float, ...]
+    token_points: tuple[int, ...]
+    steps_per_second: tuple[float, ...]
+
+    def materialize(
+        self,
+        *,
+        max_tokens: int,
+        device: torch.device | str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return device-resident STS temperatures and SPS lookup table."""
+
+        temperatures = torch.tensor(
+            self.sts_temperatures, dtype=torch.float32, device=device
+        )
+        throughput = build_sps_table(
+            self.token_points,
+            self.steps_per_second,
+            max_tokens=max_tokens,
+        ).to(device=device)
+        return temperatures, throughput
+
+
+def _finite_float(value: object, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{field} must be a finite number")
+    return result
+
+
+def load_dspark_schedule_profile(
+    path: str | Path,
+    *,
+    candidate_count: int,
+) -> DSparkScheduleProfile:
+    """Load a strict, versioned DSpark scheduling profile from JSON.
+
+    Expected schema::
+
+        {
+          "version": 1,
+          "candidate_count": 7,
+          "sts_temperatures": [1.0, ...],
+          "throughput": {
+            "token_points": [1, 8, 16],
+            "steps_per_second": [62.1, 59.4, 53.0]
+          }
+        }
+
+    Rejecting a profile from another verify width is deliberate: using its
+    temperatures against a differently shaped draft block would make the
+    scheduling decision uncalibrated while appearing enabled.
+    """
+
+    if candidate_count < 1:
+        raise ValueError("candidate_count must be positive")
+    profile_path = Path(path)
+    try:
+        raw = json.loads(profile_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(
+            f"cannot read DSpark schedule profile {profile_path}: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"DSpark schedule profile {profile_path} is not valid JSON"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise ValueError("DSpark schedule profile must be a JSON object")
+    if raw.get("version") != 1:
+        raise ValueError("DSpark schedule profile version must be 1")
+    if raw.get("candidate_count") != candidate_count:
+        raise ValueError(
+            "DSpark schedule profile candidate_count does not match the "
+            f"runtime draft block: expected {candidate_count}, got "
+            f"{raw.get('candidate_count')!r}"
+        )
+
+    raw_temperatures = raw.get("sts_temperatures")
+    if (
+        not isinstance(raw_temperatures, list)
+        or len(raw_temperatures) != candidate_count
+    ):
+        raise ValueError(
+            "DSpark schedule profile sts_temperatures must have one value per "
+            "draft candidate"
+        )
+    temperatures = tuple(
+        _finite_float(value, field="sts_temperatures")
+        for value in raw_temperatures
+    )
+    if any(value <= 0.0 for value in temperatures):
+        raise ValueError("DSpark schedule profile temperatures must be positive")
+
+    throughput = raw.get("throughput")
+    if not isinstance(throughput, dict):
+        raise ValueError("DSpark schedule profile throughput must be an object")
+    raw_points = throughput.get("token_points")
+    raw_rates = throughput.get("steps_per_second")
+    if not isinstance(raw_points, list) or not isinstance(raw_rates, list):
+        raise ValueError(
+            "DSpark schedule profile throughput must contain token_points and "
+            "steps_per_second lists"
+        )
+    if not raw_points or len(raw_points) != len(raw_rates):
+        raise ValueError(
+            "DSpark schedule profile throughput lists must be non-empty and "
+            "equal length"
+        )
+    if any(
+        isinstance(point, bool) or not isinstance(point, int)
+        for point in raw_points
+    ):
+        raise ValueError("DSpark schedule profile token_points must be integers")
+    points = tuple(int(point) for point in raw_points)
+    if any(point < 0 for point in points) or any(
+        left >= right for left, right in zip(points, points[1:])
+    ):
+        raise ValueError(
+            "DSpark schedule profile token_points must be strictly increasing "
+            "non-negative integers"
+        )
+    rates = tuple(
+        _finite_float(value, field="throughput.steps_per_second")
+        for value in raw_rates
+    )
+    if any(rate <= 0.0 for rate in rates):
+        raise ValueError(
+            "DSpark schedule profile throughput rates must be positive"
+        )
+    return DSparkScheduleProfile(
+        candidate_count=candidate_count,
+        sts_temperatures=temperatures,
+        token_points=points,
+        steps_per_second=rates,
+    )
 
 
 def calibrate_confidence_logits(

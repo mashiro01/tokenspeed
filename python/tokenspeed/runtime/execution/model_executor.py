@@ -44,6 +44,10 @@ from tokenspeed.runtime.execution.context import ForwardContext
 from tokenspeed.runtime.execution.cuda_graph_wrapper import CudaGraphWrapper
 from tokenspeed.runtime.execution.draft_page_staging import DraftPageStaging
 from tokenspeed.runtime.execution.drafter import get_drafter_impl
+from tokenspeed.runtime.execution.drafter.dspark_schedule import (
+    load_dspark_schedule_profile,
+    schedule_prefix_lengths,
+)
 from tokenspeed.runtime.execution.forward_batch_info import (
     CaptureHiddenMode,
     ForwardMode,
@@ -224,6 +228,7 @@ class ModelExecutorConfig:
     spec_num_steps: int | None = None
     # spec_num_tokens == spec_num_steps + 1 for now (without Tree Attention)
     spec_num_tokens: int | None = None
+    dspark_schedule_profile: str | None = None
     overlap_schedule_depth: int = 0
     dp_sampling: bool = False
     dp_sampling_min_bs: int | None = None
@@ -337,6 +342,7 @@ class ModelExecutorConfig:
             spec_algo=server_args.speculative_algorithm,
             spec_num_steps=server_args.speculative_num_steps,
             spec_num_tokens=server_args.speculative_num_draft_tokens,
+            dspark_schedule_profile=server_args.dspark_schedule_profile,
             overlap_schedule_depth=overlap_schedule_depth,
             dp_sampling=server_args.dp_sampling,
             dp_sampling_min_bs=server_args.dp_sampling_min_bs,
@@ -525,6 +531,34 @@ class ModelExecutor:
             device=self.device,
             output_length=config.output_length,
         )
+        self._next_verify_widths: torch.Tensor | None = None
+        self._dspark_schedule_temperatures: torch.Tensor | None = None
+        self._dspark_schedule_steps_per_second: torch.Tensor | None = None
+        if config.dspark_schedule_profile is not None:
+            if not self._spec_enabled or config.spec_algo != "DSPARK":
+                raise ValueError(
+                    "DSpark schedule profiles require DSPARK speculative decoding"
+                )
+            verify_width = int(config.spec_num_tokens or 0)
+            if verify_width < 2:
+                raise ValueError(
+                    "DSpark confidence scheduling requires at least one draft token"
+                )
+            profile = load_dspark_schedule_profile(
+                config.dspark_schedule_profile,
+                candidate_count=verify_width - 1,
+            )
+            (
+                self._dspark_schedule_temperatures,
+                self._dspark_schedule_steps_per_second,
+            ) = profile.materialize(
+                max_tokens=max_bs * verify_width,
+                device=self.device,
+            )
+            logger.info(
+                "Enabled calibrated DSpark confidence scheduling from %s",
+                config.dspark_schedule_profile,
+            )
         self._compact_spec_candidate_rows_buf = None
         self._compact_spec_output_tokens_buf = None
         self._compact_spec_accept_lengths_buf = None
@@ -1040,6 +1074,48 @@ class ModelExecutor:
             multimodal_context=self._active_multimodal_context,
         )
 
+    def _schedule_next_verify_widths(
+        self, *, batch_size: int
+    ) -> torch.Tensor | None:
+        """Choose the following target verify width from calibrated confidence.
+
+        This is intentionally invoked after the draft block has been written to
+        ``future_input_map``. The target verifier still performs exact sampling;
+        a shortened block only omits low-value speculative candidates from the
+        *next* target forward.
+        """
+
+        temperatures = getattr(self, "_dspark_schedule_temperatures", None)
+        steps_per_second = getattr(self, "_dspark_schedule_steps_per_second", None)
+        if temperatures is None or steps_per_second is None:
+            return None
+        drafter = self.drafter
+        if drafter is None:
+            raise RuntimeError("DSpark schedule is enabled without a local drafter")
+        get_confidence = getattr(drafter, "get_last_confidence_logits", None)
+        if get_confidence is None:
+            raise RuntimeError("DSpark schedule requires draft confidence logits")
+        confidence_logits = get_confidence()
+        expected_candidates = int(self.config.spec_num_tokens or 0) - 1
+        if (
+            confidence_logits is None
+            or tuple(confidence_logits.shape)
+            != (batch_size, expected_candidates)
+        ):
+            shape = (
+                None if confidence_logits is None else tuple(confidence_logits.shape)
+            )
+            raise RuntimeError(
+                "DSpark confidence logits do not match this draft block: "
+                f"expected {(batch_size, expected_candidates)}, got {shape}"
+            )
+        lengths = schedule_prefix_lengths(
+            confidence_logits,
+            steps_per_second,
+            sts_temperatures=temperatures,
+        )
+        return lengths.to(torch.int32).add_(1)
+
     def _spec_verify_widths(self, forward_op, num_extends: int) -> tuple[int, ...] | None:
         """Validate the scheduler-selected target widths for this forward."""
 
@@ -1301,6 +1377,7 @@ class ModelExecutor:
         self.nan_guard.load_pipeline_flags(nan_flags)
 
         next_candidates = None
+        next_verify_widths = None
         if self.config.pipeline_stage_index == 0:
             if self.drafter is None or received_context is None:
                 raise RuntimeError("K3 DSpark PP0 is missing draft context or drafter")
@@ -1313,10 +1390,21 @@ class ModelExecutor:
                 output_tokens=output_tokens,
                 accept_lengths=accept_lengths,
             )
-        next_candidates = self.pipeline_dspark_synchronizer.broadcast_candidates(
-            step=pipeline_step,
-            candidates=next_candidates,
-        )
+            next_verify_widths = self._schedule_next_verify_widths(batch_size=ctx.bs)
+        if self._dspark_schedule_steps_per_second is None:
+            next_candidates = self.pipeline_dspark_synchronizer.broadcast_candidates(
+                step=pipeline_step,
+                candidates=next_candidates,
+            )
+        else:
+            next_candidates, next_verify_widths = (
+                self.pipeline_dspark_synchronizer.broadcast_candidates_and_widths(
+                    step=pipeline_step,
+                    candidates=next_candidates,
+                    verify_widths=next_verify_widths,
+                )
+            )
+        self._next_verify_widths = next_verify_widths
         self.runtime_states.future_input_map[
             self.input_buffers.state_write_req_pool_indices_buf[: ctx.bs]
         ] = next_candidates.to(torch.int32)
@@ -1646,6 +1734,9 @@ class ModelExecutor:
             self.runtime_states.future_input_map[
                 self.input_buffers.state_write_req_pool_indices_buf[: ctx.bs]
             ] = next_round_input_ids.to(torch.int32)
+            self._next_verify_widths = self._schedule_next_verify_widths(
+                batch_size=ctx.bs
+            )
 
         output_logprobs = logits_output.next_token_logprobs
         return output_tokens, accept_lengths, output_logprobs
@@ -2170,6 +2261,7 @@ class ModelExecutor:
             raise RuntimeError(
                 "compact speculative verify does not yet support data-parallel sampling"
             )
+        self._next_verify_widths = None
         pipeline_batch_id = (
             self._active_pipeline_step.descriptor.batch_fingerprint
             if self._active_pipeline_step is not None
@@ -2423,6 +2515,7 @@ class ModelExecutor:
             with nvtx_range("output_d2h", color="green"):
                 output_d2h_start = time.perf_counter() if timing_enabled else 0.0
                 next_input_ids = None
+                next_verify_widths = None
                 spec_candidate_tokens = None
                 if (
                     capture_next_input_ids
@@ -2480,6 +2573,10 @@ class ModelExecutor:
                     output_logprobs = output_logprobs.to("cpu", non_blocking=True)
 
                 output_nan_flags = self.nan_guard.flags_cpu
+                if self._next_verify_widths is not None:
+                    next_verify_widths = self._next_verify_widths.to(
+                        "cpu", non_blocking=True
+                    )
 
                 copy_event = torch.cuda.Event()
                 copy_event.record()
@@ -2522,6 +2619,7 @@ class ModelExecutor:
             next_input_ids=next_input_ids,
             output_nan_flags=output_nan_flags,
             spec_candidate_tokens=spec_candidate_tokens,
+            next_verify_widths=next_verify_widths,
         )
 
     def write_remote_spec_candidate_ids(

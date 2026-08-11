@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
 import torch
 
 from tokenspeed.runtime.execution.drafter.dspark_schedule import (
     build_sps_table,
     calibrate_confidence_logits,
+    load_dspark_schedule_profile,
     schedule_prefix_lengths,
     survival_probabilities,
 )
@@ -75,3 +79,60 @@ def test_build_sps_table_interpolates_between_profiled_points() -> None:
             [100.0, 100.0, 100.0, 90.0, 80.0, 70.0, 60.0, 60.0, 60.0]
         ),
     )
+
+
+def test_schedule_profile_materializes_calibrated_device_tensors(tmp_path) -> None:
+    profile_path = tmp_path / "dspark-profile.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "candidate_count": 3,
+                "sts_temperatures": [1.0, 1.5, 2.0],
+                "throughput": {
+                    "token_points": [2, 6],
+                    "steps_per_second": [100.0, 60.0],
+                },
+            }
+        )
+    )
+
+    profile = load_dspark_schedule_profile(profile_path, candidate_count=3)
+    temperatures, throughput = profile.materialize(max_tokens=8, device="cpu")
+
+    assert temperatures.tolist() == [1.0, 1.5, 2.0]
+    torch.testing.assert_close(
+        throughput,
+        torch.tensor([100.0, 100.0, 100.0, 90.0, 80.0, 70.0, 60.0, 60.0, 60.0]),
+    )
+
+
+def test_schedule_profile_rejects_another_verify_width(tmp_path) -> None:
+    profile_path = tmp_path / "wrong-width.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "candidate_count": 2,
+                "sts_temperatures": [1.0, 1.0],
+                "throughput": {
+                    "token_points": [1],
+                    "steps_per_second": [1.0],
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="candidate_count"):
+        load_dspark_schedule_profile(profile_path, candidate_count=3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_confidence_scheduler_runs_on_cuda() -> None:
+    logits = torch.full((2, 3), 10.0, device="cuda")
+    profile = torch.ones(16, device="cuda")
+
+    widths = schedule_prefix_lengths(logits, profile).to(torch.int32).add_(1)
+    torch.cuda.synchronize()
+
+    assert widths.cpu().tolist() == [4, 4]

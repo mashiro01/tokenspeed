@@ -280,6 +280,9 @@ class ServerArgs:
     speculative_num_steps: int = 3
     speculative_eagle_topk: int = 1
     speculative_num_draft_tokens: int | None = None
+    # Versioned JSON profile containing STS temperatures and target SPS samples
+    # for confidence-scheduled K3 DSpark verification. Unset keeps static width.
+    dspark_schedule_profile: str | None = None
     eagle3_layers_to_capture: str | None = None
     # Logprob support flags — all OFF by default. Enabling extends the
     # captured CUDA-graph footprint; requests asking for logprobs on a
@@ -878,6 +881,13 @@ class ServerArgs:
             raise ValueError(
                 "mixed_prefill_token_cap requires --enable-mixed-batch"
             )
+        if (
+            self.dspark_schedule_profile is not None
+            and self.speculative_algorithm != "DSPARK"
+        ):
+            raise ValueError(
+                "dspark_schedule_profile requires speculative_algorithm=DSPARK"
+            )
         if self.enable_pipeline_local_warmup:
             if self.mapping.pipeline.stage_count <= 1:
                 raise ValueError(
@@ -890,16 +900,21 @@ class ServerArgs:
         if self.mapping.pipeline.stage_count > 1:
             if self.pipeline_step_timeout_seconds <= 0:
                 raise ValueError("pipeline_step_timeout_seconds must be positive")
+            pipeline_dspark = (
+                self.speculative_algorithm == "DSPARK"
+                and self.draft_model_path_use_base
+                and self.mapping.pipeline.stage_count == 8
+            )
             incompatible = []
             if self.mapping.has_attn_dp:
                 incompatible.append("data parallelism")
             if self.mapping.has_attn_cp:
                 incompatible.append("context parallelism")
-            if self.speculative_algorithm is not None:
+            if self.speculative_algorithm is not None and not pipeline_dspark:
                 incompatible.append("speculative decoding")
             if self.disaggregation_mode != "null":
                 incompatible.append("disaggregation")
-            if not self.enforce_eager:
+            if not self.enforce_eager and not pipeline_dspark:
                 incompatible.append("decode CUDA graphs")
             if not self.disable_prefill_graph:
                 incompatible.append("prefill CUDA graphs")
@@ -1810,6 +1825,12 @@ class ServerArgs:
             type=int,
             help="The number of tokens sampled from the draft model in Speculative Decoding.",
             default=ServerArgs.speculative_num_draft_tokens,
+        )
+        parser.add_argument(
+            "--dspark-schedule-profile",
+            type=str,
+            default=ServerArgs.dspark_schedule_profile,
+            help="Versioned JSON profile for calibrated K3 DSpark confidence scheduling.",
         )
         parser.add_argument(
             "--enable-output-logprobs",

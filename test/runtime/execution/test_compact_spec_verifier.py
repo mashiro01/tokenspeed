@@ -63,6 +63,14 @@ class _RecordingVerifier:
         )
 
 
+class _ConfidenceDrafter:
+    def __init__(self, confidence_logits: torch.Tensor):
+        self.confidence_logits = confidence_logits
+
+    def get_last_confidence_logits(self) -> torch.Tensor:
+        return self.confidence_logits
+
+
 def _compact_executor() -> ModelExecutor:
     executor = ModelExecutor.__new__(ModelExecutor)
     executor.config = SimpleNamespace(spec_num_tokens=4, enable_output_logprobs=False)
@@ -127,6 +135,18 @@ def test_nan_guard_attributes_compact_target_rows_to_their_request():
     guard._or_per_request(torch.tensor([False, True, False, True]), ctx)
 
     assert guard.flags.tolist() == [1, 1]
+
+
+def test_confidence_profile_converts_draft_lengths_to_verify_widths():
+    executor = ModelExecutor.__new__(ModelExecutor)
+    executor.config = SimpleNamespace(spec_num_tokens=4)
+    executor.drafter = _ConfidenceDrafter(torch.full((2, 3), 10.0))
+    executor._dspark_schedule_temperatures = torch.ones(3)
+    executor._dspark_schedule_steps_per_second = torch.ones(16)
+
+    widths = executor._schedule_next_verify_widths(batch_size=2)
+
+    assert widths.tolist() == [4, 4]
 
 
 def test_compact_dflash_cache_selection_uses_packed_target_lengths():

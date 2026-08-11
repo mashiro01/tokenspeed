@@ -239,6 +239,46 @@ def test_pipeline_validation_allows_stage_synchronous_autotune() -> None:
         args.validate()
 
 
+def test_pipeline_validation_allows_qualified_k3_dspark_pp8() -> None:
+    with _isolated_server_args_module() as module:
+        args = _server_args(
+            module,
+            world_size=64,
+            pipeline_parallel_size=8,
+            attn_tp_size=8,
+            speculative_algorithm="DSPARK",
+            speculative_num_draft_tokens=8,
+            draft_model_path_use_base=True,
+            enforce_eager=False,
+            disable_prefill_graph=True,
+            disable_overlap_schedule=True,
+            disable_autotune=True,
+            enable_prefix_caching=False,
+            enable_kvstore=False,
+            grammar_backend="none",
+        )
+        args.resolve_parallelism()
+
+        args.validate()
+
+
+def test_cli_accepts_dspark_schedule_profile() -> None:
+    with _isolated_server_args_module() as module:
+        parser = argparse.ArgumentParser()
+        module.ServerArgs.add_cli_args(parser)
+
+        namespace = parser.parse_args(
+            [
+                "--model",
+                "test/model",
+                "--dspark-schedule-profile",
+                "/tmp/k3-dspark-profile.json",
+            ]
+        )
+
+        assert namespace.dspark_schedule_profile == "/tmp/k3-dspark-profile.json"
+
+
 def test_pipeline_validation_allows_stage_local_warmup() -> None:
     with _isolated_server_args_module() as module:
         args = _server_args(
