@@ -90,6 +90,22 @@ def _nonempty_str(value: str) -> str:
     return value
 
 
+def _positive_int_csv(value: str) -> tuple[int, ...]:
+    """Parse a non-empty comma-separated positive integer list."""
+
+    try:
+        parsed = tuple(int(item.strip()) for item in value.split(","))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected comma-separated positive integers"
+        ) from exc
+    if not parsed or any(item <= 0 for item in parsed):
+        raise argparse.ArgumentTypeError(
+            "expected one or more comma-separated positive integers"
+        )
+    return parsed
+
+
 @dataclasses.dataclass
 class ServerArgs:
     # Model and tokenizer
@@ -287,6 +303,13 @@ class ServerArgs:
     # target verification outcomes. Only rank zero writes this file.
     dspark_shadow_trace: str | None = None
     dspark_shadow_max_records: int = 50_000
+    # Synchronized pure-decode timing trace used to measure real PP target SPS.
+    # Only rank zero writes this file.
+    dspark_target_sps_trace: str | None = None
+    dspark_target_sps_max_records: int = 50_000
+    # Benchmark-only target width cycle. It is explicit and leaves normal
+    # DSpark scheduling untouched when unset.
+    dspark_benchmark_verify_widths: tuple[int, ...] | None = None
     eagle3_layers_to_capture: str | None = None
     # Logprob support flags — all OFF by default. Enabling extends the
     # captured CUDA-graph footprint; requests asking for logprobs on a
@@ -882,9 +905,7 @@ class ServerArgs:
         if self.mixed_prefill_token_cap < 0:
             raise ValueError("mixed_prefill_token_cap must be non-negative")
         if self.mixed_prefill_token_cap and not self.enable_mixed_batch:
-            raise ValueError(
-                "mixed_prefill_token_cap requires --enable-mixed-batch"
-            )
+            raise ValueError("mixed_prefill_token_cap requires --enable-mixed-batch")
         if (
             self.dspark_schedule_profile is not None
             and self.speculative_algorithm != "DSPARK"
@@ -908,15 +929,59 @@ class ServerArgs:
             )
         if self.dspark_shadow_max_records <= 0:
             raise ValueError("dspark_shadow_max_records must be positive")
+        if (
+            self.dspark_target_sps_trace is not None
+            and self.speculative_algorithm != "DSPARK"
+        ):
+            raise ValueError(
+                "dspark_target_sps_trace requires speculative_algorithm=DSPARK"
+            )
+        if self.dspark_target_sps_max_records <= 0:
+            raise ValueError("dspark_target_sps_max_records must be positive")
+        if (
+            self.dspark_target_sps_trace is not None
+            and not self.disable_overlap_schedule
+        ):
+            raise ValueError(
+                "dspark_target_sps_trace requires --disable-overlap-schedule so "
+                "each record measures one completed target forward"
+            )
+        if self.dspark_benchmark_verify_widths is not None:
+            if self.speculative_algorithm != "DSPARK":
+                raise ValueError(
+                    "dspark_benchmark_verify_widths requires speculative_algorithm=DSPARK"
+                )
+            if self.dspark_target_sps_trace is None:
+                raise ValueError(
+                    "dspark_benchmark_verify_widths requires dspark_target_sps_trace"
+                )
+            if self.dspark_schedule_profile is not None:
+                raise ValueError(
+                    "dspark_benchmark_verify_widths and dspark_schedule_profile are mutually exclusive"
+                )
+            if self.dspark_shadow_trace is not None:
+                raise ValueError(
+                    "dspark_benchmark_verify_widths and dspark_shadow_trace are mutually exclusive"
+                )
+            if self.enable_mixed_batch:
+                raise ValueError(
+                    "dspark_benchmark_verify_widths requires mixed batching to be disabled"
+                )
+            max_width = self.speculative_num_draft_tokens
+            if max_width is None or any(
+                width > max_width for width in self.dspark_benchmark_verify_widths
+            ):
+                raise ValueError(
+                    "dspark_benchmark_verify_widths must lie within "
+                    "[1, speculative_num_draft_tokens]"
+                )
         if self.enable_pipeline_local_warmup:
             if self.mapping.pipeline.stage_count <= 1:
                 raise ValueError(
                     "pipeline local warmup requires pipeline_parallel_size > 1"
                 )
             if self.pipeline_local_warmup_max_tokens <= 0:
-                raise ValueError(
-                    "pipeline_local_warmup_max_tokens must be positive"
-                )
+                raise ValueError("pipeline_local_warmup_max_tokens must be positive")
         if self.mapping.pipeline.stage_count > 1:
             if self.pipeline_step_timeout_seconds <= 0:
                 raise ValueError("pipeline_step_timeout_seconds must be positive")
@@ -1863,6 +1928,24 @@ class ServerArgs:
             type=int,
             default=ServerArgs.dspark_shadow_max_records,
             help="Maximum paired K3 DSpark confidence/acceptance rows to trace.",
+        )
+        parser.add_argument(
+            "--dspark-target-sps-trace",
+            type=str,
+            default=ServerArgs.dspark_target_sps_trace,
+            help="Write synchronized K3 DSpark target-forward timing records.",
+        )
+        parser.add_argument(
+            "--dspark-target-sps-max-records",
+            type=int,
+            default=ServerArgs.dspark_target_sps_max_records,
+            help="Maximum K3 DSpark target-forward timing rows to trace.",
+        )
+        parser.add_argument(
+            "--dspark-benchmark-verify-widths",
+            type=_positive_int_csv,
+            default=ServerArgs.dspark_benchmark_verify_widths,
+            help="Benchmark-only cyclic K3 DSpark verify widths, for example 1,2,3,4.",
         )
         parser.add_argument(
             "--enable-output-logprobs",

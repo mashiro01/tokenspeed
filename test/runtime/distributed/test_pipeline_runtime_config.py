@@ -277,12 +277,21 @@ def test_cli_accepts_dspark_schedule_profile() -> None:
                 "/tmp/k3-dspark-shadow.jsonl",
                 "--dspark-shadow-max-records",
                 "1234",
+                "--dspark-target-sps-trace",
+                "/tmp/k3-dspark-sps.jsonl",
+                "--dspark-target-sps-max-records",
+                "5678",
+                "--dspark-benchmark-verify-widths",
+                "1,2,4,8",
             ]
         )
 
         assert namespace.dspark_schedule_profile == "/tmp/k3-dspark-profile.json"
         assert namespace.dspark_shadow_trace == "/tmp/k3-dspark-shadow.jsonl"
         assert namespace.dspark_shadow_max_records == 1234
+        assert namespace.dspark_target_sps_trace == "/tmp/k3-dspark-sps.jsonl"
+        assert namespace.dspark_target_sps_max_records == 5678
+        assert namespace.dspark_benchmark_verify_widths == (1, 2, 4, 8)
 
 
 def test_dspark_profile_and_shadow_trace_are_mutually_exclusive() -> None:
@@ -295,8 +304,47 @@ def test_dspark_profile_and_shadow_trace_are_mutually_exclusive() -> None:
         )
         args.resolve_parallelism()
 
-        with pytest.raises(ValueError, match="mutually exclusive"):
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        args.validate()
+
+
+def test_dspark_benchmark_widths_require_an_isolated_target_sps_trace() -> None:
+    with _isolated_server_args_module() as module:
+        args = _server_args(
+            module,
+            speculative_algorithm="DSPARK",
+            speculative_num_draft_tokens=8,
+            dspark_benchmark_verify_widths=(1, 2, 4, 8),
+        )
+        args.resolve_parallelism()
+
+        with pytest.raises(ValueError, match="requires dspark_target_sps_trace"):
             args.validate()
+
+
+def test_dspark_benchmark_widths_validate_for_non_overlapped_pp8() -> None:
+    with _isolated_server_args_module() as module:
+        args = _server_args(
+            module,
+            world_size=64,
+            pipeline_parallel_size=8,
+            attn_tp_size=8,
+            speculative_algorithm="DSPARK",
+            speculative_num_draft_tokens=8,
+            draft_model_path_use_base=True,
+            enforce_eager=False,
+            disable_prefill_graph=True,
+            disable_overlap_schedule=True,
+            disable_autotune=True,
+            enable_prefix_caching=False,
+            enable_kvstore=False,
+            grammar_backend="none",
+            dspark_target_sps_trace="/tmp/k3-dspark-sps.jsonl",
+            dspark_benchmark_verify_widths=(1, 2, 4, 8),
+        )
+        args.resolve_parallelism()
+
+        args.validate()
 
 
 def test_pipeline_validation_allows_stage_local_warmup() -> None:

@@ -57,9 +57,7 @@ class _RecordingVerifier:
         )
         return (
             logits_output.next_token_logits[:, 0].to(torch.int32),
-            torch.ones(
-                logits_output.next_token_logits.shape[0], dtype=torch.int32
-            ),
+            torch.ones(logits_output.next_token_logits.shape[0], dtype=torch.int32),
         )
 
 
@@ -106,12 +104,8 @@ def _compact_context() -> ForwardContext:
 def test_compact_verify_groups_packed_logits_and_restores_fixed_output_layout():
     executor = _compact_executor()
     ctx = _compact_context()
-    logits = torch.tensor(
-        [[101, 0], [102, 0], [103, 0], [201, 0]], dtype=torch.float32
-    )
-    candidates = torch.tensor(
-        [[11, 12, 13, 14], [21, 22, 23, 24]], dtype=torch.int32
-    )
+    logits = torch.tensor([[101, 0], [102, 0], [103, 0], [201, 0]], dtype=torch.float32)
+    candidates = torch.tensor([[11, 12, 13, 14], [21, 22, 23, 24]], dtype=torch.int32)
     sampling_info = SamplingBatchInfo(
         req_pool_indices=torch.tensor([7, 8], dtype=torch.int64),
         vocab_mask=torch.arange(8, dtype=torch.int32).view(8, 1),
@@ -155,6 +149,36 @@ def test_confidence_profile_converts_draft_lengths_to_verify_widths():
     widths = executor._schedule_next_verify_widths(batch_size=2)
 
     assert widths.tolist() == [4, 4]
+
+
+def test_benchmark_width_cycle_emits_fixed_uniform_verify_widths():
+    executor = ModelExecutor.__new__(ModelExecutor)
+    executor.device = "cpu"
+    executor._dspark_benchmark_verify_widths = (1, 3)
+    executor._dspark_benchmark_width_index = 0
+
+    first = executor._schedule_next_verify_widths(batch_size=2)
+    second = executor._schedule_next_verify_widths(batch_size=2)
+
+    assert first.tolist() == [1, 1]
+    assert second.tolist() == [3, 3]
+
+
+def test_confidence_profile_prefers_exact_active_batch_sps_curve():
+    executor = ModelExecutor.__new__(ModelExecutor)
+    executor.config = SimpleNamespace(spec_num_tokens=2)
+    executor.device = "cpu"
+    executor.drafter = _ConfidenceDrafter(torch.tensor([[10.0]]))
+    executor._dspark_benchmark_verify_widths = None
+    executor._dspark_schedule_temperatures = torch.ones(1)
+    executor._dspark_schedule_steps_per_second = torch.ones(3)
+    executor._dspark_schedule_steps_per_second_by_batch = {
+        1: torch.tensor([1.0, 1.0, 0.1])
+    }
+
+    widths = executor._schedule_next_verify_widths(batch_size=1)
+
+    assert widths.tolist() == [1]
 
 
 def test_model_executor_forwards_synced_shadow_trace_inputs():
@@ -233,9 +257,7 @@ def test_mixed_compact_sampling_keeps_prefill_and_fixed_decode_stride():
         ),
         next_token_logprobs=None,
     )
-    candidates = torch.tensor(
-        [[11, 12, 13, 14], [21, 22, 23, 24]], dtype=torch.int32
-    )
+    candidates = torch.tensor([[11, 12, 13, 14], [21, 22, 23, 24]], dtype=torch.int32)
     sampling_info = SamplingBatchInfo(
         req_pool_indices=torch.tensor([6, 7, 8], dtype=torch.int64),
         vocab_mask=torch.arange(12, dtype=torch.int32).view(12, 1),

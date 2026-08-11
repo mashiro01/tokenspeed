@@ -75,9 +75,7 @@ def test_build_sps_table_interpolates_between_profiled_points() -> None:
 
     torch.testing.assert_close(
         table,
-        torch.tensor(
-            [100.0, 100.0, 100.0, 90.0, 80.0, 70.0, 60.0, 60.0, 60.0]
-        ),
+        torch.tensor([100.0, 100.0, 100.0, 90.0, 80.0, 70.0, 60.0, 60.0, 60.0]),
     )
 
 
@@ -104,6 +102,36 @@ def test_schedule_profile_materializes_calibrated_device_tensors(tmp_path) -> No
     torch.testing.assert_close(
         throughput,
         torch.tensor([100.0, 100.0, 100.0, 90.0, 80.0, 70.0, 60.0, 60.0, 60.0]),
+    )
+
+
+def test_schedule_profile_materializes_exact_batch_sps_tables(tmp_path) -> None:
+    profile_path = tmp_path / "batch-profile.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "candidate_count": 2,
+                "sts_temperatures": [1.0, 1.0],
+                "throughput": {
+                    "token_points": [1, 4],
+                    "steps_per_second": [100.0, 80.0],
+                    "by_batch_size": {
+                        "1": {
+                            "token_points": [1, 2],
+                            "steps_per_second": [100.0, 40.0],
+                        }
+                    },
+                },
+            }
+        )
+    )
+
+    profile = load_dspark_schedule_profile(profile_path, candidate_count=2)
+    batch_tables = profile.materialize_batch_throughput(max_tokens=4, device="cpu")
+
+    torch.testing.assert_close(
+        batch_tables[1], torch.tensor([100.0, 100.0, 40.0, 40.0, 40.0])
     )
 
 

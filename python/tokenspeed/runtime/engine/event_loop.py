@@ -1320,6 +1320,7 @@ class EventLoop:
         forward_op,
         results: ModelExecutionResult,
         on_first_token=None,
+        forward_started_at: float | None = None,
     ):
         self.request_handler.forward_ct += 1
         forward_mode = ForwardMode.from_num_extends(
@@ -1337,6 +1338,12 @@ class EventLoop:
             on_first_token=on_first_token,
         )
         self.model_executor.record_dspark_shadow_step(forward_op, results)
+        if forward_started_at is not None:
+            self.model_executor.record_dspark_target_sps_step(
+                forward_op,
+                results,
+                elapsed_ms=(time.perf_counter() - forward_started_at) * 1000.0,
+            )
 
         # Accumulate decode stats from synced results (no GPU sync)
         if forward_op.num_extends() <= 0:
@@ -1576,7 +1583,8 @@ class EventLoop:
     def _shutdown_complete(self) -> bool:
         if not self.shutdown_event.is_set():
             return False
-        if self.server_args.mapping.pipeline.stage_count > 1:
+        mapping = getattr(getattr(self, "server_args", None), "mapping", None)
+        if getattr(getattr(mapping, "pipeline", None), "stage_count", 1) > 1:
             control = self.model_executor.pipeline_control
             raise control.abort_runtime(
                 "shutdown",
@@ -1629,6 +1637,7 @@ class EventLoop:
                 sampling_params_list = self._gather_sampling_params(forward_op)
                 grammar_inputs = self._gather_grammar_state(forward_op)
                 self._mark_stats_scheduled(forward_op)
+                forward_started_at = time.perf_counter()
                 results, on_first_token = self._dispatch_forward(
                     forward_op,
                     sampling_params_list,
@@ -1641,7 +1650,10 @@ class EventLoop:
                 if results is not None:
                     request_changes.extend(
                         self._commit_forward_results(
-                            forward_op, results, on_first_token
+                            forward_op,
+                            results,
+                            on_first_token,
+                            forward_started_at=forward_started_at,
                         )
                     )
 

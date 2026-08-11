@@ -49,6 +49,7 @@ from tokenspeed.runtime.execution.drafter.dspark_schedule import (
     schedule_prefix_lengths,
 )
 from tokenspeed.runtime.execution.drafter.dspark_shadow import DSparkShadowTrace
+from tokenspeed.runtime.execution.drafter.dspark_sps_trace import DSparkTargetSPSTrace
 from tokenspeed.runtime.execution.forward_batch_info import (
     CaptureHiddenMode,
     ForwardMode,
@@ -99,6 +100,7 @@ from tokenspeed.runtime.pipeline.model_runner_stage import (
     ModelRunnerPipelineStage,
     PipelineForwardBatch,
 )
+from tokenspeed.runtime.pipeline.stage_cuda_graph import PipelineStageCudaGraphRunner
 from tokenspeed.runtime.pipeline.torch_control import (
     PipelineStepLease,
     TorchPipelineControlPlane,
@@ -109,7 +111,6 @@ from tokenspeed.runtime.pipeline.torch_transport import (
     TorchPipelineTransport,
     validate_pipeline_plan_consensus,
 )
-from tokenspeed.runtime.pipeline.stage_cuda_graph import PipelineStageCudaGraphRunner
 from tokenspeed.runtime.sampling.backends.base import SamplingBackend
 from tokenspeed.runtime.sampling.dp_sampling_config import (
     DpSamplingRuntimeConfig,
@@ -205,9 +206,7 @@ class ModelExecutorConfig:
     enable_nan_detection: bool = False
     disable_autotune: bool = False
     enable_pipeline_local_warmup: bool = False
-    pipeline_local_warmup_max_tokens: int = (
-        DEFAULT_PIPELINE_LOCAL_WARMUP_MAX_TOKENS
-    )
+    pipeline_local_warmup_max_tokens: int = DEFAULT_PIPELINE_LOCAL_WARMUP_MAX_TOKENS
 
     # ====== DISTRIBUTED =========
     data_parallel_size: int = 1
@@ -232,6 +231,9 @@ class ModelExecutorConfig:
     dspark_schedule_profile: str | None = None
     dspark_shadow_trace: str | None = None
     dspark_shadow_max_records: int = 50_000
+    dspark_target_sps_trace: str | None = None
+    dspark_target_sps_max_records: int = 50_000
+    dspark_benchmark_verify_widths: tuple[int, ...] | None = None
     overlap_schedule_depth: int = 0
     dp_sampling: bool = False
     dp_sampling_min_bs: int | None = None
@@ -348,6 +350,9 @@ class ModelExecutorConfig:
             dspark_schedule_profile=server_args.dspark_schedule_profile,
             dspark_shadow_trace=server_args.dspark_shadow_trace,
             dspark_shadow_max_records=server_args.dspark_shadow_max_records,
+            dspark_target_sps_trace=server_args.dspark_target_sps_trace,
+            dspark_target_sps_max_records=server_args.dspark_target_sps_max_records,
+            dspark_benchmark_verify_widths=server_args.dspark_benchmark_verify_widths,
             overlap_schedule_depth=overlap_schedule_depth,
             dp_sampling=server_args.dp_sampling,
             dp_sampling_min_bs=server_args.dp_sampling_min_bs,
@@ -540,7 +545,11 @@ class ModelExecutor:
         self._last_draft_confidence_logits: torch.Tensor | None = None
         self._dspark_schedule_temperatures: torch.Tensor | None = None
         self._dspark_schedule_steps_per_second: torch.Tensor | None = None
+        self._dspark_schedule_steps_per_second_by_batch: dict[int, torch.Tensor] = {}
         self._dspark_shadow_trace: DSparkShadowTrace | None = None
+        self._dspark_target_sps_trace: DSparkTargetSPSTrace | None = None
+        self._dspark_benchmark_verify_widths = config.dspark_benchmark_verify_widths
+        self._dspark_benchmark_width_index = 0
         if config.dspark_schedule_profile is not None:
             if not self._spec_enabled or config.spec_algo != "DSPARK":
                 raise ValueError(
@@ -561,6 +570,12 @@ class ModelExecutor:
             ) = profile.materialize(
                 max_tokens=max_bs * verify_width,
                 device=self.device,
+            )
+            self._dspark_schedule_steps_per_second_by_batch = (
+                profile.materialize_batch_throughput(
+                    max_tokens=max_bs * verify_width,
+                    device=self.device,
+                )
             )
             logger.info(
                 "Enabled calibrated DSpark confidence scheduling from %s",
@@ -639,6 +654,26 @@ class ModelExecutor:
             logger.info(
                 "Enabled bounded DSpark confidence shadow trace at %s",
                 config.dspark_shadow_trace,
+            )
+
+        if config.dspark_target_sps_trace is not None and config.global_rank == 0:
+            verify_width = int(config.spec_num_tokens or 0)
+            if (
+                not self._spec_enabled
+                or config.spec_algo != "DSPARK"
+                or verify_width < 1
+            ):
+                raise RuntimeError("DSpark target SPS tracing requires DSPARK decoding")
+            self._dspark_target_sps_trace = DSparkTargetSPSTrace(
+                config.dspark_target_sps_trace,
+                max_verify_width=verify_width,
+                max_records=config.dspark_target_sps_max_records,
+                pipeline_stage_count=config.pipeline_stage_count,
+                benchmark_verify_widths=config.dspark_benchmark_verify_widths,
+            )
+            logger.info(
+                "Enabled bounded DSpark target SPS trace at %s",
+                config.dspark_target_sps_trace,
             )
 
         self.grammar_runtime = create_grammar_runtime(
@@ -858,9 +893,7 @@ class ModelExecutor:
         ib = self.input_buffers
         with maybe_inference_mode():
             for num_tokens in token_sizes:
-                ctx = self.prefill_graph.make_dummy_batch(
-                    num_tokens, self.forward_step
-                )
+                ctx = self.prefill_graph.make_dummy_batch(num_tokens, self.forward_step)
                 if self.config.model_is_mrope:
                     ib.mrope_positions_buf[:, :num_tokens].copy_(
                         ib.positions_buf[:num_tokens].unsqueeze(0).expand(3, -1)
@@ -886,9 +919,7 @@ class ModelExecutor:
                         incoming=incoming,
                         req_pool_indices=ib.req_pool_indices_buf[: ctx.bs],
                         seq_lens=ib.seq_lens_buf[: ctx.bs],
-                        extend_prefix_lens=ib.extend_prefix_lens_buf[
-                            : ctx.num_extends
-                        ],
+                        extend_prefix_lens=ib.extend_prefix_lens_buf[: ctx.num_extends],
                     )
                 del output
                 if str(self.device).startswith("cuda") and torch.cuda.is_available():
@@ -980,9 +1011,7 @@ class ModelExecutor:
                         out_cache_loc=ib.out_cache_loc_buf[:num_tokens],
                         req_pool_indices=ib.req_pool_indices_buf[: ctx.bs],
                         seq_lens=ib.seq_lens_buf[: ctx.bs],
-                        extend_prefix_lens=ib.extend_prefix_lens_buf[
-                            : ctx.num_extends
-                        ],
+                        extend_prefix_lens=ib.extend_prefix_lens_buf[: ctx.num_extends],
                     ),
                     step,
                 )
@@ -1098,9 +1127,7 @@ class ModelExecutor:
             multimodal_context=self._active_multimodal_context,
         )
 
-    def _get_last_draft_confidence_logits(
-        self, *, batch_size: int
-    ) -> torch.Tensor:
+    def _get_last_draft_confidence_logits(self, *, batch_size: int) -> torch.Tensor:
         """Return the confidence block generated for the next verify window."""
 
         drafter = self.drafter
@@ -1111,10 +1138,9 @@ class ModelExecutor:
             raise RuntimeError("DSpark confidence head is unavailable")
         confidence_logits = get_confidence()
         expected_candidates = int(self.config.spec_num_tokens or 0) - 1
-        if (
-            confidence_logits is None
-            or tuple(confidence_logits.shape)
-            != (batch_size, expected_candidates)
+        if confidence_logits is None or tuple(confidence_logits.shape) != (
+            batch_size,
+            expected_candidates,
         ):
             shape = (
                 None if confidence_logits is None else tuple(confidence_logits.shape)
@@ -1125,10 +1151,8 @@ class ModelExecutor:
             )
         return confidence_logits
 
-    def _schedule_next_verify_widths(
-        self, *, batch_size: int
-    ) -> torch.Tensor | None:
-        """Choose the following target verify width from calibrated confidence.
+    def _schedule_next_verify_widths(self, *, batch_size: int) -> torch.Tensor | None:
+        """Choose the following target verify width from a benchmark or profile.
 
         This is intentionally invoked after the draft block has been written to
         ``future_input_map``. The target verifier still performs exact sampling;
@@ -1136,8 +1160,28 @@ class ModelExecutor:
         *next* target forward.
         """
 
+        benchmark_widths = getattr(self, "_dspark_benchmark_verify_widths", None)
+        if benchmark_widths is not None:
+            width_index = getattr(self, "_dspark_benchmark_width_index", 0)
+            width = benchmark_widths[width_index % len(benchmark_widths)]
+            self._dspark_benchmark_width_index = width_index + 1
+            return torch.full(
+                (batch_size,),
+                width,
+                dtype=torch.int32,
+                device=self.device,
+            )
+
         temperatures = getattr(self, "_dspark_schedule_temperatures", None)
-        steps_per_second = getattr(self, "_dspark_schedule_steps_per_second", None)
+        default_steps_per_second = getattr(
+            self, "_dspark_schedule_steps_per_second", None
+        )
+        batch_steps_per_second = getattr(
+            self, "_dspark_schedule_steps_per_second_by_batch", {}
+        )
+        steps_per_second = batch_steps_per_second.get(
+            batch_size, default_steps_per_second
+        )
         if temperatures is None or steps_per_second is None:
             return None
         confidence_logits = self._get_last_draft_confidence_logits(
@@ -1150,7 +1194,9 @@ class ModelExecutor:
         )
         return lengths.to(torch.int32).add_(1)
 
-    def _spec_verify_widths(self, forward_op, num_extends: int) -> tuple[int, ...] | None:
+    def _spec_verify_widths(
+        self, forward_op, num_extends: int
+    ) -> tuple[int, ...] | None:
         """Validate the scheduler-selected target widths for this forward."""
 
         if not self._spec_enabled:
@@ -1257,10 +1303,14 @@ class ModelExecutor:
         """
         widths = ctx.spec_verify_widths
         if widths is None:
-            raise RuntimeError("compact speculative verify is missing per-request widths")
+            raise RuntimeError(
+                "compact speculative verify is missing per-request widths"
+            )
         num_decodes = ctx.bs - ctx.num_extends
         if len(widths) != num_decodes or candidates.shape[0] != num_decodes:
-            raise RuntimeError("compact speculative candidates do not match decode rows")
+            raise RuntimeError(
+                "compact speculative candidates do not match decode rows"
+            )
         max_width = int(self.config.spec_num_tokens or 0)
         if candidates.shape[1] < max_width:
             raise RuntimeError("compact speculative candidate width is too small")
@@ -1335,9 +1385,7 @@ class ModelExecutor:
                 if group_logprobs is None:
                     logprobs_complete = False
                 else:
-                    output_logprobs[local_rows, :width] = group_logprobs.view(
-                        -1, width
-                    )
+                    output_logprobs[local_rows, :width] = group_logprobs.view(-1, width)
 
         return (
             output_tokens.flatten(),
@@ -1415,9 +1463,13 @@ class ModelExecutor:
         if self.config.pipeline_stage_index == 0:
             if self.drafter is None or received_context is None:
                 raise RuntimeError("K3 DSpark PP0 is missing draft context or drafter")
-            run_from_projected = getattr(self.drafter, "run_from_projected_context", None)
+            run_from_projected = getattr(
+                self.drafter, "run_from_projected_context", None
+            )
             if run_from_projected is None:
-                raise RuntimeError("K3 DSpark PP0 drafter lacks projected-context support")
+                raise RuntimeError(
+                    "K3 DSpark PP0 drafter lacks projected-context support"
+                )
             next_candidates = run_from_projected(
                 base_ctx=ctx,
                 projected_context=received_context,
@@ -1432,7 +1484,7 @@ class ModelExecutor:
                     self._get_last_draft_confidence_logits(batch_size=ctx.bs)
                 )
             next_verify_widths = self._schedule_next_verify_widths(batch_size=ctx.bs)
-        if self._dspark_schedule_steps_per_second is None:
+        if next_verify_widths is None:
             next_candidates = self.pipeline_dspark_synchronizer.broadcast_candidates(
                 step=pipeline_step,
                 candidates=next_candidates,
@@ -1668,9 +1720,7 @@ class ModelExecutor:
                 # for grammar's CPU-side tentative walk.
                 slice_ = self._compact_spec_candidate_rows_buf[:bs].flatten()
             elif n > 1 and ctx.forward_mode.is_decode():
-                slice_ = (
-                    self.input_buffers.input_ids_buf[: bs * n]
-                )
+                slice_ = self.input_buffers.input_ids_buf[: bs * n]
             else:
                 slice_ = None
             self.capturable_grammar.schedule_fill(input_ids_buf_slice=slice_)
@@ -1729,9 +1779,7 @@ class ModelExecutor:
         # Flag NaN per request and sanitize in place, before any sampling kernel.
         self.nan_guard.audit_logits(logits_output, ctx)
 
-        candidates = (
-            self._get_spec_candidates(ctx) if self._spec_enabled else None
-        )
+        candidates = self._get_spec_candidates(ctx) if self._spec_enabled else None
 
         if self.capturable_grammar is not None:
             self.capturable_grammar.wait_bitmask()
@@ -1840,7 +1888,9 @@ class ModelExecutor:
             device=self.device,
         )
 
-    def record_dspark_shadow_step(self, forward_op, results: ModelExecutionResult) -> None:
+    def record_dspark_shadow_step(
+        self, forward_op, results: ModelExecutionResult
+    ) -> None:
         """Append one paired confidence/acceptance shadow trace step on PP0."""
 
         trace = self._dspark_shadow_trace
@@ -1851,6 +1901,25 @@ class ModelExecutor:
             num_extends=forward_op.num_extends(),
             accept_lengths=results.output_lengths,
             next_confidence_logits=results.next_spec_confidence_logits,
+        )
+
+    def record_dspark_target_sps_step(
+        self,
+        forward_op,
+        results: ModelExecutionResult,
+        *,
+        elapsed_ms: float,
+    ) -> None:
+        """Append one PP-complete pure-decode timing record on rank zero."""
+
+        trace = self._dspark_target_sps_trace
+        if trace is None:
+            return
+        trace.record(
+            input_lengths=forward_op.input_lengths,
+            num_extends=forward_op.num_extends(),
+            accept_lengths=results.output_lengths,
+            elapsed_ms=elapsed_ms,
         )
 
     def accumulate_decode_stats(self, results: ModelExecutionResult, bs: int):
@@ -2644,10 +2713,8 @@ class ModelExecutor:
                     self._dspark_shadow_trace is not None
                     and self._last_draft_confidence_logits is not None
                 ):
-                    next_spec_confidence_logits = (
-                        self._last_draft_confidence_logits.to(
-                            "cpu", non_blocking=True
-                        )
+                    next_spec_confidence_logits = self._last_draft_confidence_logits.to(
+                        "cpu", non_blocking=True
                     )
 
                 copy_event = torch.cuda.Event()

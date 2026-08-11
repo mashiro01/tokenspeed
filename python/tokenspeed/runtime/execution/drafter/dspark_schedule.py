@@ -44,6 +44,9 @@ class DSparkScheduleProfile:
     sts_temperatures: tuple[float, ...]
     token_points: tuple[int, ...]
     steps_per_second: tuple[float, ...]
+    # Optional exact SPS curves keyed by active decode batch size. The legacy
+    # top-level curve remains the fallback for unmeasured batch sizes.
+    batch_throughput: tuple[tuple[int, tuple[int, ...], tuple[float, ...]], ...] = ()
 
     def materialize(
         self,
@@ -62,6 +65,23 @@ class DSparkScheduleProfile:
             max_tokens=max_tokens,
         ).to(device=device)
         return temperatures, throughput
+
+    def materialize_batch_throughput(
+        self,
+        *,
+        max_tokens: int,
+        device: torch.device | str,
+    ) -> dict[int, torch.Tensor]:
+        """Return optional active-batch SPS tables keyed by batch size."""
+
+        return {
+            batch_size: build_sps_table(
+                token_points,
+                steps_per_second,
+                max_tokens=max_tokens,
+            ).to(device=device)
+            for batch_size, token_points, steps_per_second in self.batch_throughput
+        }
 
 
 def _finite_float(value: object, *, field: str) -> float:
@@ -131,8 +151,7 @@ def load_dspark_schedule_profile(
             "draft candidate"
         )
     temperatures = tuple(
-        _finite_float(value, field="sts_temperatures")
-        for value in raw_temperatures
+        _finite_float(value, field="sts_temperatures") for value in raw_temperatures
     )
     if any(value <= 0.0 for value in temperatures):
         raise ValueError("DSpark schedule profile temperatures must be positive")
@@ -153,8 +172,7 @@ def load_dspark_schedule_profile(
             "equal length"
         )
     if any(
-        isinstance(point, bool) or not isinstance(point, int)
-        for point in raw_points
+        isinstance(point, bool) or not isinstance(point, int) for point in raw_points
     ):
         raise ValueError("DSpark schedule profile token_points must be integers")
     points = tuple(int(point) for point in raw_points)
@@ -166,18 +184,84 @@ def load_dspark_schedule_profile(
             "non-negative integers"
         )
     rates = tuple(
-        _finite_float(value, field="throughput.steps_per_second")
-        for value in raw_rates
+        _finite_float(value, field="throughput.steps_per_second") for value in raw_rates
     )
     if any(rate <= 0.0 for rate in rates):
+        raise ValueError("DSpark schedule profile throughput rates must be positive")
+    raw_batch_throughput = throughput.get("by_batch_size", {})
+    if not isinstance(raw_batch_throughput, dict):
         raise ValueError(
-            "DSpark schedule profile throughput rates must be positive"
+            "DSpark schedule profile throughput.by_batch_size must be an object"
         )
+    batch_throughput: list[tuple[int, tuple[int, ...], tuple[float, ...]]] = []
+    for raw_batch_size, raw_curve in raw_batch_throughput.items():
+        if isinstance(raw_batch_size, bool):
+            raise ValueError("DSpark schedule profile batch size must be positive")
+        try:
+            batch_size = int(raw_batch_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "DSpark schedule profile batch size must be a positive integer"
+            ) from exc
+        if batch_size < 1:
+            raise ValueError("DSpark schedule profile batch size must be positive")
+        if not isinstance(raw_curve, dict):
+            raise ValueError(
+                "DSpark schedule profile batch throughput entries must be objects"
+            )
+        raw_batch_points = raw_curve.get("token_points")
+        raw_batch_rates = raw_curve.get("steps_per_second")
+        if not isinstance(raw_batch_points, list) or not isinstance(
+            raw_batch_rates, list
+        ):
+            raise ValueError(
+                "DSpark schedule profile batch throughput must contain token_points "
+                "and steps_per_second lists"
+            )
+        if not raw_batch_points or len(raw_batch_points) != len(raw_batch_rates):
+            raise ValueError(
+                "DSpark schedule profile batch throughput lists must be non-empty "
+                "and equal length"
+            )
+        if any(
+            isinstance(point, bool) or not isinstance(point, int)
+            for point in raw_batch_points
+        ):
+            raise ValueError(
+                "DSpark schedule profile batch token_points must be integers"
+            )
+        batch_points = tuple(int(point) for point in raw_batch_points)
+        if any(point < 0 for point in batch_points) or any(
+            left >= right for left, right in zip(batch_points, batch_points[1:])
+        ):
+            raise ValueError(
+                "DSpark schedule profile batch token_points must be strictly "
+                "increasing non-negative integers"
+            )
+        batch_rates = tuple(
+            _finite_float(
+                value,
+                field="throughput.by_batch_size.steps_per_second",
+            )
+            for value in raw_batch_rates
+        )
+        if any(rate <= 0.0 for rate in batch_rates):
+            raise ValueError(
+                "DSpark schedule profile batch throughput rates must be positive"
+            )
+        batch_throughput.append((batch_size, batch_points, batch_rates))
+
+    if len({batch_size for batch_size, _, _ in batch_throughput}) != len(
+        batch_throughput
+    ):
+        raise ValueError("DSpark schedule profile batch sizes must be unique")
+
     return DSparkScheduleProfile(
         candidate_count=candidate_count,
         sts_temperatures=temperatures,
         token_points=points,
         steps_per_second=rates,
+        batch_throughput=tuple(sorted(batch_throughput)),
     )
 
 
@@ -277,9 +361,7 @@ def schedule_prefix_lengths(
         raise ValueError("steps_per_second must be a non-empty rank-1 tensor")
     requests, candidates = confidence_logits.shape
     if requests == 0 or candidates == 0:
-        return torch.zeros(
-            requests, dtype=torch.int64, device=confidence_logits.device
-        )
+        return torch.zeros(requests, dtype=torch.int64, device=confidence_logits.device)
 
     conditional = calibrate_confidence_logits(confidence_logits, sts_temperatures)
     survival = survival_probabilities(conditional)
@@ -296,12 +378,8 @@ def schedule_prefix_lengths(
     sorted_survival = flat_survival[sort_indices]
     sorted_requests = request_ids[sort_indices]
 
-    profile = steps_per_second.to(
-        device=confidence_logits.device, dtype=torch.float32
-    )
-    admitted_count = torch.arange(
-        total_candidates + 1, device=confidence_logits.device
-    )
+    profile = steps_per_second.to(device=confidence_logits.device, dtype=torch.float32)
+    admitted_count = torch.arange(total_candidates + 1, device=confidence_logits.device)
     expected_tokens = requests + torch.cat(
         [sorted_survival.new_zeros(1), sorted_survival.cumsum(dim=0)]
     )
@@ -321,8 +399,6 @@ def schedule_prefix_lengths(
 
     selected = torch.arange(total_candidates, device=confidence_logits.device)
     selected = selected < selected_count
-    lengths = torch.zeros(
-        requests, dtype=torch.int64, device=confidence_logits.device
-    )
+    lengths = torch.zeros(requests, dtype=torch.int64, device=confidence_logits.device)
     lengths.scatter_add_(0, sorted_requests, selected.to(torch.int64))
     return lengths

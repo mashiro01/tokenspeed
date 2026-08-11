@@ -155,6 +155,10 @@ the values accepted by the bundled `tokenspeed-smg` package.
 | `--speculative-num-draft-tokens` | Number of draft tokens. Defaults to `--speculative-num-steps + 1`. |
 | `--speculative-eagle-topk` | EAGLE top-k. Defaults to `1`. |
 | `--eagle3-layers-to-capture` | EAGLE3 layers to capture. |
+| `--dspark-schedule-profile` | Versioned K3 DSpark confidence and throughput profile. |
+| `--dspark-shadow-trace` | Bounded static-width K3 DSpark confidence/acceptance trace. |
+| `--dspark-target-sps-trace` | Bounded, synchronized K3 DSpark target-forward timing trace; requires `--disable-overlap-schedule`. |
+| `--dspark-benchmark-verify-widths` | Benchmark-only cyclic target verify widths; requires `--dspark-target-sps-trace` and cannot be combined with a profile or shadow trace. |
 
 Prefer `--speculative-config` for recipe-style launches because it keeps method,
 draft model, and token count together.
