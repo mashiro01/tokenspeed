@@ -283,6 +283,10 @@ class ServerArgs:
     # Versioned JSON profile containing STS temperatures and target SPS samples
     # for confidence-scheduled K3 DSpark verification. Unset keeps static width.
     dspark_schedule_profile: str | None = None
+    # Static full-width trace used to fit dspark_schedule_profile from exact
+    # target verification outcomes. Only rank zero writes this file.
+    dspark_shadow_trace: str | None = None
+    dspark_shadow_max_records: int = 50_000
     eagle3_layers_to_capture: str | None = None
     # Logprob support flags — all OFF by default. Enabling extends the
     # captured CUDA-graph footprint; requests asking for logprobs on a
@@ -888,6 +892,22 @@ class ServerArgs:
             raise ValueError(
                 "dspark_schedule_profile requires speculative_algorithm=DSPARK"
             )
+        if (
+            self.dspark_shadow_trace is not None
+            and self.speculative_algorithm != "DSPARK"
+        ):
+            raise ValueError(
+                "dspark_shadow_trace requires speculative_algorithm=DSPARK"
+            )
+        if (
+            self.dspark_schedule_profile is not None
+            and self.dspark_shadow_trace is not None
+        ):
+            raise ValueError(
+                "dspark_schedule_profile and dspark_shadow_trace are mutually exclusive"
+            )
+        if self.dspark_shadow_max_records <= 0:
+            raise ValueError("dspark_shadow_max_records must be positive")
         if self.enable_pipeline_local_warmup:
             if self.mapping.pipeline.stage_count <= 1:
                 raise ValueError(
@@ -1831,6 +1851,18 @@ class ServerArgs:
             type=str,
             default=ServerArgs.dspark_schedule_profile,
             help="Versioned JSON profile for calibrated K3 DSpark confidence scheduling.",
+        )
+        parser.add_argument(
+            "--dspark-shadow-trace",
+            type=str,
+            default=ServerArgs.dspark_shadow_trace,
+            help="Write a bounded static-width K3 DSpark confidence trace for calibration.",
+        )
+        parser.add_argument(
+            "--dspark-shadow-max-records",
+            type=int,
+            default=ServerArgs.dspark_shadow_max_records,
+            help="Maximum paired K3 DSpark confidence/acceptance rows to trace.",
         )
         parser.add_argument(
             "--enable-output-logprobs",

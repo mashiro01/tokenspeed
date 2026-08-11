@@ -71,6 +71,14 @@ class _ConfidenceDrafter:
         return self.confidence_logits
 
 
+class _RecordingShadowTrace:
+    def __init__(self):
+        self.calls = []
+
+    def record(self, **kwargs):
+        self.calls.append(kwargs)
+
+
 def _compact_executor() -> ModelExecutor:
     executor = ModelExecutor.__new__(ModelExecutor)
     executor.config = SimpleNamespace(spec_num_tokens=4, enable_output_logprobs=False)
@@ -147,6 +155,31 @@ def test_confidence_profile_converts_draft_lengths_to_verify_widths():
     widths = executor._schedule_next_verify_widths(batch_size=2)
 
     assert widths.tolist() == [4, 4]
+
+
+def test_model_executor_forwards_synced_shadow_trace_inputs():
+    executor = ModelExecutor.__new__(ModelExecutor)
+    trace = _RecordingShadowTrace()
+    executor._dspark_shadow_trace = trace
+    forward_op = SimpleNamespace(
+        request_ids=["prefill", "decode"],
+        num_extends=lambda: 1,
+    )
+    results = SimpleNamespace(
+        output_lengths=torch.tensor([1, 3], dtype=torch.int32),
+        next_spec_confidence_logits=torch.tensor([[0.1, 0.2], [0.3, 0.4]]),
+    )
+
+    executor.record_dspark_shadow_step(forward_op, results)
+
+    assert len(trace.calls) == 1
+    call = trace.calls[0]
+    assert call["request_ids"] == ["prefill", "decode"]
+    assert call["num_extends"] == 1
+    assert torch.equal(call["accept_lengths"], results.output_lengths)
+    assert torch.equal(
+        call["next_confidence_logits"], results.next_spec_confidence_logits
+    )
 
 
 def test_compact_dflash_cache_selection_uses_packed_target_lengths():

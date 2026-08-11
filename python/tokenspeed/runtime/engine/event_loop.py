@@ -1336,6 +1336,7 @@ class EventLoop:
             is_prefill_instance=is_prefill_instance,
             on_first_token=on_first_token,
         )
+        self.model_executor.record_dspark_shadow_step(forward_op, results)
 
         # Accumulate decode stats from synced results (no GPU sync)
         if forward_op.num_extends() <= 0:

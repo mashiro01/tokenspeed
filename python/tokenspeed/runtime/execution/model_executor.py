@@ -48,6 +48,7 @@ from tokenspeed.runtime.execution.drafter.dspark_schedule import (
     load_dspark_schedule_profile,
     schedule_prefix_lengths,
 )
+from tokenspeed.runtime.execution.drafter.dspark_shadow import DSparkShadowTrace
 from tokenspeed.runtime.execution.forward_batch_info import (
     CaptureHiddenMode,
     ForwardMode,
@@ -229,6 +230,8 @@ class ModelExecutorConfig:
     # spec_num_tokens == spec_num_steps + 1 for now (without Tree Attention)
     spec_num_tokens: int | None = None
     dspark_schedule_profile: str | None = None
+    dspark_shadow_trace: str | None = None
+    dspark_shadow_max_records: int = 50_000
     overlap_schedule_depth: int = 0
     dp_sampling: bool = False
     dp_sampling_min_bs: int | None = None
@@ -343,6 +346,8 @@ class ModelExecutorConfig:
             spec_num_steps=server_args.speculative_num_steps,
             spec_num_tokens=server_args.speculative_num_draft_tokens,
             dspark_schedule_profile=server_args.dspark_schedule_profile,
+            dspark_shadow_trace=server_args.dspark_shadow_trace,
+            dspark_shadow_max_records=server_args.dspark_shadow_max_records,
             overlap_schedule_depth=overlap_schedule_depth,
             dp_sampling=server_args.dp_sampling,
             dp_sampling_min_bs=server_args.dp_sampling_min_bs,
@@ -532,8 +537,10 @@ class ModelExecutor:
             output_length=config.output_length,
         )
         self._next_verify_widths: torch.Tensor | None = None
+        self._last_draft_confidence_logits: torch.Tensor | None = None
         self._dspark_schedule_temperatures: torch.Tensor | None = None
         self._dspark_schedule_steps_per_second: torch.Tensor | None = None
+        self._dspark_shadow_trace: DSparkShadowTrace | None = None
         if config.dspark_schedule_profile is not None:
             if not self._spec_enabled or config.spec_algo != "DSPARK":
                 raise ValueError(
@@ -616,6 +623,23 @@ class ModelExecutor:
                 )
         else:
             self.drafter = None
+
+        if config.dspark_shadow_trace is not None and config.global_rank == 0:
+            if self.drafter is None:
+                raise RuntimeError("DSpark shadow tracing requires a local drafter")
+            if getattr(self.drafter, "confidence_head", None) is None:
+                raise RuntimeError(
+                    "DSpark shadow tracing requires a draft confidence head"
+                )
+            self._dspark_shadow_trace = DSparkShadowTrace(
+                config.dspark_shadow_trace,
+                candidate_count=int(config.spec_num_tokens or 0) - 1,
+                max_records=config.dspark_shadow_max_records,
+            )
+            logger.info(
+                "Enabled bounded DSpark confidence shadow trace at %s",
+                config.dspark_shadow_trace,
+            )
 
         self.grammar_runtime = create_grammar_runtime(
             grammar_backend=config.grammar_backend,
@@ -1074,6 +1098,33 @@ class ModelExecutor:
             multimodal_context=self._active_multimodal_context,
         )
 
+    def _get_last_draft_confidence_logits(
+        self, *, batch_size: int
+    ) -> torch.Tensor:
+        """Return the confidence block generated for the next verify window."""
+
+        drafter = self.drafter
+        if drafter is None:
+            raise RuntimeError("DSpark confidence requires a local drafter")
+        get_confidence = getattr(drafter, "get_last_confidence_logits", None)
+        if get_confidence is None:
+            raise RuntimeError("DSpark confidence head is unavailable")
+        confidence_logits = get_confidence()
+        expected_candidates = int(self.config.spec_num_tokens or 0) - 1
+        if (
+            confidence_logits is None
+            or tuple(confidence_logits.shape)
+            != (batch_size, expected_candidates)
+        ):
+            shape = (
+                None if confidence_logits is None else tuple(confidence_logits.shape)
+            )
+            raise RuntimeError(
+                "DSpark confidence logits do not match this draft block: "
+                f"expected {(batch_size, expected_candidates)}, got {shape}"
+            )
+        return confidence_logits
+
     def _schedule_next_verify_widths(
         self, *, batch_size: int
     ) -> torch.Tensor | None:
@@ -1089,26 +1140,9 @@ class ModelExecutor:
         steps_per_second = getattr(self, "_dspark_schedule_steps_per_second", None)
         if temperatures is None or steps_per_second is None:
             return None
-        drafter = self.drafter
-        if drafter is None:
-            raise RuntimeError("DSpark schedule is enabled without a local drafter")
-        get_confidence = getattr(drafter, "get_last_confidence_logits", None)
-        if get_confidence is None:
-            raise RuntimeError("DSpark schedule requires draft confidence logits")
-        confidence_logits = get_confidence()
-        expected_candidates = int(self.config.spec_num_tokens or 0) - 1
-        if (
-            confidence_logits is None
-            or tuple(confidence_logits.shape)
-            != (batch_size, expected_candidates)
-        ):
-            shape = (
-                None if confidence_logits is None else tuple(confidence_logits.shape)
-            )
-            raise RuntimeError(
-                "DSpark confidence logits do not match this draft block: "
-                f"expected {(batch_size, expected_candidates)}, got {shape}"
-            )
+        confidence_logits = self._get_last_draft_confidence_logits(
+            batch_size=batch_size
+        )
         lengths = schedule_prefix_lengths(
             confidence_logits,
             steps_per_second,
@@ -1390,6 +1424,13 @@ class ModelExecutor:
                 output_tokens=output_tokens,
                 accept_lengths=accept_lengths,
             )
+            if (
+                self._dspark_schedule_steps_per_second is not None
+                or self._dspark_shadow_trace is not None
+            ):
+                self._last_draft_confidence_logits = (
+                    self._get_last_draft_confidence_logits(batch_size=ctx.bs)
+                )
             next_verify_widths = self._schedule_next_verify_widths(batch_size=ctx.bs)
         if self._dspark_schedule_steps_per_second is None:
             next_candidates = self.pipeline_dspark_synchronizer.broadcast_candidates(
@@ -1734,6 +1775,13 @@ class ModelExecutor:
             self.runtime_states.future_input_map[
                 self.input_buffers.state_write_req_pool_indices_buf[: ctx.bs]
             ] = next_round_input_ids.to(torch.int32)
+            if (
+                self._dspark_schedule_steps_per_second is not None
+                or self._dspark_shadow_trace is not None
+            ):
+                self._last_draft_confidence_logits = (
+                    self._get_last_draft_confidence_logits(batch_size=ctx.bs)
+                )
             self._next_verify_widths = self._schedule_next_verify_widths(
                 batch_size=ctx.bs
             )
@@ -1790,6 +1838,19 @@ class ModelExecutor:
             is_all_greedy=all(p.top_k <= 1 for p in sampling_params_list),
             vocab_size=self.runtime_states.vocab_size,
             device=self.device,
+        )
+
+    def record_dspark_shadow_step(self, forward_op, results: ModelExecutionResult) -> None:
+        """Append one paired confidence/acceptance shadow trace step on PP0."""
+
+        trace = self._dspark_shadow_trace
+        if trace is None or results.output_lengths is None:
+            return
+        trace.record(
+            request_ids=forward_op.request_ids,
+            num_extends=forward_op.num_extends(),
+            accept_lengths=results.output_lengths,
+            next_confidence_logits=results.next_spec_confidence_logits,
         )
 
     def accumulate_decode_stats(self, results: ModelExecutionResult, bs: int):
@@ -2262,6 +2323,7 @@ class ModelExecutor:
                 "compact speculative verify does not yet support data-parallel sampling"
             )
         self._next_verify_widths = None
+        self._last_draft_confidence_logits = None
         pipeline_batch_id = (
             self._active_pipeline_step.descriptor.batch_fingerprint
             if self._active_pipeline_step is not None
@@ -2516,6 +2578,7 @@ class ModelExecutor:
                 output_d2h_start = time.perf_counter() if timing_enabled else 0.0
                 next_input_ids = None
                 next_verify_widths = None
+                next_spec_confidence_logits = None
                 spec_candidate_tokens = None
                 if (
                     capture_next_input_ids
@@ -2577,6 +2640,15 @@ class ModelExecutor:
                     next_verify_widths = self._next_verify_widths.to(
                         "cpu", non_blocking=True
                     )
+                if (
+                    self._dspark_shadow_trace is not None
+                    and self._last_draft_confidence_logits is not None
+                ):
+                    next_spec_confidence_logits = (
+                        self._last_draft_confidence_logits.to(
+                            "cpu", non_blocking=True
+                        )
+                    )
 
                 copy_event = torch.cuda.Event()
                 copy_event.record()
@@ -2620,6 +2692,7 @@ class ModelExecutor:
             output_nan_flags=output_nan_flags,
             spec_candidate_tokens=spec_candidate_tokens,
             next_verify_widths=next_verify_widths,
+            next_spec_confidence_logits=next_spec_confidence_logits,
         )
 
     def write_remote_spec_candidate_ids(

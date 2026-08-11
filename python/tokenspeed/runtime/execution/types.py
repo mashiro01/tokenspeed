@@ -66,6 +66,9 @@ class ModelExecutionResult:
     # Kept separate from output_lengths: it is chosen from the next draft
     # block's confidence, not from this target block's acceptance result.
     next_verify_widths: torch.Tensor | None = None
+    # Optional [batch, draft_candidates] confidence logits for the *next*
+    # DSpark verify block. Produced only by bounded shadow calibration mode.
+    next_spec_confidence_logits: torch.Tensor | None = None
 
     def sync(self) -> None:
         if self.copy_event is None:

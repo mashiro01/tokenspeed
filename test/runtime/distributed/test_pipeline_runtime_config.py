@@ -273,10 +273,30 @@ def test_cli_accepts_dspark_schedule_profile() -> None:
                 "test/model",
                 "--dspark-schedule-profile",
                 "/tmp/k3-dspark-profile.json",
+                "--dspark-shadow-trace",
+                "/tmp/k3-dspark-shadow.jsonl",
+                "--dspark-shadow-max-records",
+                "1234",
             ]
         )
 
         assert namespace.dspark_schedule_profile == "/tmp/k3-dspark-profile.json"
+        assert namespace.dspark_shadow_trace == "/tmp/k3-dspark-shadow.jsonl"
+        assert namespace.dspark_shadow_max_records == 1234
+
+
+def test_dspark_profile_and_shadow_trace_are_mutually_exclusive() -> None:
+    with _isolated_server_args_module() as module:
+        args = _server_args(
+            module,
+            speculative_algorithm="DSPARK",
+            dspark_schedule_profile="/tmp/profile.json",
+            dspark_shadow_trace="/tmp/shadow.jsonl",
+        )
+        args.resolve_parallelism()
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            args.validate()
 
 
 def test_pipeline_validation_allows_stage_local_warmup() -> None:
