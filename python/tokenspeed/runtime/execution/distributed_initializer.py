@@ -33,8 +33,10 @@ from tokenspeed.runtime.pipeline.groups import (
     PIPELINE_FAULT_DOWNSTREAM_GROUP_ROLE,
     PIPELINE_FAULT_GROUP_TIMEOUT_SECONDS,
     PIPELINE_FAULT_UPSTREAM_GROUP_ROLE,
+    PIPELINE_P2P_GROUP_ROLE,
     PIPELINE_RESULT_GROUP_ROLE,
     PIPELINE_STEP_META_GROUP_ROLE,
+    build_pipeline_p2p_groups,
 )
 from tokenspeed.runtime.utils import (
     get_available_gpu_memory,
@@ -184,6 +186,17 @@ class DistributedInitializer:
         if config.mapping.pipeline.stage_count > 1:
             pg_manager.init_process_group(config.mapping.pipeline.stage_group)
             pg_manager.init_process_group(config.mapping.pipeline.pipeline_group)
+            # A full-lane NCCL P2P group deadlocks a sequential pipeline: an
+            # intermediate stage cannot post its downstream send until its
+            # upstream receive and forward complete.
+            pg_manager.init_explicit_process_groups(
+                build_pipeline_p2p_groups(
+                    stage_count=config.mapping.pipeline.stage_count,
+                    stage_world_size=config.mapping.pipeline.stage_world_size,
+                ),
+                backend="nccl",
+                role=PIPELINE_P2P_GROUP_ROLE,
+            )
             pg_manager.init_process_group(
                 config.mapping.pipeline.pipeline_group,
                 backend="nccl",

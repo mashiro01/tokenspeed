@@ -11,6 +11,7 @@ from tokenspeed.runtime.pipeline.contracts import (
     PipelineProtocolError,
     PipelineStepDescriptor,
 )
+from tokenspeed.runtime.pipeline.groups import build_pipeline_p2p_groups
 from tokenspeed.runtime.pipeline.torch_control import PipelineStepLease
 from tokenspeed.runtime.pipeline.torch_transport import (
     TorchPipelineDSparkSynchronizer,
@@ -47,6 +48,41 @@ class _SubmissionControl:
         if phase.startswith("activation-payload-send"):
             assert self.payload_submissions == [2]
         work.wait()
+
+
+def test_pp8_p2p_groups_are_pairwise_and_deterministic():
+    groups = build_pipeline_p2p_groups(stage_count=8, stage_world_size=8)
+
+    assert len(groups) == 64
+    assert groups[:3] == ((0, 8), (1, 9), (2, 10))
+    assert groups[56:59] == ((0, 56), (1, 57), (2, 58))
+    assert all(len(group) == 2 for group in groups)
+    assert len(set(groups)) == len(groups)
+
+
+def test_dspark_intermediate_stage_does_not_require_endpoint_group(monkeypatch):
+    def get_process_group(backend, group, **kwargs):
+        role = kwargs.get("role")
+        if backend == "nccl" and group == (0, 2) and role == "pipeline-p2p":
+            pytest.fail("intermediate stage queried the endpoint-only group")
+        return backend, group, role
+
+    monkeypatch.setattr(pg_manager, "get_process_group", get_process_group)
+
+    TorchPipelineDSparkSynchronizer(
+        Mapping(
+            rank=1,
+            world_size=3,
+            pipeline_parallel_size=3,
+            attn_tp_size=1,
+            dense_tp_size=1,
+            moe_tp_size=1,
+        ),
+        device="cpu",
+        control=_Control(),
+        context_hidden_size=4,
+        candidate_width=2,
+    )
 
 
 def _step(batch_size: int = 2) -> PipelineStepLease:

@@ -144,5 +144,29 @@ class ProcessGroupManager:
                 if g == group:
                     self.register_process_group(backend, g, pg, role=role)
 
+    def init_explicit_process_groups(
+        self,
+        groups: tuple[Group, ...],
+        *,
+        backend: str,
+        role: str,
+    ) -> None:
+        """Create overlapping groups in one deterministic global order."""
+
+        rank = dist.get_rank()
+        for group in groups:
+            process_group = dist.new_group(
+                group,
+                backend=backend,
+                timeout=self._pg_timeout,
+            )
+            if rank in group:
+                self.register_process_group(
+                    backend,
+                    group,
+                    process_group,
+                    role=role,
+                )
+
 
 process_group_manager = ProcessGroupManager()

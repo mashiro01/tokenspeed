@@ -41,7 +41,10 @@ from tokenspeed.runtime.pipeline.contracts import (
     PipelineProtocolError,
     StageActivation,
 )
-from tokenspeed.runtime.pipeline.groups import PIPELINE_RESULT_GROUP_ROLE
+from tokenspeed.runtime.pipeline.groups import (
+    PIPELINE_P2P_GROUP_ROLE,
+    PIPELINE_RESULT_GROUP_ROLE,
+)
 from tokenspeed.runtime.pipeline.torch_control import (
     PipelineStepLease,
     TorchPipelineControlPlane,
@@ -130,7 +133,26 @@ class TorchPipelineTransport:
         self._receive_header = torch.empty(ACTIVATION_HEADER_WORDS, dtype=torch.int64)
         group = mapping.pipeline.pipeline_group
         self._cpu_group = pg_manager.get_process_group("gloo", group)
-        self._device_group = pg_manager.get_process_group("nccl", group)
+        previous_rank = mapping.pipeline.prev_rank
+        next_rank = mapping.pipeline.next_rank
+        self._receive_device_group = (
+            pg_manager.get_process_group(
+                "nccl",
+                (previous_rank, mapping.rank),
+                role=PIPELINE_P2P_GROUP_ROLE,
+            )
+            if previous_rank is not None
+            else None
+        )
+        self._send_device_group = (
+            pg_manager.get_process_group(
+                "nccl",
+                (mapping.rank, next_rank),
+                role=PIPELINE_P2P_GROUP_ROLE,
+            )
+            if next_rank is not None
+            else None
+        )
 
     def send(
         self,
@@ -188,7 +210,7 @@ class TorchPipelineTransport:
                         dist.isend,
                         payload,
                         destination,
-                        group=self._device_group,
+                        group=self._send_device_group,
                     )
                     for payload, _field_id in payloads
                 ]
@@ -286,7 +308,7 @@ class TorchPipelineTransport:
                         dist.irecv,
                         value,
                         source,
-                        group=self._device_group,
+                        group=self._receive_device_group,
                     )
                     for value, _field in payloads
                 ]
@@ -569,6 +591,15 @@ class TorchPipelineDSparkSynchronizer:
         )
         self._draft_owner = group[0]
         self._verify_owner = group[-1]
+        self._context_device_group = (
+            pg_manager.get_process_group(
+                "nccl",
+                (self._draft_owner, self._verify_owner),
+                role=PIPELINE_P2P_GROUP_ROLE,
+            )
+            if mapping.pipeline.is_first_stage or mapping.pipeline.is_last_stage
+            else None
+        )
 
     def relay_context(
         self,
@@ -614,7 +645,7 @@ class TorchPipelineDSparkSynchronizer:
             payload_work = dist.isend(
                 context.contiguous(),
                 dst=self._draft_owner,
-                group=self._device_group,
+                group=self._context_device_group,
             )
             self._control.wait_work(payload_work, step, "dspark-context-send")
             return None
@@ -644,7 +675,7 @@ class TorchPipelineDSparkSynchronizer:
         payload_work = dist.irecv(
             received,
             src=self._verify_owner,
-            group=self._device_group,
+            group=self._context_device_group,
         )
         self._control.wait_work(payload_work, step, "dspark-context-receive")
         return received
