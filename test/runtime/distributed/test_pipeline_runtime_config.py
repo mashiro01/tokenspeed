@@ -239,7 +239,7 @@ def test_pipeline_validation_allows_stage_synchronous_autotune() -> None:
         args.validate()
 
 
-def test_pipeline_validation_allows_qualified_k3_dspark_pp8() -> None:
+def test_pipeline_validation_allows_external_k3_dspark_pp8() -> None:
     with _isolated_server_args_module() as module:
         args = _server_args(
             module,
@@ -247,8 +247,9 @@ def test_pipeline_validation_allows_qualified_k3_dspark_pp8() -> None:
             pipeline_parallel_size=8,
             attn_tp_size=8,
             speculative_algorithm="DSPARK",
+            speculative_draft_model_path="/draft/Kimi-K3-DSpark",
             speculative_num_draft_tokens=8,
-            draft_model_path_use_base=True,
+            draft_model_path_use_base=False,
             enforce_eager=False,
             disable_prefill_graph=True,
             disable_overlap_schedule=True,
@@ -330,8 +331,9 @@ def test_dspark_benchmark_widths_validate_for_non_overlapped_pp8() -> None:
             pipeline_parallel_size=8,
             attn_tp_size=8,
             speculative_algorithm="DSPARK",
+            speculative_draft_model_path="/draft/Kimi-K3-DSpark",
             speculative_num_draft_tokens=8,
-            draft_model_path_use_base=True,
+            draft_model_path_use_base=False,
             enforce_eager=False,
             disable_prefill_graph=True,
             disable_overlap_schedule=True,

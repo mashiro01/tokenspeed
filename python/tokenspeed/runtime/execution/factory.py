@@ -135,6 +135,35 @@ def _is_k3_dspark_pipeline(
     )
 
 
+def _require_k3_dspark_pipeline_pair(
+    server_args: ServerArgs,
+    model_config: ModelConfig,
+    draft_model_config: ModelConfig | None,
+) -> bool:
+    """Validate a PP DSpark launch before allocating any model runner."""
+
+    if (
+        server_args.speculative_algorithm != "DSPARK"
+        or server_args.mapping.pipeline.stage_count <= 1
+    ):
+        return False
+    if _is_k3_dspark_pipeline(server_args, model_config, draft_model_config):
+        return True
+
+    target_architecture = resolve_architecture(model_config.hf_config)
+    draft_architecture = (
+        None
+        if draft_model_config is None
+        else resolve_architecture(draft_model_config.hf_config)
+    )
+    raise ValueError(
+        "K3 pipeline DSPARK requires target architecture "
+        "KimiK3ForConditionalGeneration and an external draft architecture "
+        "K3DSparkModel; got "
+        f"target={target_architecture!r}, draft={draft_architecture!r}."
+    )
+
+
 def _device_for_rank(server_args: ServerArgs, gpu_id: int) -> torch.device:
     device = torch.device(server_args.device)
     if device.type == "cuda" and device.index is None:
@@ -323,6 +352,11 @@ def create_model_runner(
     global_rank: int,
 ):
     """Create the main model runner and optional draft model runner."""
+    k3_dspark_pipeline = _require_k3_dspark_pipeline_pair(
+        server_args,
+        model_config,
+        draft_model_config,
+    )
     model_runner = ModelRunner(
         model_config=model_config,
         gpu_id=gpu_id,
@@ -330,11 +364,6 @@ def create_model_runner(
         global_rank=global_rank,
     )
 
-    k3_dspark_pipeline = _is_k3_dspark_pipeline(
-        server_args,
-        model_config,
-        draft_model_config,
-    )
     draft_model_runner = None
     if draft_model_config is not None and (
         not k3_dspark_pipeline or server_args.mapping.pipeline.is_first_stage

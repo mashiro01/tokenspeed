@@ -985,9 +985,12 @@ class ServerArgs:
         if self.mapping.pipeline.stage_count > 1:
             if self.pipeline_step_timeout_seconds <= 0:
                 raise ValueError("pipeline_step_timeout_seconds must be positive")
+            # The draft checkpoint is parsed after ServerArgs validation, so
+            # this is only a PP8 DSpark candidate. The factory validates the
+            # concrete K3 target/draft architecture pair before allocating a
+            # draft runner.
             pipeline_dspark = (
                 self.speculative_algorithm == "DSPARK"
-                and self.draft_model_path_use_base
                 and self.mapping.pipeline.stage_count == 8
             )
             incompatible = []

@@ -77,6 +77,34 @@ def test_shares_target_embed_head_flags():
     assert not BaseDrafter.shares_target_embed_head
 
 
+def test_pipeline_dspark_rejects_non_dspark_draft_before_runner_allocation():
+    server_args = SimpleNamespace(
+        speculative_algorithm="DSPARK",
+        mapping=SimpleNamespace(
+            pipeline=SimpleNamespace(stage_count=8, is_first_stage=True)
+        ),
+        eagle3_layers_to_capture=None,
+    )
+    target_config = SimpleNamespace(
+        hf_config=SimpleNamespace(architectures=["KimiK3ForConditionalGeneration"])
+    )
+    non_dspark_draft_config = SimpleNamespace(
+        hf_config=SimpleNamespace(architectures=["KimiK3ForConditionalGeneration"])
+    )
+
+    with mock.patch.object(factory, "ModelRunner") as model_runner:
+        with pytest.raises(ValueError, match="K3DSparkModel"):
+            factory.create_model_runner(
+                server_args,
+                target_config,
+                non_dspark_draft_config,
+                gpu_id=0,
+                global_rank=0,
+            )
+
+    model_runner.assert_not_called()
+
+
 def test_wire_eagle3_shares_embed_head_and_installs_capture_ids():
     target, draft = mock.MagicMock(), mock.MagicMock()
     target.model.get_embed_and_head.return_value = ("EMBED", "HEAD")
