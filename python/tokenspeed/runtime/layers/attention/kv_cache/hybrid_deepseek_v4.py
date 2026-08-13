@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 import torch
 
+from tokenspeed.runtime.distributed.dcp import shard_dcp_logical_rows
 from tokenspeed.runtime.layers.attention.deepseek_v4_ops import (
     deepseek_v4_compressed_slot_mapping,
 )
@@ -124,13 +125,28 @@ def _group_slot_mapping_from_raw(
     rows_per_page: int,
     entry_stride_tokens: int = 1,
     base_offsets: torch.Tensor | None = None,
+    dcp_world_size: int = 1,
+    dcp_rank: int = 0,
+    cp_kv_cache_interleave_size: int = 1,
 ) -> torch.Tensor:
     if rows_per_page <= 0:
         raise ValueError(f"rows_per_page must be > 0, got {rows_per_page}")
     if entry_stride_tokens <= 0:
         raise ValueError(f"entry_stride_tokens must be > 0, got {entry_stride_tokens}")
+    if dcp_world_size <= 0 or not 0 <= dcp_rank < dcp_world_size:
+        raise ValueError("invalid DCP world size or rank")
+    if cp_kv_cache_interleave_size <= 0:
+        raise ValueError("cp_kv_cache_interleave_size must be positive")
     pos_i64 = positions.to(torch.int64)
     logical_row = torch.div(pos_i64, entry_stride_tokens, rounding_mode="floor")
+    is_local = None
+    if dcp_world_size > 1:
+        logical_row, is_local = shard_dcp_logical_rows(
+            logical_row,
+            dcp_size=dcp_world_size,
+            dcp_rank=dcp_rank,
+            interleave_size=cp_kv_cache_interleave_size,
+        )
     logical_page = torch.div(logical_row, rows_per_page, rounding_mode="floor")
     offsets = logical_row % rows_per_page
     req_indices = _expand_group_values_for_tokens(
@@ -154,6 +170,9 @@ def _group_slot_mapping_from_raw(
             table_page = torch.where(valid_req, logical_page - base, -1)
     page_ids = _safe_page_ids(block_table, req_indices, table_page)
     slots = page_ids * rows_per_page + offsets
+    if is_local is not None:
+        valid = (page_ids > 0) & is_local
+        return torch.where(valid, slots, torch.full_like(slots, -1))
     return torch.where(page_ids >= 0, slots, torch.full_like(slots, -1))
 
 
@@ -187,6 +206,9 @@ def _compressed_boundary_mask(
 class DeepseekV4CacheMetadata:
     page_size: int
     block_table: torch.Tensor
+    dcp_world_size: int
+    dcp_rank: int
+    cp_kv_cache_interleave_size: int
     paged_cache_block_tables: dict[str, torch.Tensor] = field(default_factory=dict)
     # Per-sliding-group [num_reqs] int32 base logical-page offset that
     # accompanies each compact block table. Consumers index sliding tables as
@@ -256,6 +278,37 @@ class DeepseekV4CacheMetadata:
             self.decode_compressed_slot_mappings[key] = out
 
         block_table = self.compressed_block_table(compress_ratio, kv_cache_block_size)
+        if self.dcp_world_size > 1:
+            req_idx = token_to_req_indices[:num_tokens].to(torch.int64)
+            query_starts = query_start_loc[req_idx].to(torch.int64)
+            query_lens = query_start_loc[req_idx + 1].to(torch.int64) - query_starts
+            seq_lens_for_token = seq_lens[req_idx].to(torch.int64)
+            token_offsets = torch.arange(
+                num_tokens,
+                dtype=torch.int64,
+                device=seq_lens.device,
+            )
+            positions = seq_lens_for_token - query_lens + token_offsets - query_starts
+            slot_mapping = _group_slot_mapping_from_raw(
+                positions,
+                req_idx,
+                block_table,
+                kv_cache_block_size,
+                entry_stride_tokens=compress_ratio,
+                base_offsets=self.paged_cache_block_table_base_offsets.get(
+                    v4_compressed_kv_group_id(compress_ratio)
+                ),
+                dcp_world_size=self.dcp_world_size,
+                dcp_rank=self.dcp_rank,
+                cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
+            )
+            slot_mapping = torch.where(
+                _compressed_boundary_mask(positions, compress_ratio),
+                slot_mapping,
+                torch.full_like(slot_mapping, -1),
+            )
+            out.copy_(_mask_invalid_graph_tokens(slot_mapping, is_valid_token))
+            return out
         if block_table is not self.block_table:
             req_idx = token_to_req_indices[:num_tokens].to(torch.int64)
             query_starts = query_start_loc[req_idx].to(torch.int64)
@@ -350,6 +403,27 @@ class DeepseekV4CacheMetadata:
         if kv_cache_block_size is None:
             kv_cache_block_size = self.page_size
         block_table = self.compressed_block_table(compress_ratio, kv_cache_block_size)
+        if self.dcp_world_size > 1:
+            req_idx = token_to_req_indices[: positions.numel()].long()
+            slot_mapping = _group_slot_mapping_from_raw(
+                positions,
+                req_idx,
+                block_table,
+                kv_cache_block_size,
+                entry_stride_tokens=compress_ratio,
+                base_offsets=self.paged_cache_block_table_base_offsets.get(
+                    v4_compressed_kv_group_id(compress_ratio)
+                ),
+                dcp_world_size=self.dcp_world_size,
+                dcp_rank=self.dcp_rank,
+                cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
+            )
+            slot_mapping = torch.where(
+                _compressed_boundary_mask(positions, compress_ratio),
+                slot_mapping,
+                torch.full_like(slot_mapping, -1),
+            )
+            return _mask_invalid_graph_tokens(slot_mapping, is_valid_token)
         if (
             use_decode_cache
             and positions.is_cuda

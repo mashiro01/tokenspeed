@@ -262,6 +262,11 @@ class DeepseekV4AttentionBackend(AttentionBackend):
             getattr(config, "sliding_window_tokens", V4_KERNEL_BLOCK_ROWS * 2)
         )
         self.context_len = config.context_len
+        self.dcp_world_size = int(getattr(config, "decode_context_parallel_size", 1))
+        self.dcp_rank = int(getattr(config, "dcp_rank", 0))
+        self.cp_kv_cache_interleave_size = int(
+            getattr(config, "cp_kv_cache_interleave_size", 1)
+        )
         rope_head_dim = getattr(config, "qk_rope_head_dim", None)
         self._fp8_ds_mla_row_bytes = (
             deepseek_v4_swa_row_bytes(config.head_dim, rope_head_dim)
@@ -1024,6 +1029,9 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         cache_metadata = DeepseekV4CacheMetadata(
             page_size=self.page_size,
             block_table=block_table,
+            dcp_world_size=self.dcp_world_size,
+            dcp_rank=self.dcp_rank,
+            cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
             paged_cache_block_tables=paged_cache_block_tables,
             paged_cache_block_table_base_offsets=base_offsets_on_device,
             swa_block_table=swa_block_table,
@@ -1695,6 +1703,9 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         sliced_cache = DeepseekV4CacheMetadata(
             page_size=cache_metadata.page_size,
             block_table=cache_metadata.block_table[req_start:req_end],
+            dcp_world_size=cache_metadata.dcp_world_size,
+            dcp_rank=cache_metadata.dcp_rank,
+            cp_kv_cache_interleave_size=(cache_metadata.cp_kv_cache_interleave_size),
             paged_cache_block_tables=paged_cache_block_tables,
             paged_cache_block_table_base_offsets=paged_cache_block_table_base_offsets,
             swa_block_table=(
@@ -2252,6 +2263,9 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         cache_metadata = DeepseekV4CacheMetadata(
             page_size=self.page_size,
             block_table=self._cuda_graph_block_table[:bs, : self.max_num_pages],
+            dcp_world_size=self.dcp_world_size,
+            dcp_rank=self.dcp_rank,
+            cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
             paged_cache_block_tables=metadata_paged,
             paged_cache_block_table_base_offsets=metadata_base_offsets,
             swa_block_table=swa_block_table,
@@ -2437,6 +2451,9 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         metadata.cache = DeepseekV4CacheMetadata(
             page_size=self.page_size,
             block_table=self._cuda_graph_block_table[:bs, : self.max_num_pages],
+            dcp_world_size=self.dcp_world_size,
+            dcp_rank=self.dcp_rank,
+            cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
             paged_cache_block_tables=metadata_paged,
             paged_cache_block_table_base_offsets=metadata_base_offsets,
             swa_block_table=swa_block_table,

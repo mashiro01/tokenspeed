@@ -2150,11 +2150,18 @@ def _deepseek_v4_swa_slot_mapping(
     cache_metadata = metadata.cache
     token_to_req_indices = metadata.token_to_req_indices[: positions.numel()]
     if cache_metadata.swa_block_table is None:
+        if cache_metadata.dcp_world_size > 1:
+            raise RuntimeError("DeepSeek V4 DCP SWA writes require a block table")
         slot_mapping = out_cache_loc
     elif token_to_req_indices.numel() != positions.numel() and (
         token_to_req_indices.numel() <= 0
         or positions.numel() % token_to_req_indices.numel() != 0
     ):
+        if cache_metadata.dcp_world_size > 1:
+            raise RuntimeError(
+                "DeepSeek V4 DCP SWA request metadata has incompatible packed-token "
+                "shape"
+            )
         slot_mapping = out_cache_loc
     else:
         slot_mapping = _group_slot_mapping_from_raw(
@@ -2163,6 +2170,9 @@ def _deepseek_v4_swa_slot_mapping(
             cache_metadata.swa_block_table,
             ctx.token_to_kv_pool.swa_block_size,
             base_offsets=cache_metadata.swa_base_logical_page,
+            dcp_world_size=cache_metadata.dcp_world_size,
+            dcp_rank=cache_metadata.dcp_rank,
+            cp_kv_cache_interleave_size=(cache_metadata.cp_kv_cache_interleave_size),
         )
     is_valid_token = getattr(metadata, "is_valid_token", None)
     if is_valid_token is not None:

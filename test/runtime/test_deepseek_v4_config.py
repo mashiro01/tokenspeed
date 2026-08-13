@@ -211,6 +211,9 @@ def _make_deepseek_v4_forward_metadata(
     compressor_state_base_logical_pages=None,
     indexer_state_block_table=None,
     indexer_state_base_logical_page=None,
+    dcp_world_size=1,
+    dcp_rank=0,
+    cp_kv_cache_interleave_size=1,
     **kwargs,
 ):
     (
@@ -240,6 +243,9 @@ def _make_deepseek_v4_forward_metadata(
     cache = DeepseekV4CacheMetadata(
         page_size=page_size,
         block_table=block_table,
+        dcp_world_size=dcp_world_size,
+        dcp_rank=dcp_rank,
+        cp_kv_cache_interleave_size=cp_kv_cache_interleave_size,
         paged_cache_block_tables=paged_cache_block_tables or {},
         paged_cache_block_table_base_offsets=(
             paged_cache_block_table_base_offsets or {}
@@ -2642,6 +2648,9 @@ class TestDeepseekV4Config(unittest.TestCase):
                 speculative_num_draft_tokens=1,
                 head_dim=512,
                 context_len=4096,
+                decode_context_parallel_size=2,
+                dcp_rank=1,
+                cp_kv_cache_interleave_size=2,
             )
         )
         compact = torch.tensor([[10, 11], [20, -1]], dtype=torch.int32)
@@ -2662,6 +2671,20 @@ class TestDeepseekV4Config(unittest.TestCase):
         assert metadata is not None
         self.assertTrue(torch.equal(metadata.cache.swa_block_table, compact))
         self.assertTrue(torch.equal(metadata.cache.swa_base_logical_page, base))
+        self.assertEqual(metadata.cache.dcp_world_size, 2)
+        self.assertEqual(metadata.cache.dcp_rank, 1)
+        self.assertEqual(metadata.cache.cp_kv_cache_interleave_size, 2)
+        sliced = backend._metadata_slice(
+            metadata,
+            req_start=0,
+            req_end=1,
+            token_start=0,
+            token_end=1,
+            forward_mode=ForwardMode.DECODE,
+        )
+        self.assertEqual(sliced.cache.dcp_world_size, 2)
+        self.assertEqual(sliced.cache.dcp_rank, 1)
+        self.assertEqual(sliced.cache.cp_kv_cache_interleave_size, 2)
 
     def test_deepseek_v4_lcm_graph_tables_keep_absolute_logical_positions(self):
         backend = DeepseekV4AttentionBackend(
@@ -3695,6 +3718,159 @@ class TestDeepseekV4Config(unittest.TestCase):
         self.assertTrue(
             torch.equal(compressed_slots, torch.tensor([640, 703, 704, -1]))
         )
+
+    def test_deepseek_v4_dcp_group_slot_mapping_owns_physical_rows(self):
+        positions = torch.arange(6, dtype=torch.int64)
+        request_indices = torch.zeros(6, dtype=torch.int32)
+        block_table = torch.tensor([[10]], dtype=torch.int32)
+
+        rank_zero = _group_slot_mapping_from_raw(
+            positions,
+            request_indices,
+            block_table,
+            rows_per_page=64,
+            dcp_world_size=2,
+            dcp_rank=0,
+            cp_kv_cache_interleave_size=1,
+        )
+        rank_one = _group_slot_mapping_from_raw(
+            positions,
+            request_indices,
+            block_table,
+            rows_per_page=64,
+            dcp_world_size=2,
+            dcp_rank=1,
+            cp_kv_cache_interleave_size=1,
+        )
+
+        self.assertTrue(
+            torch.equal(rank_zero, torch.tensor([640, -1, 641, -1, 642, -1]))
+        )
+        self.assertTrue(
+            torch.equal(rank_one, torch.tensor([-1, 640, -1, 641, -1, 642]))
+        )
+
+    def test_deepseek_v4_dcp_never_writes_null_page(self):
+        dcp_slots = _group_slot_mapping_from_raw(
+            torch.tensor([0], dtype=torch.int64),
+            torch.tensor([0], dtype=torch.int32),
+            torch.tensor([[0]], dtype=torch.int32),
+            rows_per_page=64,
+            dcp_world_size=2,
+            dcp_rank=0,
+            cp_kv_cache_interleave_size=1,
+        )
+        non_dcp_slots = _group_slot_mapping_from_raw(
+            torch.tensor([0], dtype=torch.int64),
+            torch.tensor([0], dtype=torch.int32),
+            torch.tensor([[0]], dtype=torch.int32),
+            rows_per_page=64,
+        )
+
+        self.assertTrue(torch.equal(dcp_slots, torch.tensor([-1])))
+        self.assertTrue(torch.equal(non_dcp_slots, torch.tensor([0])))
+
+    def test_deepseek_v4_dcp_maps_c4_and_c128_compressed_rows(self):
+        common = {
+            "page_size": 256,
+            "req_pool_indices": torch.tensor([0], dtype=torch.int32),
+            "block_table": torch.tensor([[10]], dtype=torch.int32),
+            "seq_lens": torch.tensor([512], dtype=torch.int32),
+            "query_lens": torch.tensor([4], dtype=torch.int32),
+            "query_start_loc": torch.tensor([0, 4], dtype=torch.int32),
+            "token_to_req_indices": torch.zeros(4, dtype=torch.int32),
+            "dcp_world_size": 2,
+            "cp_kv_cache_interleave_size": 1,
+        }
+        c4 = _make_deepseek_v4_forward_metadata(
+            **common,
+            dcp_rank=0,
+            paged_cache_block_tables={
+                "v4.c4a.compressed_kv": torch.tensor([[10]], dtype=torch.int32)
+            },
+        )
+        c128 = _make_deepseek_v4_forward_metadata(
+            **common,
+            dcp_rank=1,
+            paged_cache_block_tables={
+                "v4.c128a.compressed_kv": torch.tensor([[10]], dtype=torch.int32)
+            },
+        )
+
+        c4_slots = c4.cache.compressed_slot_mapping(
+            torch.tensor([3, 7, 11, 15], dtype=torch.int64),
+            compress_ratio=4,
+            token_to_req_indices=c4.token_to_req_indices,
+            query_start_loc=c4.query_start_loc,
+            seq_lens=c4.seq_lens,
+            kv_cache_block_size=64,
+        )
+        c128_slots = c128.cache.compressed_slot_mapping(
+            torch.tensor([127, 255, 383, 511], dtype=torch.int64),
+            compress_ratio=128,
+            token_to_req_indices=c128.token_to_req_indices,
+            query_start_loc=c128.query_start_loc,
+            seq_lens=c128.seq_lens,
+            kv_cache_block_size=2,
+        )
+
+        self.assertTrue(torch.equal(c4_slots, torch.tensor([640, -1, 641, -1])))
+        self.assertTrue(torch.equal(c128_slots, torch.tensor([-1, 20, -1, 21])))
+
+    def test_deepseek_v4_dcp_swa_mapping_fails_closed_without_table(self):
+        metadata = _make_deepseek_v4_forward_metadata(
+            page_size=64,
+            req_pool_indices=torch.tensor([0], dtype=torch.int32),
+            block_table=torch.tensor([[1]], dtype=torch.int32),
+            seq_lens=torch.tensor([1], dtype=torch.int32),
+            query_lens=torch.tensor([1], dtype=torch.int32),
+            query_start_loc=torch.tensor([0, 1], dtype=torch.int32),
+            token_to_req_indices=torch.tensor([0], dtype=torch.int32),
+            dcp_world_size=2,
+        )
+        ctx = SimpleNamespace(
+            attn_backend=SimpleNamespace(forward_metadata=metadata),
+            forward_mode=None,
+            token_to_kv_pool=SimpleNamespace(
+                swa_block_size=64,
+                swa_capacity_slots=64,
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "DCP SWA writes require"):
+            deepseek_v4_model._deepseek_v4_swa_slot_mapping(
+                ctx,
+                torch.tensor([0], dtype=torch.int64),
+                torch.tensor([1], dtype=torch.int64),
+            )
+
+    def test_deepseek_v4_dcp_swa_mapping_rejects_incompatible_shape(self):
+        metadata = _make_deepseek_v4_forward_metadata(
+            page_size=64,
+            req_pool_indices=torch.tensor([0, 1], dtype=torch.int32),
+            block_table=torch.tensor([[1], [2]], dtype=torch.int32),
+            seq_lens=torch.tensor([1, 1], dtype=torch.int32),
+            query_lens=torch.tensor([1, 1], dtype=torch.int32),
+            query_start_loc=torch.tensor([0, 1, 2], dtype=torch.int32),
+            token_to_req_indices=torch.tensor([0, 1], dtype=torch.int32),
+            swa_block_table=torch.tensor([[1], [2]], dtype=torch.int32),
+            dcp_world_size=2,
+        )
+        ctx = SimpleNamespace(
+            attn_backend=SimpleNamespace(forward_metadata=metadata),
+            forward_mode=None,
+            token_to_kv_pool=SimpleNamespace(
+                swa_block_size=64,
+                swa_capacity_slots=128,
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "incompatible packed-token shape"):
+            deepseek_v4_model._deepseek_v4_swa_slot_mapping(
+                ctx,
+                torch.tensor([0, 1, 2], dtype=torch.int64),
+                torch.tensor([1, 2, 3], dtype=torch.int64),
+            )
 
     def test_deepseek_v4_slot_mapping_masks_invalid_tokens(self):
         slots = _mask_invalid_graph_tokens(
