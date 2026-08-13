@@ -5397,13 +5397,15 @@ class TestDeepseekV4Config(unittest.TestCase):
             )
         )
         backend.forward_metadata = SimpleNamespace(forward_mode=ForwardMode.EXTEND)
-        backend._dcp_workspace = deepseek_v4_backend.DcpAttentionWorkspace.allocate(
-            dcp_size=2,
-            max_rows=2,
-            local_heads=8,
-            head_dim=4,
-            dtype=torch.float32,
-            device="cpu",
+        backend._dcp_prefill_workspace = (
+            deepseek_v4_backend.DcpAttentionWorkspace.allocate(
+                dcp_size=2,
+                max_rows=2,
+                local_heads=8,
+                head_dim=4,
+                dtype=torch.float32,
+                device="cpu",
+            )
         )
         q = torch.arange(64, dtype=torch.float32).reshape(2, 8, 4)
         gathered_q = torch.cat((q, q + 1000), dim=1)
@@ -5486,7 +5488,7 @@ class TestDeepseekV4Config(unittest.TestCase):
         self.assertEqual(merge_states.call_args.kwargs["dcp_rank"], 0)
         self.assertEqual(merge_states.call_args.kwargs["local_output_heads"], 8)
         self.assertIs(
-            merge_states.call_args.kwargs["workspace"], backend._dcp_workspace
+            merge_states.call_args.kwargs["workspace"], backend._dcp_prefill_workspace
         )
 
     def test_deepseek_v4_dcp_prefill_fails_closed_without_sm120_sparse_mla(self):
@@ -5537,6 +5539,48 @@ class TestDeepseekV4Config(unittest.TestCase):
                 topk_indices=None,
             )
 
+    def test_deepseek_v4_dcp_prefill_growth_does_not_resize_decode_workspace(self):
+        backend = DeepseekV4AttentionBackend(
+            SimpleNamespace(
+                page_size=4,
+                device="cpu",
+                num_attention_heads=16,
+                num_kv_heads=1,
+                attn_tp_size=2,
+                dtype=torch.float32,
+                is_draft=False,
+                speculative_num_draft_tokens=1,
+                head_dim=4,
+                context_len=64,
+                decode_context_parallel_size=2,
+                dcp_rank=0,
+                dcp_group=(0, 1),
+                cp_kv_cache_interleave_size=1,
+            )
+        )
+        decode_workspace = deepseek_v4_backend.DcpAttentionWorkspace.allocate(
+            dcp_size=2,
+            max_rows=1,
+            local_heads=8,
+            head_dim=4,
+            dtype=torch.float32,
+            device="cpu",
+        )
+        backend._dcp_decode_workspace = decode_workspace
+
+        prefill_workspace = backend._dcp_attention_workspace(
+            rows=4,
+            local_heads=8,
+            head_dim=4,
+            dtype=torch.float32,
+            device=torch.device("cpu"),
+            allow_growth=True,
+        )
+
+        self.assertEqual(prefill_workspace.local_q.shape[0], 4)
+        self.assertIs(backend._dcp_decode_workspace, decode_workspace)
+        self.assertEqual(backend._dcp_decode_workspace.local_q.shape[0], 1)
+
     def test_deepseek_v4_dcp_decode_keeps_native_gathered_head_count(self):
         backend = DeepseekV4AttentionBackend(
             SimpleNamespace(
@@ -5556,13 +5600,15 @@ class TestDeepseekV4Config(unittest.TestCase):
                 cp_kv_cache_interleave_size=1,
             )
         )
-        backend._dcp_workspace = deepseek_v4_backend.DcpAttentionWorkspace.allocate(
-            dcp_size=2,
-            max_rows=1,
-            local_heads=8,
-            head_dim=4,
-            dtype=torch.float32,
-            device="cpu",
+        backend._dcp_decode_workspace = (
+            deepseek_v4_backend.DcpAttentionWorkspace.allocate(
+                dcp_size=2,
+                max_rows=1,
+                local_heads=8,
+                head_dim=4,
+                dtype=torch.float32,
+                device="cpu",
+            )
         )
         backend.forward_metadata = SimpleNamespace(
             forward_mode=ForwardMode.DECODE,

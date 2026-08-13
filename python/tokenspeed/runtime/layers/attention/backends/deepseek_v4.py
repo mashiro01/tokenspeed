@@ -280,7 +280,8 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         self._dcp_local_heads = config.num_attention_heads // config.attn_tp_size
         self._dcp_head_dim = config.head_dim
         self._dcp_dtype = config.dtype
-        self._dcp_workspace: DcpAttentionWorkspace | None = None
+        self._dcp_decode_workspace: DcpAttentionWorkspace | None = None
+        self._dcp_prefill_workspace: DcpAttentionWorkspace | None = None
         rope_head_dim = getattr(config, "qk_rope_head_dim", None)
         self._fp8_ds_mla_row_bytes = (
             deepseek_v4_swa_row_bytes(config.head_dim, rope_head_dim)
@@ -1450,7 +1451,9 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         device: torch.device,
         allow_growth: bool,
     ) -> DcpAttentionWorkspace:
-        workspace = self._dcp_workspace
+        workspace = (
+            self._dcp_prefill_workspace if allow_growth else self._dcp_decode_workspace
+        )
         compatible = (
             workspace is not None
             and workspace.local_q.shape[0] >= rows
@@ -1482,7 +1485,7 @@ class DeepseekV4AttentionBackend(AttentionBackend):
             dtype=dtype,
             device=device,
         )
-        self._dcp_workspace = workspace
+        self._dcp_prefill_workspace = workspace
         return workspace
 
     def _prepare_dcp_attention_inputs(
@@ -2259,7 +2262,7 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         )
         max_tokens = max_bs * self._cuda_graph_max_tokens_per_req
         if self.dcp_world_size > 1:
-            self._dcp_workspace = DcpAttentionWorkspace.allocate(
+            self._dcp_decode_workspace = DcpAttentionWorkspace.allocate(
                 dcp_size=self.dcp_world_size,
                 max_rows=max_tokens,
                 local_heads=self._dcp_local_heads,
