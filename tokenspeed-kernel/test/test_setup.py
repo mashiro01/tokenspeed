@@ -13,6 +13,7 @@ from setuptools import build_meta
 
 SETUP_PY = Path(__file__).parents[1] / "python" / "setup.py"
 REQUIREMENTS_DIR = SETUP_PY.parent / "requirements"
+CUDA_CSRC_DIR = SETUP_PY.parent / "tokenspeed_kernel" / "thirdparty" / "cuda" / "csrc"
 
 
 def _capture_install_requires(monkeypatch, backend: str) -> list[str]:
@@ -240,6 +241,37 @@ def test_attn_res_build_is_limited_to_supported_blackwell_architectures(
         "100a",
         "120a",
     }
+
+
+def test_nvfp4_activation_build_is_limited_to_datacenter_blackwell(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TOKENSPEED_KERNEL_BACKEND", "cuda")
+    monkeypatch.setattr(setuptools, "setup", lambda **_kwargs: None)
+    setup_namespace = runpy.run_path(str(SETUP_PY))
+    builder = setup_namespace["CudaKernelBuilder"]([], verbose=False)
+
+    assert builder._group_cuda_archs(
+        "silu_fuse_nvfp4_quant", {"100a", "103a", "120"}
+    ) == {"100a", "103a"}
+    assert builder._group_cuda_archs("silu_fuse_nvfp4_quant", {"120"}) == set()
+
+
+def test_fp4_comm_conversion_uses_sm100_specific_ptx_only() -> None:
+    arch_contract = (CUDA_CSRC_DIR / "tokenspeed_cuda_arch.cuh").read_text(
+        encoding="utf-8"
+    )
+    assert "(__CUDA_ARCH__ == 1000)" in arch_contract
+    assert "(__CUDA_ARCH__ == 1030)" in arch_contract
+
+    for filename in (
+        "trtllm_allreduce_fusion.cuh",
+        "trtllm_reducescatter_fusion.cuh",
+    ):
+        source = (
+            CUDA_CSRC_DIR / "include" / "flashinfer" / "comm" / filename
+        ).read_text(encoding="utf-8")
+        assert source.count("#if TOKENSPEED_HAS_DATACENTER_BLACKWELL_FP4_CVT") == 2
 
 
 def test_default_cuda_build_remains_sm10x(

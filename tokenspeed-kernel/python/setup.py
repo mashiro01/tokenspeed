@@ -74,7 +74,9 @@ DEFAULT_CUDA_ARCHS = ("100a", "103a")
 # Architectures whose generic build target uses an architecture-specific suffix.
 # Explicit suffixes supplied by users are preserved for all architectures.
 CUDA_ARCHS_WITH_A_SUFFIX = frozenset({(9, 0), (10, 0), (10, 3)})
-ATTN_RES_CUDA_ARCHS = frozenset({"100a", "103a"})
+DATACENTER_BLACKWELL_CUDA_ARCHS = frozenset({"100a", "103a"})
+ATTN_RES_CUDA_ARCHS = DATACENTER_BLACKWELL_CUDA_ARCHS
+NVFP4_ACTIVATION_CUDA_ARCHS = DATACENTER_BLACKWELL_CUDA_ARCHS
 
 # CUDA kernels source and output directories
 CUDA_CSRC_DIR = THIRDPARTY_DIR / "cuda" / "csrc"
@@ -531,6 +533,8 @@ class CudaKernelBuilder:
     def _group_cuda_archs(self, name, archs):
         if name == "attn_res":
             return archs & ATTN_RES_CUDA_ARCHS
+        if name == "silu_fuse_nvfp4_quant":
+            return archs & NVFP4_ACTIVATION_CUDA_ARCHS
         return archs
 
     def _site_paths(self):

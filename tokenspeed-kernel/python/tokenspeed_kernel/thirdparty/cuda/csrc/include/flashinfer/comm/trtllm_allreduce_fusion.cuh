@@ -38,6 +38,7 @@
 #include "../logging.h"
 #include "../utils.cuh"
 #include "../vec_dtypes.cuh"
+#include "tokenspeed_cuda_arch.cuh"
 
 namespace flashinfer {
 
@@ -557,7 +558,7 @@ __forceinline__ __device__ uint32_t pack_bytes(uint8_t c0, uint8_t c1, uint8_t c
 // Convert 8 float32 values into 8 e2m1 values (represented as one uint32_t).
 // NOTE: bypass sm_100 requirement by __nv_cvt_float2_to_fp4x2
 inline __device__ uint32_t fp32_vec_to_e2m1(float (&array)[8]) {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+#if TOKENSPEED_HAS_DATACENTER_BLACKWELL_FP4_CVT
   uint32_t val;
   asm volatile(
       "{\n"
@@ -589,7 +590,7 @@ inline __device__ uint32_t fp32_vec_to_e2m1(float (&array)[8]) {
 
 // Convert 4 float2 values into 8 e2m1 values (represented as one uint32_t).
 inline __device__ uint32_t fp32_vec_to_e2m1(float2 (&array)[4]) {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+#if TOKENSPEED_HAS_DATACENTER_BLACKWELL_FP4_CVT
   uint32_t val;
   asm volatile(
       "{\n"
