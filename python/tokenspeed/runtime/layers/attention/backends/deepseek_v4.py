@@ -32,6 +32,7 @@ except Exception:
 from tokenspeed.runtime.configs.model_config import AttentionArch
 from tokenspeed.runtime.distributed.dcp import (
     DcpAttentionWorkspace,
+    dcp_owned_prefix_lengths,
     gather_dcp_queries,
     gather_dcp_sinks,
     merge_dcp_attention_states,
@@ -159,6 +160,17 @@ def _refresh_decode_indexer_plan_cache(
                 (block_table.shape[1] * cache_block_size + compress_ratio - 1)
                 // compress_ratio,
             )
+        derived_max_len = max(
+            1,
+            int(
+                dcp_owned_prefix_lengths(
+                    torch.tensor(derived_max_len, dtype=torch.int64),
+                    dcp_size=metadata.cache.dcp_world_size,
+                    dcp_rank=metadata.cache.dcp_rank,
+                    interleave_size=metadata.cache.cp_kv_cache_interleave_size,
+                ).item()
+            ),
+        )
         if plan.max_context_len != derived_max_len:
             plan.max_context_len = derived_max_len
         deepseek_v4_indexer_decode_metadata_compute(
@@ -171,6 +183,9 @@ def _refresh_decode_indexer_plan_cache(
             out_context_lens=plan.context_lens,
             out_block_tables=plan.block_table,
             block_table_base_offsets=block_table_base_offsets,
+            dcp_size=metadata.cache.dcp_world_size,
+            dcp_rank=metadata.cache.dcp_rank,
+            interleave_size=metadata.cache.cp_kv_cache_interleave_size,
         )
         if metadata.is_valid_token is not None:
             valid = metadata.is_valid_token[:num_tokens].to(
@@ -224,6 +239,12 @@ def _refresh_decode_indexer_schedule_metadata(
                 compress_ratio,
                 rounding_mode="floor",
             ).clamp_min(0)
+            compressed_lens = dcp_owned_prefix_lengths(
+                compressed_lens,
+                dcp_size=metadata.cache.dcp_world_size,
+                dcp_rank=metadata.cache.dcp_rank,
+                interleave_size=metadata.cache.cp_kv_cache_interleave_size,
+            )
             if metadata.is_valid_token is not None:
                 valid = metadata.is_valid_token[:num_tokens].to(
                     device=compressed_lens.device,

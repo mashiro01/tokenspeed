@@ -122,6 +122,156 @@ class DcpAttentionWorkspace:
         )
 
 
+@dataclass(frozen=True)
+class DcpIndexerCandidateWorkspace:
+    """Fixed-shape buffers for O(DCP x K) sparse-indexer candidate exchange."""
+
+    local_scores: torch.Tensor
+    local_rows: torch.Tensor
+    gathered_scores: torch.Tensor
+    gathered_rows: torch.Tensor
+    candidate_scores: torch.Tensor
+    candidate_rows: torch.Tensor
+    candidate_offsets: torch.Tensor
+    safe_candidate_offsets: torch.Tensor
+    candidate_lengths: torch.Tensor
+    final_rows: torch.Tensor
+
+    @classmethod
+    def allocate(
+        cls,
+        *,
+        dcp_size: int,
+        max_rows: int,
+        topk: int,
+        device: torch.device | str,
+    ) -> "DcpIndexerCandidateWorkspace":
+        """Allocate candidate buffers before decode graph warmup/capture."""
+
+        if min(dcp_size, max_rows, topk) <= 0:
+            raise ValueError("DCP indexer workspace dimensions must be positive")
+        return cls(
+            local_scores=torch.empty(
+                (max_rows, topk), dtype=torch.float32, device=device
+            ),
+            local_rows=torch.empty((max_rows, topk), dtype=torch.int32, device=device),
+            gathered_scores=torch.empty(
+                (dcp_size, max_rows, topk), dtype=torch.float32, device=device
+            ),
+            gathered_rows=torch.empty(
+                (dcp_size, max_rows, topk), dtype=torch.int32, device=device
+            ),
+            candidate_scores=torch.empty(
+                (max_rows, dcp_size * topk), dtype=torch.float32, device=device
+            ),
+            candidate_rows=torch.empty(
+                (max_rows, dcp_size * topk), dtype=torch.int32, device=device
+            ),
+            candidate_offsets=torch.empty(
+                (max_rows, topk), dtype=torch.int32, device=device
+            ),
+            safe_candidate_offsets=torch.empty(
+                (max_rows, topk), dtype=torch.int64, device=device
+            ),
+            candidate_lengths=torch.full(
+                (max_rows,), dcp_size * topk, dtype=torch.int32, device=device
+            ),
+            final_rows=torch.empty((max_rows, topk), dtype=torch.int32, device=device),
+        )
+
+
+def dcp_owned_prefix_lengths(
+    global_lengths: torch.Tensor,
+    *,
+    dcp_size: int,
+    dcp_rank: int,
+    interleave_size: int,
+) -> torch.Tensor:
+    """Count rows owned by one DCP rank in each global prefix ``[0, length)``."""
+
+    _validate_dcp_sharding(dcp_size, dcp_rank, interleave_size)
+    lengths = global_lengths.clamp_min(0)
+    cycle = dcp_size * interleave_size
+    cycles = torch.div(lengths, cycle, rounding_mode="floor")
+    remainder = torch.remainder(lengths, cycle)
+    tail = (remainder - dcp_rank * interleave_size).clamp(0, interleave_size)
+    return cycles * interleave_size + tail
+
+
+def restore_dcp_global_rows(
+    local_rows: torch.Tensor,
+    *,
+    dcp_size: int,
+    dcp_rank: int,
+    interleave_size: int,
+    local_row_base: int | torch.Tensor = 0,
+) -> torch.Tensor:
+    """Restore absolute global rows from one rank's local logical coordinates."""
+
+    _validate_dcp_sharding(dcp_size, dcp_rank, interleave_size)
+    valid = local_rows >= 0
+    absolute_local = local_rows.to(torch.int64) + torch.as_tensor(
+        local_row_base,
+        dtype=torch.int64,
+        device=local_rows.device,
+    )
+    cycle = dcp_size * interleave_size
+    global_rows = (
+        torch.div(absolute_local, interleave_size, rounding_mode="floor") * cycle
+        + dcp_rank * interleave_size
+        + torch.remainder(absolute_local, interleave_size)
+    )
+    return torch.where(valid, global_rows, torch.full_like(global_rows, -1))
+
+
+def gather_dcp_indexer_candidates(
+    local_scores: torch.Tensor,
+    local_rows: torch.Tensor,
+    *,
+    group: Group,
+    workspace: DcpIndexerCandidateWorkspace,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """All-gather only local top-K scores/rows and materialize rank-major candidates."""
+
+    _validate_group(group)
+    if local_scores.ndim != 2 or local_rows.shape != local_scores.shape:
+        raise ValueError(
+            "DCP indexer candidates must have matching [rows, topk] shapes"
+        )
+    if local_scores.dtype != torch.float32 or local_rows.dtype != torch.int32:
+        raise TypeError("DCP indexer candidates require float32 scores and int32 rows")
+    rows, topk = local_scores.shape
+    if len(group) != workspace.gathered_scores.shape[0]:
+        raise ValueError("DCP group and indexer workspace sizes disagree")
+    if (
+        rows > workspace.local_scores.shape[0]
+        or topk != workspace.local_scores.shape[1]
+    ):
+        raise ValueError("DCP indexer candidates exceed the preallocated workspace")
+
+    workspace.local_scores[:rows].copy_(local_scores)
+    workspace.local_rows[:rows].copy_(local_rows)
+    if rows < workspace.local_scores.shape[0]:
+        workspace.local_scores[rows:].fill_(-torch.inf)
+        workspace.local_rows[rows:].fill_(-1)
+    _all_gather_into_dcp_major(
+        workspace.gathered_scores,
+        workspace.local_scores,
+        group,
+    )
+    _all_gather_into_dcp_major(
+        workspace.gathered_rows,
+        workspace.local_rows,
+        group,
+    )
+    for rank in range(len(group)):
+        start = rank * topk
+        end = start + topk
+        workspace.candidate_scores[:, start:end].copy_(workspace.gathered_scores[rank])
+        workspace.candidate_rows[:, start:end].copy_(workspace.gathered_rows[rank])
+    return workspace.candidate_scores[:rows], workspace.candidate_rows[:rows]
+
+
 def gather_dcp_queries(
     q: torch.Tensor,
     *,
@@ -284,6 +434,27 @@ def _validate_group(group: Group) -> None:
         raise ValueError("DCP collective requires a group of at least two ranks")
 
 
+def _validate_dcp_sharding(
+    dcp_size: int,
+    dcp_rank: int,
+    interleave_size: int,
+) -> None:
+    if isinstance(dcp_size, bool) or not isinstance(dcp_size, int) or dcp_size <= 0:
+        raise ValueError("DCP size must be a positive integer")
+    if (
+        isinstance(dcp_rank, bool)
+        or not isinstance(dcp_rank, int)
+        or not 0 <= dcp_rank < dcp_size
+    ):
+        raise ValueError("DCP rank must be an integer inside the DCP group")
+    if (
+        isinstance(interleave_size, bool)
+        or not isinstance(interleave_size, int)
+        or interleave_size <= 0
+    ):
+        raise ValueError("DCP interleave size must be a positive integer")
+
+
 def shard_dcp_logical_rows(
     logical_rows: torch.Tensor,
     *,
@@ -309,20 +480,7 @@ def shard_dcp_logical_rows(
         or logical_rows.is_complex()
     ):
         raise TypeError("DCP logical rows must use an integer dtype")
-    if isinstance(dcp_size, bool) or not isinstance(dcp_size, int) or dcp_size <= 0:
-        raise ValueError("DCP size must be a positive integer")
-    if (
-        isinstance(dcp_rank, bool)
-        or not isinstance(dcp_rank, int)
-        or not 0 <= dcp_rank < dcp_size
-    ):
-        raise ValueError("DCP rank must be an integer inside the DCP group")
-    if (
-        isinstance(interleave_size, bool)
-        or not isinstance(interleave_size, int)
-        or interleave_size <= 0
-    ):
-        raise ValueError("DCP interleave size must be a positive integer")
+    _validate_dcp_sharding(dcp_size, dcp_rank, interleave_size)
 
     rows = logical_rows.to(torch.int64)
     if rows.device.type == "cpu" and not bool(rows.ge(0).all().item()):
@@ -342,8 +500,12 @@ def shard_dcp_logical_rows(
 
 __all__ = [
     "DcpAttentionWorkspace",
+    "DcpIndexerCandidateWorkspace",
+    "dcp_owned_prefix_lengths",
+    "gather_dcp_indexer_candidates",
     "gather_dcp_queries",
     "gather_dcp_sinks",
     "merge_dcp_attention_states",
+    "restore_dcp_global_rows",
     "shard_dcp_logical_rows",
 ]

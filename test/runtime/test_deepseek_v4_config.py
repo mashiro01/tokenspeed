@@ -5750,6 +5750,17 @@ class TestDeepseekV4Config(unittest.TestCase):
                 ),
                 1024,
             )
+            self.assertEqual(
+                _deepseek_v4_indexer_decode_max_len(
+                    block_table,
+                    cache_block_size=64,
+                    compress_ratio=4,
+                    dcp_size=2,
+                    dcp_rank=1,
+                    interleave_size=2,
+                ),
+                512,
+            )
 
         with patch.dict(global_server_args_dict, {"max_model_len": None}):
             self.assertEqual(
@@ -5804,6 +5815,7 @@ class TestDeepseekV4Config(unittest.TestCase):
         row_starts = torch.tensor([0, 3], device="cuda", dtype=torch.int32)
         row_ends = torch.tensor([3, 6], device="cuda", dtype=torch.int32)
         out = torch.empty((2, 4), device="cuda", dtype=torch.int32)
+        scores_out = torch.empty((2, 4), device="cuda", dtype=torch.float32)
 
         try:
             actual = _deepseek_v4_indexer_topk_from_logits(
@@ -5814,6 +5826,7 @@ class TestDeepseekV4Config(unittest.TestCase):
                 row_starts=row_starts,
                 row_ends=row_ends,
                 out=out,
+                scores_out=scores_out,
             )
         except RuntimeError as exc:
             if "requires the CUDA prefill top-k op" not in str(exc):
@@ -5826,6 +5839,12 @@ class TestDeepseekV4Config(unittest.TestCase):
             dtype=torch.int32,
         )
         self.assertTrue(torch.equal(actual.cpu(), expected))
+        torch.testing.assert_close(
+            scores_out.cpu(),
+            torch.tensor(
+                [[0.0, 3.0, 1.0, -float("inf")], [2.0, 8.0, 5.0, -float("inf")]]
+            ),
+        )
 
     def test_deepseek_v4_topk_buffer_grows_and_reuses(self):
         buffer = _DeepseekV4TopKBuffer(topk_tokens=3)
@@ -5839,6 +5858,64 @@ class TestDeepseekV4Config(unittest.TestCase):
         self.assertEqual(first.data_ptr(), second.data_ptr())
         self.assertEqual(third.shape, (4, 3))
         self.assertGreaterEqual(buffer.buffer.shape[0], 4)
+
+    def test_deepseek_v4_dcp_indexer_merges_scored_global_candidates(self):
+        self_obj = SimpleNamespace(
+            compress_ratio=4,
+            topk_tokens=2,
+            topk_buffer=_DeepseekV4TopKBuffer(2),
+            _persistent_topk_workspace=None,
+            _dcp_group=lambda _metadata: (0, 1),
+        )
+        metadata = SimpleNamespace(
+            cache=SimpleNamespace(
+                dcp_world_size=2,
+                dcp_rank=0,
+                cp_kv_cache_interleave_size=1,
+                paged_cache_block_table_base_offsets={},
+            )
+        )
+        captured = {}
+
+        def fake_gather(local_scores, local_rows, **_kwargs):
+            captured["local_rows"] = local_rows.clone()
+            return (
+                torch.tensor([[5.0, 1.0, 4.0, 6.0]]),
+                torch.tensor([[0, 2, 1, 3]], dtype=torch.int32),
+            )
+
+        def fake_topk(_scores, _lengths, _topk_tokens, **kwargs):
+            kwargs["out"].copy_(torch.tensor([[3, 0]], dtype=torch.int32))
+            return kwargs["out"]
+
+        with (
+            patch.object(
+                deepseek_v4_model,
+                "gather_dcp_indexer_candidates",
+                side_effect=fake_gather,
+            ),
+            patch.object(
+                deepseek_v4_model,
+                "_deepseek_v4_indexer_topk_from_logits",
+                side_effect=fake_topk,
+            ),
+        ):
+            actual = DeepseekV4Indexer._merge_dcp_indexer_candidates(
+                self_obj,
+                local_rows=torch.tensor([[0, 1]], dtype=torch.int32),
+                local_scores=torch.tensor([[5.0, 1.0]]),
+                token_to_req_indices=torch.tensor([0], dtype=torch.int32),
+                metadata=metadata,
+                indexer_block_size=4,
+                prefill=False,
+            )
+
+        self.assertTrue(
+            torch.equal(
+                captured["local_rows"], torch.tensor([[0, 2]], dtype=torch.int32)
+            )
+        )
+        self.assertTrue(torch.equal(actual, torch.tensor([[3, 0]], dtype=torch.int32)))
 
     def test_deepseek_v4_sparse_indexer_custom_op_registered(self):
         self.assertTrue(
@@ -6039,6 +6116,7 @@ class TestDeepseekV4Config(unittest.TestCase):
                 decode_block_table=None,
                 decode_max_context_len=0,
                 topk_indices_buffer=torch.empty((1, 1), dtype=torch.int32),
+                topk_scores_buffer=torch.empty((1, 1), dtype=torch.float32),
                 prefill_gather_values_workspace=torch.empty((0, 1), dtype=torch.uint8),
                 prefill_gather_scales_workspace=torch.empty((0, 1), dtype=torch.uint8),
                 persistent_topk_workspace=torch.empty(0, dtype=torch.uint8),
@@ -6195,12 +6273,43 @@ class TestDeepseekV4Config(unittest.TestCase):
         self.assertTrue(torch.equal(row_lens, torch.tensor([3, 3, 4, 1])))
         self.assertEqual(max_len, 4)
 
+    def test_deepseek_v4_dcp_indexer_prefill_plan_uses_local_owned_prefix(self):
+        slots, cu_start, cu_end, row_lens, max_len = (
+            _deepseek_v4_indexer_prefill_request_gather_plan(
+                seq_lens_cpu=torch.tensor([32], dtype=torch.int32),
+                query_lens_cpu=torch.tensor([4], dtype=torch.int32),
+                block_table=torch.tensor([[10]], dtype=torch.int32),
+                cache_block_size=2,
+                compress_ratio=4,
+                req_start=0,
+                req_end=1,
+                query_start=0,
+                query_end=4,
+                block_table_base_offsets=torch.tensor([1], dtype=torch.int32),
+                dcp_size=2,
+                dcp_rank=1,
+                interleave_size=2,
+            )
+        )
+
+        self.assertTrue(torch.equal(slots, torch.tensor([20, 21])))
+        self.assertTrue(torch.equal(cu_start, torch.tensor([0, 0, 0, 0])))
+        self.assertTrue(torch.equal(cu_end, torch.tensor([1, 1, 1, 2])))
+        self.assertTrue(torch.equal(row_lens, torch.tensor([1, 1, 1, 2])))
+        self.assertEqual(max_len, 2)
+
     def test_deepseek_v4_indexer_prefill_metadata_builds_chunk_plan(self):
         metadata = SimpleNamespace(
             seq_lens_cpu=torch.tensor([16, 8], dtype=torch.int32),
             query_lens_cpu=torch.tensor([4, 2], dtype=torch.int32),
             num_prefill_reqs=2,
             indexer=SimpleNamespace(prefill_plan_cache={}),
+            cache=SimpleNamespace(
+                dcp_world_size=1,
+                dcp_rank=0,
+                cp_kv_cache_interleave_size=1,
+                paged_cache_block_table_base_offsets={},
+            ),
         )
         block_table = torch.tensor([[10], [20]], dtype=torch.int32)
 

@@ -1789,6 +1789,9 @@ def _deepseek_v4_indexer_decode_metadata_kernel(
     cols: tl.constexpr,
     compress_ratio: tl.constexpr,
     cache_block_size: tl.constexpr,
+    dcp_size: tl.constexpr,
+    dcp_rank: tl.constexpr,
+    interleave_size: tl.constexpr,
     max_blocks: tl.constexpr,
     candidate_block: tl.constexpr,
 ):
@@ -1802,8 +1805,20 @@ def _deepseek_v4_indexer_decode_metadata_kernel(
         base_logical_page = tl.load(block_table_base_offsets_ptr + safe_req).to(
             tl.int64
         )
+    global_compressed_lens = (pos + 1) // compress_ratio
+    dcp_cycle = dcp_size * interleave_size
+    dcp_cycles = global_compressed_lens // dcp_cycle
+    dcp_remainder = global_compressed_lens % dcp_cycle
+    dcp_tail = tl.maximum(
+        0,
+        tl.minimum(
+            interleave_size,
+            dcp_remainder - dcp_rank * interleave_size,
+        ),
+    )
+    local_compressed_lens = dcp_cycles * interleave_size + dcp_tail
     compressed_lens = tl.maximum(
-        ((pos + 1) // compress_ratio) - base_logical_page * cache_block_size,
+        local_compressed_lens - base_logical_page * cache_block_size,
         0,
     )
     num_valid_pages = tl.zeros((), dtype=tl.int64)
@@ -1844,6 +1859,9 @@ def deepseek_v4_indexer_decode_metadata_compute(
     out_context_lens: torch.Tensor,
     out_block_tables: torch.Tensor,
     block_table_base_offsets: torch.Tensor | None = None,
+    dcp_size: int = 1,
+    dcp_rank: int = 0,
+    interleave_size: int = 1,
 ) -> None:
     """Build decode-indexer context lengths and block tables in one Triton pass."""
     num_tokens = int(positions.shape[0]) if positions.ndim >= 1 else 0
@@ -1874,6 +1892,9 @@ def deepseek_v4_indexer_decode_metadata_compute(
         cols=cols,
         compress_ratio=int(compress_ratio),
         cache_block_size=int(cache_block_size),
+        dcp_size=int(dcp_size),
+        dcp_rank=int(dcp_rank),
+        interleave_size=int(interleave_size),
         max_blocks=int(max_blocks),
         candidate_block=candidate_block,
     )
