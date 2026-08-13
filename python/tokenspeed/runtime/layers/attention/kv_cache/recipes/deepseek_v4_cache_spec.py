@@ -300,6 +300,20 @@ def _compressed_kernel_block_size(ratio: int) -> int:
     return max(1, DEEPSEEK_V4_COMPRESSED_LOGICAL_BLOCK_SIZE // ratio)
 
 
+def deepseek_v4_scheduler_block_tokens(
+    decode_context_parallel_size: int,
+) -> int:
+    """Return the global token domain covered by one DCP-local parent block."""
+
+    if (
+        isinstance(decode_context_parallel_size, bool)
+        or not isinstance(decode_context_parallel_size, int)
+        or decode_context_parallel_size <= 0
+    ):
+        raise ValueError("decode_context_parallel_size must be a positive integer")
+    return DEEPSEEK_V4_COMPRESSED_LOGICAL_BLOCK_SIZE * decode_context_parallel_size
+
+
 def _resolve_sliding_window(hf_config: Any) -> int:
     for source in (hf_config, getattr(hf_config, "text_config", None)):
         if source is None:
@@ -321,6 +335,8 @@ def build_v4_cache_specs(
     layer_ratio: Sequence[int],
     cache_blocks_per_lcm_block: Mapping[str, int] | None = None,
     decode_input_tokens: int = 1,
+    decode_context_parallel_size: int = 1,
+    cp_kv_cache_interleave_size: int = 1,
 ) -> list[PagedCacheGroupSpec]:
     if (
         isinstance(decode_input_tokens, bool)
@@ -328,8 +344,32 @@ def build_v4_cache_specs(
         or decode_input_tokens <= 0
     ):
         raise ValueError("decode_input_tokens must be a positive integer")
-    swa_window = _resolve_sliding_window(hf_config)
+    if (
+        isinstance(decode_context_parallel_size, bool)
+        or not isinstance(decode_context_parallel_size, int)
+        or decode_context_parallel_size <= 0
+    ):
+        raise ValueError("decode_context_parallel_size must be a positive integer")
+    if (
+        isinstance(cp_kv_cache_interleave_size, bool)
+        or not isinstance(cp_kv_cache_interleave_size, int)
+        or cp_kv_cache_interleave_size <= 0
+    ):
+        raise ValueError("cp_kv_cache_interleave_size must be a positive integer")
+    if decode_context_parallel_size == 1 and cp_kv_cache_interleave_size != 1:
+        raise ValueError("KV interleave requires decode context parallelism")
     unique_compress_ratios = sorted({int(r) for r in layer_ratio if int(r) > 1})
+    for rows_per_page in (
+        V4_KERNEL_BLOCK_ROWS,
+        *(_compressed_kernel_block_size(r) for r in unique_compress_ratios),
+    ):
+        if rows_per_page % cp_kv_cache_interleave_size:
+            raise ValueError(
+                "DeepSeek V4 DCP KV interleave must divide every sharded "
+                f"cache page row count; interleave={cp_kv_cache_interleave_size}, "
+                f"rows_per_page={rows_per_page}"
+            )
+    swa_window = _resolve_sliding_window(hf_config)
     # c4 compression consumes the prior four-token state plus every token in
     # the target verify block. Preserve the historical eight-token window for
     # verify widths <= 4 and grow it for wider block-speculative decoders.
@@ -344,7 +384,7 @@ def build_v4_cache_specs(
             group_id=V4_SWA_KV_GROUP_ID,
             retention="sliding_window",
             rows_per_page=V4_KERNEL_BLOCK_ROWS,
-            entry_stride_tokens=1,
+            entry_stride_tokens=decode_context_parallel_size,
             sliding_window_tokens=swa_window,
             family="state",
         ),
@@ -373,7 +413,7 @@ def build_v4_cache_specs(
                 group_id=v4_compressed_kv_group_id(ratio),
                 retention="full_history",
                 rows_per_page=_compressed_kernel_block_size(ratio),
-                entry_stride_tokens=ratio,
+                entry_stride_tokens=ratio * decode_context_parallel_size,
                 sliding_window_tokens=None,
                 family="history",
             )
@@ -525,6 +565,7 @@ __all__ = [
     "deepseek_v4_indexer_mxfp4_value_bytes",
     "deepseek_v4_lcm_blocks_needed",
     "deepseek_v4_nope_dim",
+    "deepseek_v4_scheduler_block_tokens",
     "deepseek_v4_swa_row_bytes",
     "deepseek_v4_swa_scale_dim",
     "deepseek_v4_swa_token_stride",
