@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "backend": "flashinfer_cutlass_mxfp8_mxfp4",
+  "metadata": {
+    "gpu": "NVIDIA RTX 6000D",
+    "compute_capability": "12.0",
+    "flashinfer_version": "0.6.16",
+    "cutlass_tactic_abi_version": "0.1",
+    "torch_version": "2.13.0+cu130",
+    "cuda_version": "13.0",
+    "cudnn_version": 92000
+  },
+  "shape": {
+    "hidden_size": 4096,
+    "intermediate_size": 512,
+    "num_experts": 256,
+    "top_k": 6,
+    "tp_size": 4,
+    "ep_size": 1,
+    "activation_type": "swiglu_bias",
+    "activation_dtype": "mxfp8_e4m3",
+    "weight_dtype": "mxfp4_e2m1_e8m0",
+    "output_dtype": "bfloat16",
+    "fused_finalize": true,
+    "enable_pdl": true,
+    "routing": "both"
+  },
+  "candidate_counts": {
+    "gemm1": 20,
+    "gemm2": 40
+  },
+  "tactics": {
+    "1": [18, 20],
+    "2": [18, 48],
+    "4": [16, 46],
+    "8": [16, 46],
+    "16": [16, 46],
+    "32": [18, 46],
+    "64": [18, 46],
+    "128": [16, 46],
+    "256": [16, 46],
+    "512": [16, 48],
+    "768": [18, 46],
+    "1024": [18, 46],
+    "1280": [16, 46],
+    "1536": [16, 48],
+    "1792": [16, 48],
+    "2048": [18, 48],
+    "2560": [16, 48],
+    "3072": [16, 20],
+    "3584": [18, 46],
+    "4096": [16, 20],
+    "8192": [16, 48]
+  }
+}

@@ -361,7 +361,10 @@ def test_mxfp4_cutlass_apply_uses_flashinfer_swizzled_activation_scales(monkeypa
 
     x = torch.ones((2, 128), dtype=torch.bfloat16)
     result = _moe_cutlass_mxfp4.flashinfer_cutlass_mxfp4_moe_apply(
-        {},
+        {
+            "cutlass_mxfp4_tactics": {1: [16, 46]},
+            "cutlass_mxfp4_tactics_enable_pdl": False,
+        },
         x,
         module,
         torch.zeros((2, 1), dtype=torch.float32),
@@ -388,6 +391,8 @@ def test_mxfp4_cutlass_apply_uses_flashinfer_swizzled_activation_scales(monkeypa
     assert first_call["input_sf"] is not None
     assert first_call["swizzled_input_sf"] is True
     assert first_call["activation_type"] == _moe_cutlass_mxfp4.ActivationType.SwigluBias
+    assert first_call["profile_ids"] == [16, 46]
+    assert second_call["profile_ids"] is None
     assert first_call["workspace_buffer"].numel() == 256
     assert first_call["workspace_buffer"] is second_call["workspace_buffer"]
 

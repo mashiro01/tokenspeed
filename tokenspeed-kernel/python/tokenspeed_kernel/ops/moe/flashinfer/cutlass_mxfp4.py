@@ -23,6 +23,10 @@ from __future__ import annotations
 import functools
 
 import torch
+from tokenspeed_kernel.ops.moe.flashinfer.cutlass_mxfp4_tactics import (
+    load_cutlass_mxfp4_tactics,
+    select_cutlass_mxfp4_tactics,
+)
 from tokenspeed_kernel.ops.tuning import get_autotune_max_num_tokens
 from tokenspeed_kernel.platform import (
     ArchVersion,
@@ -135,7 +139,6 @@ if platform.is_nvidia:
         plan: dict,
         w: torch.nn.Module,
     ) -> None:
-        del plan
         intermediate_size = w.w13_weight.shape[1] // 2
         hidden_size = w.w2_weight.shape[1]
         if intermediate_size % 128 != 0 or hidden_size % 128 != 0:
@@ -194,6 +197,23 @@ if platform.is_nvidia:
             major, minor = torch.cuda.get_device_capability(w.w13_weight.device)
             get_cutlass_fused_moe_module(f"{major}{minor}")
             get_mxfp8_quantization_sm100_module()
+            activation_type = "swiglu" if w.gemm1_alpha is None else "swiglu_bias"
+            plan["cutlass_mxfp4_tactics"] = load_cutlass_mxfp4_tactics(
+                hidden_size=hidden_size,
+                intermediate_size=intermediate_size,
+                num_experts=w.num_experts,
+                top_k=w.top_k,
+                tp_size=w.tp_size,
+                ep_size=w.ep_size,
+                activation_type=activation_type,
+                enable_pdl=True,
+                device_index=(
+                    w.w13_weight.device.index
+                    if w.w13_weight.device.index is not None
+                    else torch.cuda.current_device()
+                ),
+            )
+            plan["cutlass_mxfp4_tactics_enable_pdl"] = True
 
     @register_kernel(
         "moe",
@@ -236,7 +256,7 @@ if platform.is_nvidia:
         do_finalize: bool = True,
         enable_pdl: bool = False,
     ) -> torch.Tensor:
-        del plan, router_logits, num_tokens_global, max_num_tokens_per_gpu
+        del router_logits, num_tokens_global, max_num_tokens_per_gpu
         if not do_finalize:
             raise ValueError("FlashInfer CUTLASS MXFP4 MoE requires finalization")
         if topk_weights is None or topk_ids is None:
@@ -292,6 +312,18 @@ if platform.is_nvidia:
             ep_size,
             ep_rank,
         )
+        tactic_table = plan.get("cutlass_mxfp4_tactics")
+        if tactic_table is not None and enable_pdl != plan.get(
+            "cutlass_mxfp4_tactics_enable_pdl"
+        ):
+            raise RuntimeError(
+                "CUTLASS MXFP4 tactic-table PDL mode does not match this call"
+            )
+        profile_ids = (
+            None
+            if tactic_table is None
+            else select_cutlass_mxfp4_tactics(tactic_table, x.shape[0])
+        )
         result = cutlass_fused_moe(
             input=x_quant,
             input_sf=x_scale,
@@ -321,6 +353,7 @@ if platform.is_nvidia:
             tune_max_num_tokens=get_autotune_max_num_tokens(),
             enable_pdl=enable_pdl,
             activation_type=activation_type,
+            profile_ids=profile_ids,
             workspace_buffer=workspace_buffer,
         )[0]
         if hidden_original != hidden_padded:

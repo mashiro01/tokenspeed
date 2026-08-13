@@ -7,7 +7,7 @@
 ## 结论摘要
 
 1. **后续服务不如 53 快，不能归因于“配置了 1M”这一项。** `max_model_len=1,048,576` 只是允许的上限；短 prompt 的 decode 是否快，主要取决于 speculative decode 是否真正生效、target/draft/context-KV 是否完整进入 CUDA graph、KV cache 实际格式、MoE 与 PCIe collective，以及 TP/DCP 组合。当前 TokenSpeed 分支与 RTX6KPro 的快配置并不是同一套合同。
-2. **当前分支已有可信且可启动的 SM120 功能基座，但 performance contract 尚未闭环。** 分支已包含上游主线、[#948](https://github.com/lightseekorg/tokenspeed/pull/948) 的架构归一化，以及当前 [#992](https://github.com/lightseekorg/tokenspeed/pull/992) 的 SM120 sparse-MLA、FlashInfer CUTLASS MXFP4 MoE、持久 workspace、跨架构路由和 RSAG fallback。`89b163ac` 修掉 baseline `sm_120` 的 FP4 conversion PTX 泄漏，`c0f28823` 适配 FlashInfer 0.6.16 autotuner API；新增的显式 packed-MXFP4 expert contract 已使 48/48 shards 完整加载。现场还修复了 SM120 上 FlashInfer fused-MoE 调优准备阶段的坏 tactic，以及 DSV4 indexer/SWA stateful cache-write 双流竞态。TP4、target-only、exact max 1M、decode graph 和 16--4096 全部 prefill graph bucket 已完成冷启动与正确性请求。随后 profiler 定位并修复 SM120 compressor/router 错退 FP32 matmul、decode 被过度串行化和 indexer schedule metadata 重复生成，4K/256 decode 从 68.66 提升至 76.22 tok/s，但仍未接近 53 的约 107 tok/s。
+2. **当前分支已有可信且可启动的 SM120 功能基座，但 performance contract 尚未闭环。** 分支已包含上游主线、[#948](https://github.com/lightseekorg/tokenspeed/pull/948) 的架构归一化，以及当前 [#992](https://github.com/lightseekorg/tokenspeed/pull/992) 的 SM120 sparse-MLA、FlashInfer CUTLASS MXFP4 MoE、持久 workspace、跨架构路由和 RSAG fallback。`89b163ac` 修掉 baseline `sm_120` 的 FP4 conversion PTX 泄漏，`c0f28823` 适配 FlashInfer 0.6.16 autotuner API；新增的显式 packed-MXFP4 expert contract 已使 48/48 shards 完整加载。现场还修复了 SM120 上 FlashInfer fused-MoE 调优准备阶段的坏 tactic，以及 DSV4 indexer/SWA stateful cache-write 双流竞态。TP4、target-only、exact max 1M、decode graph 和 16--4096 全部 prefill graph bucket 已完成冷启动与正确性请求。随后 profiler 定位并修复 SM120 compressor/router 错退 FP32 matmul、decode 被过度串行化和 indexer schedule metadata 重复生成，4K/256 decode 从 68.66 提升至 76.22 tok/s；`120f` 干净构建与显式 MoE tactic 表又将热态重复结果提升至平均 79.97 tok/s，但仍未接近 53 的约 107 tok/s。
 3. **1M 支持是四层能力，不是一个布尔开关：** 配置接受 1M、KV 容量容纳实际 1M、attention/cache writer 在实际深度正确、调度与图执行在冷 1M prefill 后仍稳定。DGX Spark 的社区 runbook 证明 1M 可以跑通，但它们也公开了 256K 冷 prefill 主机重启、32K decode 补丁回退、600K cache dispatch 回退等问题；“启动显示 1M”不等于完整闭环。
 4. **应先工程化分支，再继续性能实验。** 以更新后的 `main` 为唯一基线，在 `dev` 集成分支维护可复现的 feature stack；每个能力从独立 feature 分支进入，并携带 correctness、graph coverage、实际上下文和性能 gate。不要把旧 PR 整包 cherry-pick，也不要继续在远端节点上堆不可追溯 patch。
 5. **工程顺序与吞吐收益顺序必须分开。** 先完成实际 1M compact NVFP4 correctness 合同，再做性能优化；就吞吐潜力而言，把已合入 TokenSpeed 的 Week-0 DSpark 做成 SM120 完整全图实现最有价值。RTX PRO 6000 数据显示 speculative 的收益可很大，但它完全受 acceptance 和 verify step 支配；仅加载 drafter、没有高 acceptance 或存在 eager break，甚至会倒退。严格 graph coverage、长 KV indexer、MoE/verify 和 DCP 都必须实现，但要以独立实验臂进入，不能用一个混合配置掩盖因果。
@@ -28,7 +28,7 @@
 | DCP / sequence parallel | 上游 runtime 缺失；本地 correctness-first DCP2 已短请求验证 | #364 只有 kernel primitive。旧本地 integration tree 已有 DCP subgroup、物理 token stripe、Q/O/LSE collective、prefill/indexer reconstruction 和 graph telemetry；59 的 DCP2 profile 通过短请求启动资格，但 capability table 仍把 target-GPU graph collectives 标为未正式晋级，且全历史 reconstruction 明确是 correctness-first，不是最终高性能算法。 |
 | ADP / DP attention | **缺失** | 没有可 cherry-pick 的 TokenSpeed 上游实现。它主要针对高并发 KV 去重，不应作为 C1 低延迟的第一优化。 |
 | P/D cache handoff | 未纳入 | [#997](https://github.com/lightseekorg/tokenspeed/pull/997) 仍开放，已做 4×SM120、TP2/EP2 的 P/D smoke；更新的 [#1057](https://github.com/lightseekorg/tokenspeed/pull/1057) 正在统一 cache recipe/plan 和异构 TP 合同。不是当前单服务 TP4 的必要依赖。 |
-| SM120 启动期调优与 DSV4 cache-write overlap | 已现场闭环 | FlashInfer 0.6.16 的 fused-MoE `tactic=-1` preparation 在异常边界外，SM120 TMA-WS 会污染 CUDA 状态；仅跳过 `gemm1/gemm2` profiling、保留 native CUTLASS heuristic。另以四臂 A/B 确认 Phase-2 indexer/SWA/compressor-state 双流并发会触发 4096-token prefill IMA；只在 SM120 的 prefill/mixed indexer 分支串行，decode 恢复 overlap，保留 Phase-1 projection/compressor-GEMM 与 compressor-only cache-write overlap。 |
+| SM120 启动期调优与 DSV4 cache-write overlap | 已现场闭环 | FlashInfer 0.6.16 的 fused-MoE `tactic=-1` preparation 在异常边界外，SM120 TMA-WS 会污染 CUDA 状态；启动期继续跳过这两个不安全 profiling op，但离线完整枚举显式 profile ID，并按 GPU、CC、FlashInfer、CUTLASS tactic ABI、Torch/CUDA、MoE shape、TP/EP 与 PDL 精确绑定 21-bucket 表。另以四臂 A/B 确认 Phase-2 indexer/SWA/compressor-state 双流并发会触发 4096-token prefill IMA；只在 SM120 的 prefill/mixed indexer 分支串行，decode 恢复 overlap，保留 Phase-1 projection/compressor-GEMM 与 compressor-only cache-write overlap。 |
 
 当前 stack 不是另一套私有实现：除 #948 外，6 个 SM120 kernel/runtime 提交与 #992 当前 head 的初始实现及后续修正对应，另有集成修复；`feat/sm120-native-build` 再独立承载干净 SM120 构建修复。因此现在不该再次从 #992 cherry-pick；应在当前 stack 上逐项闭环。
 
@@ -65,6 +65,16 @@
 
 decode 差距在 4K 到 128K 基本恒定为 34–38%，而 warm prefill 差距约 17–20%。这直接排除了“1M 上限让短上下文 decode 变慢”，也不符合单纯长 KV 扫描瓶颈；首要变量是每 token 都执行的 MoE/linear、collective、DCP 与 native target。首轮 GPU trace 随即证明，新栈的 compressor/router 因旧架构 taxonomy 把 SM120 排除而退到 FP32 matmul，且 prefill 竞态修复错误地把 decode 也串行化；修复后 4K/256 从 68.66 提升到 75.37 tok/s。再将 indexer schedule metadata 从逐 layer 重算收敛为逐 step/key 一次后达到 76.22 tok/s。与此同时，59 的四个 TP rank 均确认 TRTLLM one-shot all-reduce 已启用，53/59 PCIe/NUMA 拓扑相同，故节点间主差距不能归因于 P2P 初始化失败。
 
+### `120f` 与显式 MXFP4 MoE tactic A/B
+
+`CUDA_ARCH_LIST=12.0f` 的干净镜像完成 48/48 shard 加载、9 个 prefill graph bucket、exact max 1M capacity 和短请求正确性。其 4K/256 热态三次为 76.585/77.241/77.152 tok/s，平均 76.99；相对 baseline build 的 76.22 只约 +1.0%。因此 `120f` 是正确的 dense-FP4 构建合同，但它本身不是 53/59 差距的主要答案。
+
+FlashInfer 0.6.16 为该 SM120 CUTLASS MoE 暴露 GEMM1 20 个、GEMM2 40 个绝对 profile ID，但 shape/occupancy 查询仍把许多无法 dispatch 的组合列为可用；真实执行只有各 6 个成功。新增离线 sweeper 不进入会触发 `tactic=-1` 的 autotune context，而是对 1--8192 的完整 hybrid bucket 梯子逐一执行全部 stage 候选和 36 个可执行 pair，先过 finite/reference gate，再用 CUDA event 做 5 次预热、50 次测量。每个 bucket 同时覆盖 experts 分散和高度集中两种路由，最终选择相对两种 profile 各自最优值之最大 regret 最小的 pair。PDL 是策略身份的一部分：PDL=false 表在真实服务 warmup 被 fail-closed 拒绝后，重新生成 PDL=true 表；没有通过禁用 PDL 迁就旧表。
+
+PDL=true 微基准中，单 token 的稳健策略把 spread/concentrated 从 164.445/155.560 µs 降到 72.049/72.724 µs，即 2.28×/2.14×；64-token 为 1.91×/2.31×，512-token 为 1.75×/1.33×，4096-token 为 1.12×/0.97×。这说明原生 heuristic 在 decode 小 M 明显失配，但收益会随 batch/routing 收敛，不能把单 kernel 的 2×外推到整模型。
+
+接入真实 TP4、target-only、FP8 KV、exact max 1M、全图服务后，4095/256 的三次 decode 为 79.4/80.2/80.3 tok/s，平均 79.97；相对同镜像未固定 tactic 的 76.99 为 +3.9%。服务仍比 53/8000 的 107.23 低约 25.4%。结论是：显式 tactic 表值得保留并已工程闭环，但剩余主差距位于 MoE 之外或 graph 内多项叠加，下一步应回到 step-level target profile、DCP2/compact KV 与完整 graph，而不是继续把全部差距归因于单个 MoE kernel。
+
 53/8001 的历史 speculative acceptance 只有 `94 / 21,130 = 0.445%`，平均 decode 约 77.6 tok/s，慢于无 speculative 的 53/8000 约 107.3 tok/s。因此**当前 53 的优势不是 DSpark**；它来自 FP8+DCP2+B12X/vLLM 这一整套 target path。DSpark 仍有很高的后续收益潜力，但必须先修 acceptance 与 full graph，不能把开关状态当成能力完成。
 
 同集群此前保留的 r33 原始 JSON 又给出一个更强的硬件上限证据：55 上 TP4、131K 上限、DSpark/B12X 的单服务持续 decode 为 C1 222.7、C4 478.3、C8 637.9 aggregate tok/s；另一轮双服务并行时该臂为 221.4/495.3/510.2。它不是 exact-1M 合同，不能拿来替代最终服务，但证明 6000D 上 200+ C1、500+ aggregate 已经在本集群真实出现过。当前 exact-1M TokenSpeed 的 70 tok/s 不是硬件上限。
@@ -72,10 +82,10 @@ decode 差距在 4K 到 128K 基本恒定为 34–38%，而 warm prefill 差距�
 ### 对新分支的判定方法
 
 - #948 的架构归一化和 #992 的 SM120 sparse MLA 是必要基座，价值明确。
-- #992 的 CUTLASS MXFP4 MoE 是可用候选；修复每-token SM120 dispatch/overlap 后，现场 matched A/B 已从 68.66 升到 76.22 tok/s，越过旧 B12X W4A16 的 69.69，但仍未接近 53 B12X A8/DCP2 的 107.23；下一步继续分层 profile MoE/linear/collective/attention，并完成 `120f` performance 镜像 A/B。
+- #992 的 CUTLASS MXFP4 MoE 是可用候选；修复每-token SM120 dispatch/overlap、切换 `120f` 并固定离线穷举 tactic 后，现场 matched 路线已从 68.66 升到平均 79.97 tok/s，越过旧 B12X W4A16 的 69.69，但仍未接近 53 B12X A8/DCP2 的 107.23；下一步继续分层 profile linear/collective/attention，并推进 DCP2/compact KV。
 - #992 的公开验证只有 exact-shape MoE profiling 和双卡 TEP2 smoke，没有 TP4、exact-1M 或吞吐表。本地首次干净 `sm_120` build 又发现 SM100/feature-specific FP4 PTX 泄漏；所以它“有意义但实现不完整”，不能直接称作成熟部署方案。
 - GPU trace 已证实 DeepSeek V4 compressor/router 的旧 gate 只允许 Hopper 或 SM10x Blackwell，导致 SM120 compressor 反复把 BF16 activation/weight 转成 FP32 matmul；将其改为 NVIDIA SM90+ 的既有 BF16→FP32 GEMM 路径，并只对 SM120 prefill/mixed 禁用 indexer cache-write overlap，matched decode 提升 9.8%。
-- 新分支已经落在约 76 tok/s，结论是实现可用但性能能力仍不完整。下一步直接做 `120f` native build、MoE tactic/linear/collective profile、compact NVFP4/DCP2 与 full DSpark graph；不是继续换机器，也不是继续修 loader。
+- 新分支已经落在约 80 tok/s，结论是实现可用但性能能力仍不完整。`120f` 与 MoE tactic 已完成，下一步直接做 linear/collective/attention 的 graph 内 profile、compact NVFP4/DCP2 与 full DSpark graph；不是继续换机器，也不是继续修 loader。
 
 ## TokenSpeed 上游：哪些值得合，哪些不值得
 
@@ -208,7 +218,7 @@ SGLang 的 [DCP roadmap #21788](https://github.com/sgl-project/sglang/issues/217
 
 ### 1. Target-only 的 expert format、W4A8 MoE 与每步执行
 
-当前 matched A/B 的三边都是 target-only，且 decode 差距从 4K 到 128K 稳定，因此这才是解释“后面都没有 53 快”的首要变量。53 使用 B12X A8，59 旧栈使用 B12X W4A16，新分支使用 FlashInfer MXFP8×MXFP4。新分支已经越过 packed checkpoint loader、autotune 和 graph gate，但 4K decode 仍只有 67.78 tok/s。下一步应逐层测 fused MoE 小-M tile/padding、shared expert/linear、router、all-reduce、DCP 与 graph 内部 launch；不能用 DSpark 掩盖 target path。
+当前 matched A/B 的三边都是 target-only，且 decode 差距从 4K 到 128K 稳定，因此这才是解释“后面都没有 53 快”的首要变量。53 使用 B12X A8，59 旧栈使用 B12X W4A16，新分支使用 FlashInfer MXFP8×MXFP4。新分支已经越过 packed checkpoint loader、autotune、graph gate、`120f` 与离线 tactic 表，4K decode 达到平均 79.97 tok/s，但距 53 仍约 25.4%。下一步应逐层测 shared expert/linear、router、all-reduce、DCP 与 graph 内部 launch；不能用 DSpark 掩盖 target path。
 
 ### 2. Speculative/DSpark 是否真的工作
 
@@ -226,7 +236,7 @@ RTX6KPro 快栈明确 capture target decode、DSpark proposal、sampler/context-
 
 ### 5. MoE verify 与 PCIe collective
 
-#992 已给出可运行的 SM120 FlashInfer CUTLASS MXFP4 MoE 基座，但外部 profile 表明 verify/MoE 占 DSpark step 的约 83%。现场已经证明 FlashInfer 0.6.16 的 TMA-WS tuning preparation 不可用于 SM120，而 heuristic native CUTLASS kernel 可正确运行；这不等于该 heuristic 是最优 tactic。下一步优先检查实际 backend、`120f` target、decode 小 M expert padding/workspace 与逐层 MoE 时间。TP4 collective 需要按具体 PCIe 拓扑 A/B；RTX6KPro 的 TP2/TP4 数据显示收益可能只有 0–3%，TP8 才可能达到两位数。先做 step profile，再决定 CUTLASS、B12X 思路或 RSAG 哪条值得移植。
+#992 已给出可运行的 SM120 FlashInfer CUTLASS MXFP4 MoE 基座，但外部 profile 表明 verify/MoE 占 DSpark step 的约 83%。现场已经证明 FlashInfer 0.6.16 的 TMA-WS tuning preparation 不可用于 SM120，并用显式、环境绑定的 tactic 表把小-M fused MoE 提升到约 2×；真实 target-only 服务只提升 3.9%，因此 tactic 失配不是剩余全部差距。TP4 collective 需要按具体 PCIe 拓扑 A/B；RTX6KPro 的 TP2/TP4 数据显示收益可能只有 0–3%，TP8 才可能达到两位数。先做 graph 内 step profile，再决定 B12X 思路、RSAG、DCP2 或其他 kernel 路线哪条值得移植。
 
 ### 6. DCP/SP/ADP
 
