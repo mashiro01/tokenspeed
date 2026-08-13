@@ -24,10 +24,15 @@ import pytest
 import torch
 
 from tokenspeed.runtime.distributed.dcp import shard_dcp_logical_rows
+from tokenspeed.runtime.layers.attention.kv_cache.recipes.deepseek_v4 import (
+    build_deepseek_v4_cache_fields,
+    solve_deepseek_v4_memory_layout,
+)
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.deepseek_v4_cache_spec import (
     V4_INDEXER_COMPRESSOR_STATE_GROUP_ID,
     V4_SWA_KV_GROUP_ID,
     build_v4_cache_specs,
+    deepseek_v4_cache_layout_from_config,
     deepseek_v4_scheduler_block_tokens,
     v4_compressed_kv_group_id,
     v4_compressor_state_group_id,
@@ -85,6 +90,39 @@ def test_dcp_scheduler_domain_scales_with_context_parallelism(dcp_size):
     assert deepseek_v4_scheduler_block_tokens(dcp_size) == 256 * dcp_size
 
 
+def test_dcp_scheduler_domain_does_not_change_physical_fp8_packing():
+    config = SimpleNamespace(
+        compress_ratios=[1] * 2 + [4] * 21 + [128] * 20,
+        head_dim=512,
+        qk_rope_head_dim=64,
+        index_head_dim=128,
+    )
+    layout = deepseek_v4_cache_layout_from_config(
+        config,
+        page_size=64,
+        use_fp4_indexer_cache=True,
+    )
+    plans = []
+    for dcp_size in (1, 2, 4):
+        logical_block_tokens = deepseek_v4_scheduler_block_tokens(dcp_size)
+        fields = build_deepseek_v4_cache_fields(
+            layout,
+            sliding_window=128,
+            logical_block_tokens=logical_block_tokens,
+        )
+        plans.append(
+            solve_deepseek_v4_memory_layout(
+                fields,
+                logical_block_tokens=logical_block_tokens,
+            )
+        )
+
+    assert [plan.logical_block_tokens for plan in plans] == [256, 512, 1024]
+    assert len({plan.lcm_block_bytes for plan in plans}) == 1
+    assert len({plan.group_packing for plan in plans}) == 1
+    assert len({plan.fields for plan in plans}) == 1
+
+
 def test_packed_rows_have_exactly_one_physical_dcp_owner():
     rows = torch.arange(64, dtype=torch.int64)
     ownership = []
@@ -106,11 +144,31 @@ def test_packed_rows_have_exactly_one_physical_dcp_owner():
 @pytest.mark.parametrize(
     ("rows", "kwargs", "error"),
     [
-        (torch.tensor([0.0]), dict(dcp_size=2, dcp_rank=0, interleave_size=1), TypeError),
-        (torch.tensor([-1]), dict(dcp_size=2, dcp_rank=0, interleave_size=1), ValueError),
-        (torch.tensor([0]), dict(dcp_size=0, dcp_rank=0, interleave_size=1), ValueError),
-        (torch.tensor([0]), dict(dcp_size=2, dcp_rank=2, interleave_size=1), ValueError),
-        (torch.tensor([0]), dict(dcp_size=2, dcp_rank=0, interleave_size=0), ValueError),
+        (
+            torch.tensor([0.0]),
+            dict(dcp_size=2, dcp_rank=0, interleave_size=1),
+            TypeError,
+        ),
+        (
+            torch.tensor([-1]),
+            dict(dcp_size=2, dcp_rank=0, interleave_size=1),
+            ValueError,
+        ),
+        (
+            torch.tensor([0]),
+            dict(dcp_size=0, dcp_rank=0, interleave_size=1),
+            ValueError,
+        ),
+        (
+            torch.tensor([0]),
+            dict(dcp_size=2, dcp_rank=2, interleave_size=1),
+            ValueError,
+        ),
+        (
+            torch.tensor([0]),
+            dict(dcp_size=2, dcp_rank=0, interleave_size=0),
+            ValueError,
+        ),
     ],
 )
 def test_dcp_row_sharding_rejects_invalid_contracts(rows, kwargs, error):

@@ -14,6 +14,7 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.deepseek_v4_cache_spec
     build_v4_cache_specs,
     deepseek_v4_cache_layout_from_config,
     deepseek_v4_lcm_blocks_needed,
+    deepseek_v4_scheduler_block_tokens,
     deepseek_v4_token_capacity_for_cache_pool,
 )
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.plan import (
@@ -74,7 +75,11 @@ def build_deepseek_v4_cache_fields(
     )
 
 
-def solve_deepseek_v4_memory_layout(fields: list[CacheFieldSpec]):
+def solve_deepseek_v4_memory_layout(
+    fields: Sequence[CacheFieldSpec],
+    *,
+    logical_block_tokens: int = _LOGICAL_BLOCK_TOKENS,
+):
     """Solve DSV4's power-of-two group packing for one physical parent."""
     raw_bytes: dict[str, int] = {}
     for field in fields:
@@ -90,7 +95,7 @@ def solve_deepseek_v4_memory_layout(fields: list[CacheFieldSpec]):
     }
     return solve_cache_layout(
         fields,
-        logical_block_tokens=_LOGICAL_BLOCK_TOKENS,
+        logical_block_tokens=logical_block_tokens,
         cache_blocks_per_lcm_block=packing,
         alignment=256,
         max_padding_fraction=_MAX_PADDING_FRACTION,
@@ -109,8 +114,14 @@ def deepseek_v4_cache_fields(
     kv_page_stride_alignment_bytes: int,
 ) -> tuple[CacheFieldSpec, ...]:
     """Describe DSV4 history pages and bounded live-tail state."""
-    if logical_block_tokens != 256:
-        raise ValueError("DeepSeek V4 LCM scheduling requires P=256")
+    if (
+        logical_block_tokens < DEEPSEEK_V4_COMPRESSED_LOGICAL_BLOCK_SIZE
+        or logical_block_tokens % DEEPSEEK_V4_COMPRESSED_LOGICAL_BLOCK_SIZE
+    ):
+        raise ValueError(
+            "DeepSeek V4 LCM scheduling requires P to be a positive multiple "
+            f"of {DEEPSEEK_V4_COMPRESSED_LOGICAL_BLOCK_SIZE}"
+        )
     ratios = tuple(int(ratio) for ratio in layer_ratios)
     if any(ratio not in (1, 4, 128) for ratio in ratios):
         raise ValueError("DeepSeek V4 layer ratios must be 1, 4, or 128")
@@ -214,6 +225,9 @@ def prepare_deepseek_v4_cache(
         CacheSetup,
     )
 
+    dcp_size = int(server_args.parallel_serving_plan.decode_context_parallel_size)
+    logical_block_tokens = deepseek_v4_scheduler_block_tokens(dcp_size)
+
     def use_fp4_indexer(hf_config) -> bool:
         override = getattr(server_args, "attention_use_fp4_indexer_cache", None)
         if override is not None:
@@ -241,7 +255,7 @@ def prepare_deepseek_v4_cache(
         fields = build_deepseek_v4_cache_fields(
             layout,
             sliding_window=int(config.sliding_window),
-            logical_block_tokens=_LOGICAL_BLOCK_TOKENS,
+            logical_block_tokens=logical_block_tokens,
         )
         return layout, fields
 
@@ -264,7 +278,10 @@ def prepare_deepseek_v4_cache(
         attn_config,
         layer_indices=range(num_target_layers + num_draft_layers),
     )
-    merged_layout_plan = solve_deepseek_v4_memory_layout(merged_fields)
+    merged_layout_plan = solve_deepseek_v4_memory_layout(
+        merged_fields,
+        logical_block_tokens=logical_block_tokens,
+    )
     packing = dict(merged_layout_plan.group_packing)
 
     num_lcm_blocks = cache_budget_bytes // merged_layout_plan.lcm_block_bytes - 1
@@ -279,6 +296,10 @@ def prepare_deepseek_v4_cache(
             layer_ratio=merged_layout.layer_ratio,
             cache_blocks_per_lcm_block=packing,
             decode_input_tokens=decode_input_tokens,
+            decode_context_parallel_size=dcp_size,
+            cp_kv_cache_interleave_size=(
+                server_args.parallel_serving_plan.cp_kv_cache_interleave_size
+            ),
         )
     )
     max_packing = max(packing.values())
@@ -286,10 +307,10 @@ def prepare_deepseek_v4_cache(
     upper_bound = (
         token_limit
         if token_limit is not None
-        else num_lcm_blocks * max_packing * _LOGICAL_BLOCK_TOKENS
+        else num_lcm_blocks * max_packing * logical_block_tokens
     )
     sizing = {
-        "logical_block_tokens": _LOGICAL_BLOCK_TOKENS,
+        "logical_block_tokens": logical_block_tokens,
         "max_live_requests": attn_config.max_bs,
         "max_scheduled_tokens": max(0, int(server_args.chunked_prefill_size)),
         "max_context_len": attn_config.context_len,

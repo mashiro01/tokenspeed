@@ -50,11 +50,7 @@ def shard_dcp_logical_rows(
         or logical_rows.is_complex()
     ):
         raise TypeError("DCP logical rows must use an integer dtype")
-    if (
-        isinstance(dcp_size, bool)
-        or not isinstance(dcp_size, int)
-        or dcp_size <= 0
-    ):
+    if isinstance(dcp_size, bool) or not isinstance(dcp_size, int) or dcp_size <= 0:
         raise ValueError("DCP size must be a positive integer")
     if (
         isinstance(dcp_rank, bool)
