@@ -2650,6 +2650,7 @@ class TestDeepseekV4Config(unittest.TestCase):
                 context_len=4096,
                 decode_context_parallel_size=2,
                 dcp_rank=1,
+                dcp_group=(0, 1),
                 cp_kv_cache_interleave_size=2,
             )
         )
@@ -2685,6 +2686,75 @@ class TestDeepseekV4Config(unittest.TestCase):
         self.assertEqual(sliced.cache.dcp_world_size, 2)
         self.assertEqual(sliced.cache.dcp_rank, 1)
         self.assertEqual(sliced.cache.cp_kv_cache_interleave_size, 2)
+
+    def test_deepseek_v4_dcp_slot_mapping_compacts_owned_rows_after_local_base(self):
+        backend = DeepseekV4AttentionBackend(
+            SimpleNamespace(
+                page_size=4,
+                device="cpu",
+                num_attention_heads=16,
+                num_kv_heads=1,
+                attn_tp_size=2,
+                dtype=torch.bfloat16,
+                is_draft=False,
+                speculative_num_draft_tokens=1,
+                head_dim=4,
+                context_len=64,
+                decode_context_parallel_size=2,
+                dcp_rank=1,
+                dcp_group=(0, 1),
+                cp_kv_cache_interleave_size=2,
+            )
+        )
+
+        indices, lens = backend._dcp_slots_from_global_rows(
+            global_rows=torch.tensor([[10, 11, 14, 15, 8, 12]], dtype=torch.int64),
+            req_indices=torch.tensor([0], dtype=torch.int32),
+            block_table=torch.tensor([[10]], dtype=torch.int32),
+            rows_per_page=4,
+            base_offsets=torch.tensor([1], dtype=torch.int32),
+        )
+
+        self.assertTrue(
+            torch.equal(
+                indices,
+                torch.tensor([[40, 41, 42, 43, -1, -1]], dtype=torch.int32),
+            )
+        )
+        self.assertTrue(torch.equal(lens, torch.tensor([4], dtype=torch.int32)))
+
+    def test_deepseek_v4_dcp_slot_mapping_rejects_page_zero(self):
+        backend = DeepseekV4AttentionBackend(
+            SimpleNamespace(
+                page_size=4,
+                device="cpu",
+                num_attention_heads=16,
+                num_kv_heads=1,
+                attn_tp_size=2,
+                dtype=torch.bfloat16,
+                is_draft=False,
+                speculative_num_draft_tokens=1,
+                head_dim=4,
+                context_len=64,
+                decode_context_parallel_size=2,
+                dcp_rank=0,
+                dcp_group=(0, 1),
+                cp_kv_cache_interleave_size=1,
+            )
+        )
+
+        indices, lens = backend._dcp_slots_from_global_rows(
+            global_rows=torch.tensor([[0, 2]], dtype=torch.int64),
+            req_indices=torch.tensor([0], dtype=torch.int32),
+            block_table=torch.tensor([[0]], dtype=torch.int32),
+            rows_per_page=4,
+            base_offsets=None,
+        )
+
+        self.assertTrue(
+            torch.equal(indices, torch.tensor([[-1, -1]], dtype=torch.int32))
+        )
+        self.assertTrue(torch.equal(lens, torch.tensor([0], dtype=torch.int32)))
 
     def test_deepseek_v4_lcm_graph_tables_keep_absolute_logical_positions(self):
         backend = DeepseekV4AttentionBackend(
@@ -5306,6 +5376,270 @@ class TestDeepseekV4Config(unittest.TestCase):
 
         self.assertEqual(out.shape, (6, 1, 2))
         self.assertIs(backend.forward_metadata, prefill_metadata)
+
+    def test_deepseek_v4_dcp_prefill_gathers_queries_and_merges_lse(self):
+        backend = DeepseekV4AttentionBackend(
+            SimpleNamespace(
+                page_size=4,
+                device="cpu",
+                num_attention_heads=16,
+                num_kv_heads=1,
+                attn_tp_size=2,
+                dtype=torch.float32,
+                is_draft=False,
+                speculative_num_draft_tokens=1,
+                head_dim=4,
+                context_len=64,
+                decode_context_parallel_size=2,
+                dcp_rank=0,
+                dcp_group=(0, 1),
+                cp_kv_cache_interleave_size=1,
+            )
+        )
+        backend.forward_metadata = SimpleNamespace(forward_mode=ForwardMode.EXTEND)
+        backend._dcp_workspace = deepseek_v4_backend.DcpAttentionWorkspace.allocate(
+            dcp_size=2,
+            max_rows=2,
+            local_heads=8,
+            head_dim=4,
+            dtype=torch.float32,
+            device="cpu",
+        )
+        q = torch.arange(64, dtype=torch.float32).reshape(2, 8, 4)
+        gathered_q = torch.cat((q, q + 1000), dim=1)
+        gathered_sink = torch.arange(16, dtype=torch.float32)
+        partial_out = torch.full((2, 16, 4), 3.0)
+        partial_lse = torch.full((2, 16), 2.0, dtype=torch.float32)
+        merged = torch.full((2, 8, 4), 7.0)
+        pool = SimpleNamespace(
+            swa_block_size=4,
+            get_compressed_block_size=lambda _layer_id: 4,
+            get_swa_kv_buffer=lambda _layer_id: torch.empty((1, 16)),
+        )
+
+        with (
+            patch.object(
+                deepseek_v4_backend,
+                "_use_flashinfer_sm120_sparse_mla",
+                return_value=True,
+            ),
+            patch.object(
+                backend,
+                "_update_decode_swa_metadata",
+                return_value=(
+                    torch.zeros((2, 1, 1), dtype=torch.int32),
+                    torch.ones(2, dtype=torch.int32),
+                ),
+            ),
+            patch.object(
+                backend,
+                "_decode_compressed_attention_indices_and_lens",
+                return_value=(None, None),
+            ),
+            patch.object(
+                backend, "_fp8_ds_mla_cache_view", return_value=torch.empty(1)
+            ),
+            patch.object(
+                deepseek_v4_backend, "gather_dcp_queries", return_value=gathered_q
+            ) as gather_queries,
+            patch.object(
+                deepseek_v4_backend, "gather_dcp_sinks", return_value=gathered_sink
+            ) as gather_sinks,
+            patch.object(
+                deepseek_v4_backend,
+                "dsv4_sparse_mla_decode",
+                return_value=(partial_out, partial_lse),
+            ) as sparse_decode,
+            patch.object(
+                deepseek_v4_backend,
+                "merge_dcp_attention_states",
+                return_value=(merged, torch.empty((2, 8))),
+            ) as merge_states,
+        ):
+            actual = backend._forward_deepseek_v4_prefill_chunk(
+                q=q,
+                positions=torch.tensor([0, 1], dtype=torch.int64),
+                token_to_kv_pool=pool,
+                layer_id=0,
+                kind="test",
+                compress_ratio=1,
+                num_local_heads=8,
+                padded_heads=16,
+                head_dim=4,
+                window_size=4,
+                softmax_scale=1.0,
+                attn_sink=torch.zeros(8, dtype=torch.float32),
+                topk_indices=None,
+            )
+
+        self.assertIs(actual, merged)
+        gather_queries.assert_called_once()
+        gather_sinks.assert_called_once()
+        self.assertEqual(gather_sinks.call_args.kwargs["dcp_rank"], 0)
+        self.assertIs(sparse_decode.call_args.kwargs["q"], gathered_q)
+        self.assertIs(sparse_decode.call_args.kwargs["sinks"], gathered_sink)
+        self.assertTrue(sparse_decode.call_args.kwargs["return_lse"])
+        merge_states.assert_called_once()
+        self.assertIs(merge_states.call_args.args[0], partial_out)
+        self.assertIs(merge_states.call_args.args[1], partial_lse)
+        self.assertEqual(merge_states.call_args.kwargs["group"], (0, 1))
+        self.assertEqual(merge_states.call_args.kwargs["dcp_rank"], 0)
+        self.assertEqual(merge_states.call_args.kwargs["local_output_heads"], 8)
+        self.assertIs(
+            merge_states.call_args.kwargs["workspace"], backend._dcp_workspace
+        )
+
+    def test_deepseek_v4_dcp_prefill_fails_closed_without_sm120_sparse_mla(self):
+        backend = DeepseekV4AttentionBackend(
+            SimpleNamespace(
+                page_size=4,
+                device="cpu",
+                num_attention_heads=16,
+                num_kv_heads=1,
+                attn_tp_size=2,
+                dtype=torch.float32,
+                is_draft=False,
+                speculative_num_draft_tokens=1,
+                head_dim=4,
+                context_len=64,
+                decode_context_parallel_size=2,
+                dcp_rank=0,
+                dcp_group=(0, 1),
+                cp_kv_cache_interleave_size=1,
+            )
+        )
+        backend.forward_metadata = SimpleNamespace(forward_mode=ForwardMode.EXTEND)
+
+        with (
+            patch.object(
+                deepseek_v4_backend,
+                "_use_flashinfer_sm120_sparse_mla",
+                return_value=False,
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "DCP prefill requires FlashInfer SM120 sparse MLA",
+            ),
+        ):
+            backend._forward_deepseek_v4_prefill_chunk(
+                q=torch.zeros((1, 8, 4), dtype=torch.float32),
+                positions=torch.tensor([0], dtype=torch.int64),
+                token_to_kv_pool=SimpleNamespace(),
+                layer_id=0,
+                kind="test",
+                compress_ratio=1,
+                num_local_heads=8,
+                padded_heads=16,
+                head_dim=4,
+                window_size=4,
+                softmax_scale=1.0,
+                attn_sink=torch.zeros(8, dtype=torch.float32),
+                topk_indices=None,
+            )
+
+    def test_deepseek_v4_dcp_decode_keeps_native_gathered_head_count(self):
+        backend = DeepseekV4AttentionBackend(
+            SimpleNamespace(
+                page_size=4,
+                device="cpu",
+                num_attention_heads=16,
+                num_kv_heads=1,
+                attn_tp_size=2,
+                dtype=torch.float32,
+                is_draft=False,
+                speculative_num_draft_tokens=1,
+                head_dim=4,
+                context_len=64,
+                decode_context_parallel_size=2,
+                dcp_rank=0,
+                dcp_group=(0, 1),
+                cp_kv_cache_interleave_size=1,
+            )
+        )
+        backend._dcp_workspace = deepseek_v4_backend.DcpAttentionWorkspace.allocate(
+            dcp_size=2,
+            max_rows=1,
+            local_heads=8,
+            head_dim=4,
+            dtype=torch.float32,
+            device="cpu",
+        )
+        backend.forward_metadata = SimpleNamespace(
+            forward_mode=ForwardMode.DECODE,
+            token_to_req_indices=torch.tensor([0], dtype=torch.int32),
+            attention=SimpleNamespace(
+                decode_swa_indices=None,
+                decode_swa_lens=None,
+                decode_swa_window_size=0,
+                decode_swa_block_size=0,
+            ),
+        )
+        q = torch.zeros((1, 8, 4), dtype=torch.float32)
+        gathered_q = torch.zeros((1, 16, 4), dtype=torch.float32)
+        partial_out = torch.zeros((1, 16, 4), dtype=torch.float32)
+        partial_lse = torch.zeros((1, 16), dtype=torch.float32)
+        merged = torch.zeros((1, 8, 4), dtype=torch.float32)
+        pool = SimpleNamespace(
+            swa_block_size=4,
+            get_compressed_block_size=lambda _layer_id: 4,
+            get_swa_kv_buffer=lambda _layer_id: torch.empty((1, 16)),
+        )
+
+        with (
+            patch.object(
+                backend,
+                "_update_decode_swa_metadata",
+                return_value=(
+                    torch.zeros((1, 1, 1), dtype=torch.int32),
+                    torch.ones(1, dtype=torch.int32),
+                ),
+            ),
+            patch.object(
+                backend,
+                "_decode_compressed_attention_indices_and_lens",
+                return_value=(None, None),
+            ),
+            patch.object(
+                backend, "_fp8_ds_mla_cache_view", return_value=torch.empty(1)
+            ),
+            patch.object(
+                deepseek_v4_backend, "gather_dcp_queries", return_value=gathered_q
+            ),
+            patch.object(
+                deepseek_v4_backend,
+                "gather_dcp_sinks",
+                return_value=torch.zeros(16, dtype=torch.float32),
+            ),
+            patch.object(
+                deepseek_v4_backend,
+                "dsv4_sparse_mla_decode",
+                return_value=(partial_out, partial_lse),
+            ) as sparse_decode,
+            patch.object(
+                deepseek_v4_backend,
+                "merge_dcp_attention_states",
+                return_value=(merged, torch.empty((1, 8))),
+            ),
+        ):
+            actual = backend.forward_deepseek_v4_decode(
+                q=q,
+                positions=torch.tensor([0], dtype=torch.int64),
+                token_to_kv_pool=pool,
+                layer_id=0,
+                kind="test",
+                compress_ratio=1,
+                num_local_heads=8,
+                padded_heads=16,
+                head_dim=4,
+                window_size=4,
+                softmax_scale=1.0,
+                attn_sink=torch.zeros(8, dtype=torch.float32),
+                topk_indices=None,
+            )
+
+        self.assertIs(actual, merged)
+        self.assertIs(sparse_decode.call_args.kwargs["q"], gathered_q)
+        self.assertEqual(sparse_decode.call_args.kwargs["q"].shape[1], 16)
 
     def test_deepseek_v4_indexer_decode_plan_batches_metadata(self):
         positions = torch.tensor([15, 7, 3], dtype=torch.int64)

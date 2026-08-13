@@ -30,6 +30,13 @@ except Exception:
     deep_gemm = None  # type: ignore[assignment]
 
 from tokenspeed.runtime.configs.model_config import AttentionArch
+from tokenspeed.runtime.distributed.dcp import (
+    DcpAttentionWorkspace,
+    gather_dcp_queries,
+    gather_dcp_sinks,
+    merge_dcp_attention_states,
+    shard_dcp_logical_rows,
+)
 from tokenspeed.runtime.execution.forward_batch_info import ForwardMode
 from tokenspeed.runtime.layers.attention.backends.base import AttentionBackend
 from tokenspeed.runtime.layers.attention.deepseek_v4.metadata import (
@@ -267,6 +274,13 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         self.cp_kv_cache_interleave_size = int(
             getattr(config, "cp_kv_cache_interleave_size", 1)
         )
+        self.dcp_group = tuple(getattr(config, "dcp_group", ()))
+        if self.dcp_world_size > 1 and len(self.dcp_group) != self.dcp_world_size:
+            raise RuntimeError("DeepSeek V4 DCP group is unresolved")
+        self._dcp_local_heads = config.num_attention_heads // config.attn_tp_size
+        self._dcp_head_dim = config.head_dim
+        self._dcp_dtype = config.dtype
+        self._dcp_workspace: DcpAttentionWorkspace | None = None
         rope_head_dim = getattr(config, "qk_rope_head_dim", None)
         self._fp8_ds_mla_row_bytes = (
             deepseek_v4_swa_row_bytes(config.head_dim, rope_head_dim)
@@ -1119,6 +1133,31 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         cache_metadata = metadata.cache
         if cache_metadata.swa_block_table is None:
             raise RuntimeError("DeepSeek V4 missing paged-cache block table for SWA KV")
+        if self.dcp_world_size > 1:
+            positions = _decode_positions_from_metadata(metadata, num_tokens)
+            starts = (positions - int(window_size) + 1).clamp_min(0)
+            offsets = torch.arange(
+                int(window_size), device=positions.device, dtype=torch.int64
+            )
+            global_rows = starts[:, None] + offsets[None, :]
+            indices, lens = self._dcp_slots_from_global_rows(
+                global_rows=global_rows,
+                req_indices=metadata.token_to_req_indices[:num_tokens],
+                block_table=cache_metadata.swa_block_table,
+                rows_per_page=block_size,
+                base_offsets=cache_metadata.swa_base_logical_page,
+                valid=global_rows <= positions[:, None],
+            )
+            attention_metadata.decode_swa_indices.copy_(indices)
+            attention_metadata.decode_swa_lens.copy_(lens)
+            attention_metadata.decode_swa_window_size = window_size
+            attention_metadata.decode_swa_block_size = block_size
+            self._decode_swa_window_size = window_size
+            self._decode_swa_block_size = block_size
+            return (
+                attention_metadata.decode_swa_indices,
+                attention_metadata.decode_swa_lens,
+            )
         swa_block_table = cache_metadata.swa_block_table
         indices, lens = deepseek_v4_decode_swa_indices_and_lens(
             query_start_loc=metadata.query_start_loc,
@@ -1139,6 +1178,55 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         self._decode_swa_window_size = window_size
         self._decode_swa_block_size = block_size
         return indices, lens
+
+    def _dcp_slots_from_global_rows(
+        self,
+        *,
+        global_rows: torch.Tensor,
+        req_indices: torch.Tensor,
+        block_table: torch.Tensor,
+        rows_per_page: int,
+        base_offsets: torch.Tensor | None,
+        valid: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Map absolute history rows to compact local DCP physical slots."""
+
+        local_rows, owned = shard_dcp_logical_rows(
+            global_rows,
+            dcp_size=self.dcp_world_size,
+            dcp_rank=self.dcp_rank,
+            interleave_size=self.cp_kv_cache_interleave_size,
+        )
+        if valid is not None:
+            owned = owned & valid
+        pages = torch.div(local_rows, rows_per_page, rounding_mode="floor")
+        offsets = torch.remainder(local_rows, rows_per_page)
+        req = req_indices.to(torch.int64)[:, None].expand_as(global_rows)
+        if base_offsets is not None:
+            base_offsets = base_offsets.to(device=pages.device, dtype=torch.int64)
+            if base_offsets.numel() <= 0:
+                pages.fill_(-1)
+            else:
+                safe_req = req.clamp(0, base_offsets.shape[0] - 1)
+                pages = pages - base_offsets[safe_req]
+        page_ids = DeepseekV4CacheMetadata.safe_page_ids(block_table, req, pages)
+        live = owned & (page_ids > 0)
+        slots = page_ids * rows_per_page + offsets
+        destinations = live.cumsum(dim=1, dtype=torch.int64) - 1
+        safe_destinations = torch.where(
+            live,
+            destinations,
+            torch.zeros_like(destinations),
+        )
+        compact = torch.full_like(slots, -1)
+        compact.scatter_reduce_(
+            1,
+            safe_destinations,
+            torch.where(live, slots, torch.full_like(slots, -1)),
+            reduce="amax",
+            include_self=True,
+        )
+        return compact.to(torch.int32), live.sum(dim=1, dtype=torch.int32)
 
     def _decode_compressed_attention_indices_and_lens(
         self,
@@ -1170,6 +1258,19 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         if compress_ratio == 4:
             if topk_indices is None:
                 raise RuntimeError("DeepSeek V4 CSA decode requires top-k indices")
+            if self.dcp_world_size > 1:
+                valid = topk_indices >= 0
+                if is_valid_token is not None:
+                    valid = valid & is_valid_token.to(torch.bool)[:, None]
+                indices_2d, lens = self._dcp_slots_from_global_rows(
+                    global_rows=topk_indices.to(torch.int64).clamp_min(0),
+                    req_indices=metadata.token_to_req_indices[:num_tokens],
+                    block_table=block_table,
+                    rows_per_page=block_size,
+                    base_offsets=block_table_base_offsets,
+                    valid=valid,
+                )
+                return indices_2d.unsqueeze(1), lens
             topk_local = topk_indices
             if block_table_base_offsets is not None:
                 base_slots = block_table_base_offsets.to(
@@ -1188,6 +1289,31 @@ class DeepseekV4AttentionBackend(AttentionBackend):
                 block_table=block_table,
                 block_size=block_size,
                 is_valid_token=is_valid_token,
+            )
+            return indices_2d.unsqueeze(1), lens
+
+        if self.dcp_world_size > 1:
+            width = self._dense_compressed_indices_width(compress_ratio)
+            global_rows = torch.arange(
+                width,
+                dtype=torch.int64,
+                device=positions.device,
+            )[None, :].expand(num_tokens, -1)
+            compressed_lens = torch.div(
+                positions.to(torch.int64) + 1,
+                compress_ratio,
+                rounding_mode="floor",
+            )
+            valid = global_rows < compressed_lens[:, None]
+            if is_valid_token is not None:
+                valid = valid & is_valid_token.to(torch.bool)[:, None]
+            indices_2d, lens = self._dcp_slots_from_global_rows(
+                global_rows=global_rows,
+                req_indices=metadata.token_to_req_indices[:num_tokens],
+                block_table=block_table,
+                rows_per_page=block_size,
+                base_offsets=block_table_base_offsets,
+                valid=valid,
             )
             return indices_2d.unsqueeze(1), lens
 
@@ -1314,6 +1440,106 @@ class DeepseekV4AttentionBackend(AttentionBackend):
             ),
         )
 
+    def _dcp_attention_workspace(
+        self,
+        *,
+        rows: int,
+        local_heads: int,
+        head_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        allow_growth: bool,
+    ) -> DcpAttentionWorkspace:
+        workspace = self._dcp_workspace
+        compatible = (
+            workspace is not None
+            and workspace.local_q.shape[0] >= rows
+            and workspace.local_q.shape[1] == local_heads
+            and workspace.local_q.shape[2] == head_dim
+            and workspace.local_q.dtype == dtype
+            and workspace.local_q.device == device
+        )
+        if compatible:
+            return workspace
+        if not allow_growth:
+            raise RuntimeError(
+                "DeepSeek V4 DCP decode workspace is not initialized for the "
+                "captured shape"
+            )
+        if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+            raise RuntimeError(
+                "DeepSeek V4 DCP workspace growth is forbidden during CUDA graph "
+                "capture"
+            )
+        max_rows = rows
+        if workspace is not None:
+            max_rows = max(max_rows, workspace.local_q.shape[0])
+        workspace = DcpAttentionWorkspace.allocate(
+            dcp_size=self.dcp_world_size,
+            max_rows=max_rows,
+            local_heads=local_heads,
+            head_dim=head_dim,
+            dtype=dtype,
+            device=device,
+        )
+        self._dcp_workspace = workspace
+        return workspace
+
+    def _prepare_dcp_attention_inputs(
+        self,
+        *,
+        q: torch.Tensor,
+        attn_sink: torch.Tensor,
+        num_local_heads: int,
+        allow_workspace_growth: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, DcpAttentionWorkspace]:
+        workspace = self._dcp_attention_workspace(
+            rows=q.shape[0],
+            local_heads=num_local_heads,
+            head_dim=q.shape[2],
+            dtype=q.dtype,
+            device=q.device,
+            allow_growth=allow_workspace_growth,
+        )
+        q_group = gather_dcp_queries(
+            q[:, :num_local_heads].contiguous(),
+            group=self.dcp_group,
+            workspace=workspace,
+        )
+        if q_group.shape[1] not in (8, 16, 32, 64, 128):
+            raise RuntimeError(
+                "FlashInfer SM120 sparse MLA does not support the DCP gathered "
+                f"query-head count {q_group.shape[1]}"
+            )
+        group_sink = gather_dcp_sinks(
+            attn_sink,
+            group=self.dcp_group,
+            dcp_rank=self.dcp_rank,
+            workspace=workspace,
+        )
+        return q_group, group_sink, workspace
+
+    def _merge_dcp_attention_output(
+        self,
+        result: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
+        *,
+        group_heads: int,
+        num_local_heads: int,
+        workspace: DcpAttentionWorkspace,
+    ) -> torch.Tensor:
+        if not isinstance(result, tuple) or len(result) != 2:
+            raise RuntimeError("DeepSeek V4 DCP kernel did not return output and LSE")
+        partial_out, partial_lse = result
+        merged, _ = merge_dcp_attention_states(
+            partial_out,
+            partial_lse,
+            group=self.dcp_group,
+            dcp_rank=self.dcp_rank,
+            local_output_heads=num_local_heads,
+            workspace=workspace,
+        )
+        return merged
+
     def forward_deepseek_v4_decode(
         self,
         *,
@@ -1345,8 +1571,18 @@ class DeepseekV4AttentionBackend(AttentionBackend):
                 f"metadata_tokens={metadata.token_to_req_indices.numel()}, "
                 f"q_tokens={q.shape[0]}"
             )
-        if q.shape[1] == padded_heads:
+        if self.dcp_world_size > 1:
+            q_padded, kernel_sink, dcp_workspace = self._prepare_dcp_attention_inputs(
+                q=q,
+                attn_sink=attn_sink,
+                num_local_heads=num_local_heads,
+                allow_workspace_growth=False,
+            )
+            group_heads = q_padded.shape[1]
+        elif q.shape[1] == padded_heads:
             q_padded = q.contiguous()
+            group_heads = num_local_heads
+            kernel_sink = attn_sink
         else:
             q_padded = torch.zeros(
                 (q.shape[0], padded_heads, q.shape[2]),
@@ -1354,6 +1590,8 @@ class DeepseekV4AttentionBackend(AttentionBackend):
                 device=q.device,
             )
             q_padded[:, : q.shape[1]].copy_(q)
+            group_heads = num_local_heads
+            kernel_sink = attn_sink
         swa_block_size = token_to_kv_pool.swa_block_size
         attention_metadata = metadata.attention
         if (
@@ -1399,9 +1637,17 @@ class DeepseekV4AttentionBackend(AttentionBackend):
             compressed_indices=extra_indices,
             compressed_topk_lens=extra_lens,
             softmax_scale=softmax_scale,
-            sinks=attn_sink,
+            sinks=kernel_sink,
+            return_lse=self.dcp_world_size > 1,
         )
-        return out[:, :num_local_heads]
+        if self.dcp_world_size <= 1:
+            return out[:, :num_local_heads]
+        return self._merge_dcp_attention_output(
+            out,
+            group_heads=group_heads,
+            num_local_heads=num_local_heads,
+            workspace=dcp_workspace,
+        )
 
     def forward_deepseek_v4_mixed(
         self,
@@ -1778,18 +2024,30 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         metadata = self.forward_metadata
         if metadata is None:
             raise RuntimeError("DeepSeek V4 prefill requires forward metadata")
-        with nvtx_range(f"attn_{kind}_prefill_pad_q"):
-            if q.shape[1] == padded_heads:
-                q_padded = q.contiguous()
-            else:
-                q_padded = torch.zeros(
-                    (q.shape[0], padded_heads, q.shape[2]),
-                    dtype=q.dtype,
-                    device=q.device,
-                )
-                q_padded[:, : q.shape[1]].copy_(q)
 
         if _use_flashinfer_sm120_sparse_mla():
+            if self.dcp_world_size > 1:
+                q_kernel, kernel_sink, dcp_workspace = (
+                    self._prepare_dcp_attention_inputs(
+                        q=q,
+                        attn_sink=attn_sink,
+                        num_local_heads=num_local_heads,
+                        allow_workspace_growth=True,
+                    )
+                )
+                group_heads = q_kernel.shape[1]
+            else:
+                with nvtx_range(f"attn_{kind}_prefill_pad_q"):
+                    if q.shape[1] == padded_heads:
+                        q_kernel = q.contiguous()
+                    else:
+                        q_kernel = torch.zeros(
+                            (q.shape[0], padded_heads, q.shape[2]),
+                            dtype=q.dtype,
+                            device=q.device,
+                        )
+                        q_kernel[:, : q.shape[1]].copy_(q)
+                kernel_sink = attn_sink
             with nvtx_range(f"attn_{kind}_prefill_sparse_metadata"):
                 swa_block_size = token_to_kv_pool.swa_block_size
                 swa_indices, swa_lens = self._update_decode_swa_metadata(
@@ -1820,7 +2078,7 @@ class DeepseekV4AttentionBackend(AttentionBackend):
                     )
             with nvtx_range(f"attn_{kind}_prefill_flashinfer"):
                 out = dsv4_sparse_mla_decode(
-                    q=q_padded,
+                    q=q_kernel,
                     swa_kv_cache=swa_cache,
                     swa_indices=swa_indices,
                     swa_topk_lens=swa_lens,
@@ -1828,9 +2086,33 @@ class DeepseekV4AttentionBackend(AttentionBackend):
                     compressed_indices=extra_indices,
                     compressed_topk_lens=extra_lens,
                     softmax_scale=softmax_scale,
-                    sinks=attn_sink,
+                    sinks=kernel_sink,
+                    return_lse=self.dcp_world_size > 1,
                 )
-            return out[:, :num_local_heads]
+            if self.dcp_world_size <= 1:
+                return out[:, :num_local_heads]
+            return self._merge_dcp_attention_output(
+                out,
+                group_heads=group_heads,
+                num_local_heads=num_local_heads,
+                workspace=dcp_workspace,
+            )
+
+        if self.dcp_world_size > 1:
+            raise RuntimeError(
+                "DeepSeek V4 DCP prefill requires FlashInfer SM120 sparse MLA"
+            )
+
+        with nvtx_range(f"attn_{kind}_prefill_pad_q"):
+            if q.shape[1] == padded_heads:
+                q_padded = q.contiguous()
+            else:
+                q_padded = torch.zeros(
+                    (q.shape[0], padded_heads, q.shape[2]),
+                    dtype=q.dtype,
+                    device=q.device,
+                )
+                q_padded[:, : q.shape[1]].copy_(q)
 
         if flash_mla_sparse_fwd is error_fn:
             raise RuntimeError(
@@ -1976,6 +2258,15 @@ class DeepseekV4AttentionBackend(AttentionBackend):
             int(self.speculative_num_draft_tokens or 0),
         )
         max_tokens = max_bs * self._cuda_graph_max_tokens_per_req
+        if self.dcp_world_size > 1:
+            self._dcp_workspace = DcpAttentionWorkspace.allocate(
+                dcp_size=self.dcp_world_size,
+                max_rows=max_tokens,
+                local_heads=self._dcp_local_heads,
+                head_dim=self._dcp_head_dim,
+                dtype=self._dcp_dtype,
+                device=self.device,
+            )
         self._cuda_graph_block_table = torch.zeros(
             (max_bs, self.max_num_pages),
             dtype=torch.int32,
