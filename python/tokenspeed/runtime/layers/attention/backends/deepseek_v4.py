@@ -1956,7 +1956,6 @@ class DeepseekV4AttentionBackend(AttentionBackend):
         max_tokens_per_req: int = 1,
         overlap_schedule_depth: int = 0,
     ):
-        self._decode_tile_metadata = {}
         self._cuda_graph_max_tokens_per_req = max(
             1,
             int(max_tokens_per_req),

@@ -15,6 +15,7 @@ import math
 import os
 import sys
 import unittest
+from unittest import mock
 
 import torch
 
@@ -36,6 +37,7 @@ from tokenspeed_kernel.ops.attention.triton.deepseek_v4 import (
     _deepseek_v4_fused_csa_indexer_mxfp4_cache_kernel,
     _deepseek_v4_fused_sparse_compress_cache_kernel,
     _deepseek_v4_gather_launch_config,
+    _deepseek_v4_gather_launch_config_for_platform,
 )
 from tokenspeed_kernel.ops.transform import hadamard_transform
 
@@ -351,6 +353,22 @@ class DeepseekV4AttentionOpsCpuValidationTest(unittest.TestCase):
                     _deepseek_v4_gather_launch_config(num_reqs, max_rows),
                     expected,
                 )
+
+    def test_sparse_prefill_gather_uses_tuned_config_on_sm120(self):
+        with mock.patch(
+            "tokenspeed_kernel.ops.attention.triton.deepseek_v4.current_platform"
+        ) as platform:
+            platform.return_value.is_blackwell_plus = True
+            self.assertEqual(
+                _deepseek_v4_gather_launch_config_for_platform(1, 3072),
+                (512, 1),
+            )
+
+            platform.return_value.is_blackwell_plus = False
+            self.assertEqual(
+                _deepseek_v4_gather_launch_config_for_platform(1, 3072),
+                (128, 4),
+            )
 
     def test_swa_slot_mapping_guard_masks_out_of_range_slots(self):
         slots = torch.tensor([-3, -1, 0, 7, 8, 99], dtype=torch.int64)

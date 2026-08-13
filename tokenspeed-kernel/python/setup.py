@@ -507,9 +507,7 @@ class CudaKernelBuilder:
         else:
             major = int(arch_clean[:-1])
             minor = int(arch_clean[-1])
-        suffix = suffix or (
-            "a" if (major, minor) in CUDA_ARCHS_WITH_A_SUFFIX else ""
-        )
+        suffix = suffix or ("a" if (major, minor) in CUDA_ARCHS_WITH_A_SUFFIX else "")
         return f"{major}{minor}{suffix}"
 
     def _detect_cuda_archs(self):

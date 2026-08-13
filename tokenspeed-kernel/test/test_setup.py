@@ -267,3 +267,14 @@ def test_cuda_arch_override_preserves_family_suffix(monkeypatch) -> None:
 
     assert builder._normalize_cuda_arch("120f") == "120f"
     assert builder._normalize_cuda_arch("12.0f") == "120f"
+
+
+def test_cuda_arch_override_keeps_generic_sm120_suffix_free(monkeypatch) -> None:
+    monkeypatch.setenv("TOKENSPEED_KERNEL_BACKEND", "cuda")
+    monkeypatch.setattr(setuptools, "setup", lambda **_kwargs: None)
+    setup_namespace = runpy.run_path(str(SETUP_PY))
+    builder = setup_namespace["CudaKernelBuilder"]([], verbose=False)
+
+    assert builder._normalize_cuda_arch("120") == "120"
+    assert builder._normalize_cuda_arch("12.0") == "120"
+    assert builder._normalize_cuda_arch("120a") == "120a"

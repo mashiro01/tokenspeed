@@ -1094,6 +1094,15 @@ def _deepseek_v4_gather_launch_config(
     return 2048, 1
 
 
+def _deepseek_v4_gather_launch_config_for_platform(
+    num_reqs: int,
+    max_rows: int,
+) -> tuple[int, int]:
+    if current_platform().is_blackwell_plus:
+        return _deepseek_v4_gather_launch_config(num_reqs, max_rows)
+    return 128, 4
+
+
 def deepseek_v4_dequantize_and_gather_k_cache(
     *,
     out: torch.Tensor,
@@ -1121,10 +1130,10 @@ def deepseek_v4_dequantize_and_gather_k_cache(
         if max_gather_len is None
         else int(max_gather_len)
     )
-    if current_platform().is_blackwell:
-        num_workers, num_warps = _deepseek_v4_gather_launch_config(num_reqs, max_rows)
-    else:
-        num_workers, num_warps = 128, 4
+    num_workers, num_warps = _deepseek_v4_gather_launch_config_for_platform(
+        num_reqs,
+        max_rows,
+    )
     block_table_i32 = _as_int32_block_table(block_table)
     _deepseek_v4_dequantize_and_gather_k_kernel[(num_reqs, num_workers)](
         out,
