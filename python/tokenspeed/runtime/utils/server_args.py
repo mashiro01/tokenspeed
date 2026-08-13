@@ -34,6 +34,7 @@ from tokenspeed_kernel.ops.attention.triton.linear.chunk_delta_h import (
 from tokenspeed_kernel.platform import current_platform
 
 from tokenspeed.runtime.distributed.mapping import Mapping, _resolve_parallelism_sizes
+from tokenspeed.runtime.distributed.parallel_serving import ParallelServingPlan
 from tokenspeed.runtime.utils import (
     get_amdgpu_memory_capacity,
     get_colorful_logger,
@@ -324,9 +325,12 @@ class ServerArgs:
     nprocs_per_node: int | None = None
     world_size: int | None = None
     attn_tp_size: int | None = None
+    decode_context_parallel_size: int = 1
+    cp_kv_cache_interleave_size: int = 1
     dense_tp_size: int | None = None
     moe_tp_size: int | None = None
     mapping: Mapping | None = None
+    parallel_serving_plan: ParallelServingPlan | None = None
 
     mla_chunk_multiplier: int = 4
     mm_attention_backend: str | None = None
@@ -653,6 +657,11 @@ class ServerArgs:
             nnodes=nnodes,
             base_gpu_id=self.base_gpu_id,
             gpu_id_step=self.gpu_id_step,
+        )
+        self.parallel_serving_plan = ParallelServingPlan.resolve(
+            self.mapping,
+            decode_context_parallel_size=self.decode_context_parallel_size,
+            cp_kv_cache_interleave_size=self.cp_kv_cache_interleave_size,
         )
 
         # Impl constraints:
@@ -1338,7 +1347,8 @@ class ServerArgs:
             metavar="DATA_PARALLEL_SIZE",
             type=int,
             default=ServerArgs.data_parallel_size,
-            help="The data parallelism size. If not set, inferred from world_size and attn_tp_size.",
+            help="The attention data-parallel replica count. If not set, "
+            "inferred from world_size and attn_tp_size.",
         )
         parser.add_argument(
             "--load-balance-method",
@@ -1929,6 +1939,21 @@ class ServerArgs:
             type=int,
             default=ServerArgs.attn_tp_size,
             help="Specify tp size for attn part",
+        )
+        parser.add_argument(
+            "--decode-context-parallel-size",
+            "--dcp-size",
+            type=int,
+            default=ServerArgs.decode_context_parallel_size,
+            help="Shard decode KV by token position across a subgroup nested "
+            "inside attention TP. Does not increase world size; attention TP "
+            "must be divisible by DCP.",
+        )
+        parser.add_argument(
+            "--cp-kv-cache-interleave-size",
+            type=int,
+            default=ServerArgs.cp_kv_cache_interleave_size,
+            help="Consecutive KV tokens assigned to one DCP rank (default: 1).",
         )
         parser.add_argument(
             "--dense-tp-size",

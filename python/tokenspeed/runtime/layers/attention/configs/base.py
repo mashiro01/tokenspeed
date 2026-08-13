@@ -86,6 +86,12 @@ class BaseAttnConfig:
     # per request) instead of Eagle/MTP's per-step single-token decode. Backends
     # use this to expand decode metadata to spec_num_tokens rows per request.
     draft_block_decode: bool = False
+    # DCP reuses ranks inside the attention TP group. It does not alter model
+    # weight sharding or the process world size.
+    decode_context_parallel_size: int = 1
+    cp_kv_cache_interleave_size: int = 1
+    dcp_rank: int = 0
+    dcp_group: tuple[int, ...] = ()
 
     @classmethod
     def generate(

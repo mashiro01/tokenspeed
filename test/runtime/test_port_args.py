@@ -27,6 +27,7 @@ def test_resolved_dist_init_addr_moves_with_busy_control_port(monkeypatch):
 def test_distributed_config_uses_resolved_dist_init_addr():
     mapping = SimpleNamespace(
         world_size=1,
+        nnodes=1,
         nprocs_per_node=1,
         attn=SimpleNamespace(tp_rank=0, tp_size=1, dp_size=1),
         dense=SimpleNamespace(tp_size=1),
@@ -35,6 +36,10 @@ def test_distributed_config_uses_resolved_dist_init_addr():
     args = SimpleNamespace(
         device="cuda",
         mapping=mapping,
+        parallel_serving_plan=SimpleNamespace(
+            decode_context_parallel_size=1,
+            dcp_group=lambda _mapping: (0,),
+        ),
         dist_init_addr="127.0.0.1:8284",
         distributed_timeout_seconds=None,
         force_deterministic_rsag=False,

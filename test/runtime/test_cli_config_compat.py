@@ -111,6 +111,21 @@ class TestCLIConfigCompat(unittest.TestCase):
         sa = self._from_cli_args_no_init(args)
         self.assertEqual(sa.attn_tp_size, 4)
 
+    def test_dcp_args(self):
+        args = self._parse_args(
+            [
+                "--model",
+                "test/model",
+                "--dcp-size",
+                "2",
+                "--cp-kv-cache-interleave-size",
+                "64",
+            ]
+        )
+        sa = self._from_cli_args_no_init(args)
+        self.assertEqual(sa.decode_context_parallel_size, 2)
+        self.assertEqual(sa.cp_kv_cache_interleave_size, 64)
+
     def test_tensor_parallel_aliases_match_explicit_attn_moe_tp(self):
         explicit = self._parallelism_snapshot(
             [

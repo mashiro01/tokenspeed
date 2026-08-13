@@ -87,6 +87,18 @@ class MLAConfig(BaseAttnConfig):
         draft_block_decode = bool(
             is_draft and server_args.speculative_algorithm in ("DFLASH", "DSPARK")
         )
+        serving_plan = server_args.parallel_serving_plan
+        mapping_rank = getattr(server_args.mapping, "_rank", None)
+        dcp_rank = (
+            serving_plan.dcp_rank(server_args.mapping)
+            if mapping_rank is not None
+            else 0
+        )
+        dcp_group = (
+            serving_plan.dcp_group(server_args.mapping)
+            if mapping_rank is not None
+            else ()
+        )
         return cls(
             device=server_args.device,
             context_len=model_config.context_len + server_args.spec_context_pad,
@@ -110,6 +122,10 @@ class MLAConfig(BaseAttnConfig):
             kv_cache_quant_method=server_args.kv_cache_quant_method,
             is_draft=is_draft,
             draft_block_decode=draft_block_decode,
+            decode_context_parallel_size=serving_plan.decode_context_parallel_size,
+            cp_kv_cache_interleave_size=serving_plan.cp_kv_cache_interleave_size,
+            dcp_rank=dcp_rank,
+            dcp_group=dcp_group,
             kv_lora_rank=model_config.kv_lora_rank,
             qk_nope_head_dim=model_config.qk_nope_head_dim,
             qk_rope_head_dim=model_config.qk_rope_head_dim,

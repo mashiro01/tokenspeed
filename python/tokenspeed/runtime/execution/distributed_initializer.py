@@ -55,6 +55,8 @@ class DistributedConfig:
     # Tensor parallelism
     attn_tp_rank: int
     attn_tp_size: int
+    dcp_size: int
+    dcp_group: tuple[int, ...]
 
     # Data parallelism
     dp_size: int
@@ -104,6 +106,8 @@ class DistributedConfig:
             local_rank=global_rank % mapping.nprocs_per_node,
             attn_tp_rank=mapping.attn.tp_rank,
             attn_tp_size=mapping.attn.tp_size,
+            dcp_size=server_args.parallel_serving_plan.decode_context_parallel_size,
+            dcp_group=server_args.parallel_serving_plan.dcp_group(mapping),
             dp_size=mapping.attn.dp_size,
             dense_tp_size=mapping.dense.tp_size,
             moe_ep_size=mapping.moe.ep_size,
@@ -122,6 +126,22 @@ class DistributedConfig:
             force_deterministic_rsag=server_args.force_deterministic_rsag,
             mapping=mapping,
         )
+
+
+def _initialize_model_process_groups(config: DistributedConfig) -> None:
+    """Initialize all model-parallel groups, including TP-nested DCP."""
+
+    pg_manager.init_process_group(config.mapping.world_group)
+    pg_manager.init_process_group(config.mapping.attn.tp_group)
+    pg_manager.init_process_group(config.mapping.attn.dp_group)
+    if config.dcp_size > 1:
+        pg_manager.init_process_group(
+            config.dcp_group,
+            backend="nccl",
+            role="dcp",
+        )
+    pg_manager.init_process_group(config.mapping.dense.tp_group)
+    pg_manager.init_process_group(config.mapping.moe.tp_ep_group)
 
 
 class DistributedInitializer:
@@ -160,11 +180,7 @@ class DistributedInitializer:
             timeout=config.distributed_timeout_seconds,
             device_id=device_id,
         )
-        pg_manager.init_process_group(config.mapping.world_group)
-        pg_manager.init_process_group(config.mapping.attn.tp_group)
-        pg_manager.init_process_group(config.mapping.attn.dp_group)
-        pg_manager.init_process_group(config.mapping.dense.tp_group)
-        pg_manager.init_process_group(config.mapping.moe.tp_ep_group)
+        _initialize_model_process_groups(config)
 
         # Register the trtllm one-shot all-reduce workspaces for the TP
         # groups. AutoBackend routes small SUM all-reduces (<= 2 MB payload,

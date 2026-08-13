@@ -292,9 +292,7 @@ def _runner_and_tactics(args, device: torch.device):
     gemm1 = [tactic for tactic in gemm1 if tactic in shape_gemm1]
     gemm2 = [tactic for tactic in gemm2 if tactic in shape_gemm2]
     if not gemm1 or not gemm2:
-        raise RuntimeError(
-            f"no shape-valid tactics: gemm1={gemm1!r}, gemm2={gemm2!r}"
-        )
+        raise RuntimeError(f"no shape-valid tactics: gemm1={gemm1!r}, gemm2={gemm2!r}")
     return gemm1, gemm2
 
 
@@ -383,9 +381,7 @@ def _measure_tactic(
 
 
 def _sweep_bucket(args, num_tokens, weights, workspace, gemm1, gemm2, device):
-    x_quant, x_scale, topk_ids, topk_weights = _make_tokens(
-        args, num_tokens, device
-    )
+    x_quant, x_scale, topk_ids, topk_weights = _make_tokens(args, num_tokens, device)
     w13, w2, s13, s2 = weights
     global_scale = torch.ones(args.num_experts, dtype=torch.float32, device=device)
     swiglu_limit = torch.full_like(global_scale, 10.0)
@@ -408,7 +404,9 @@ def _sweep_bucket(args, num_tokens, weights, workspace, gemm1, gemm2, device):
     native_call()
     torch.cuda.synchronize()
     if not bool(torch.isfinite(reference).all()):
-        raise RuntimeError(f"native heuristic produced non-finite output at {num_tokens}")
+        raise RuntimeError(
+            f"native heuristic produced non-finite output at {num_tokens}"
+        )
     native = _measure_tactic(args, tensors, workspace, reference, None)
 
     gemm1_results = [
@@ -421,14 +419,10 @@ def _sweep_bucket(args, num_tokens, weights, workspace, gemm1, gemm2, device):
         for tactic in gemm2
     ]
     valid_gemm1 = [
-        int(item["profile_ids"][0])
-        for item in gemm1_results
-        if item["status"] == "ok"
+        int(item["profile_ids"][0]) for item in gemm1_results if item["status"] == "ok"
     ]
     valid_gemm2 = [
-        int(item["profile_ids"][1])
-        for item in gemm2_results
-        if item["status"] == "ok"
+        int(item["profile_ids"][1]) for item in gemm2_results if item["status"] == "ok"
     ]
     pair_results = [
         _measure_tactic(args, tensors, workspace, reference, [gemm1_id, gemm2_id])
