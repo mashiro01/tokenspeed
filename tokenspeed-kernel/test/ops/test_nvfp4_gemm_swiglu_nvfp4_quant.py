@@ -308,12 +308,12 @@ def test_nvfp4_gemm_swiglu_autotune_initializers_are_input_indexed() -> None:
         _Nvfp4GemmSwigluNvfp4QuantRunner,
     )
 
-    assert tuple(
-        index
-        for index, _initializer in (
-            _Nvfp4GemmSwigluNvfp4QuantRunner.TUNING_CONFIG.tensor_initializers
-        )
-    ) == (0, 6)
+    dynamic_spec = _Nvfp4GemmSwigluNvfp4QuantRunner.TUNING_CONFIG.dynamic_tensor_specs[
+        0
+    ]
+
+    assert dynamic_spec.input_idx == (0, 6)
+    assert len(dynamic_spec.tensor_initializers) == 2
 
 
 @pytest.mark.skipif(not _has_sm100(), reason="Blackwell SM100 CUDA GPU required")
