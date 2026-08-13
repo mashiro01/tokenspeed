@@ -251,6 +251,9 @@ class ServerArgs:
     use_trtllm_ragged_deepseek_prefill: bool | None = None
 
     # DeepSeek V4
+    deepseek_v4_expert_weight_format: Literal["model_config", "mxfp4_e8m0"] = (
+        "model_config"
+    )
     deepseek_v4_mega_moe_max_num_tokens: int = 0
     deepseek_v4_indexer_prefill_max_logits_mb: int = 512
     deepseek_v4_prefill_chunk_size: int = 4
@@ -1579,6 +1582,16 @@ class ServerArgs:
             const=True,
             default=ServerArgs.use_trtllm_ragged_deepseek_prefill,
             help="Use ragged prefill for DeepSeek MLA attention.",
+        )
+        parser.add_argument(
+            "--deepseek-v4-expert-weight-format",
+            choices=["model_config", "mxfp4_e8m0"],
+            default=ServerArgs.deepseek_v4_expert_weight_format,
+            help=(
+                "Physical expert checkpoint format for DeepSeek V4. "
+                "Use mxfp4_e8m0 only for packed half-width E2M1 weights with "
+                "raw E8M0 K/32 scales; model_config follows quantization_config."
+            ),
         )
         parser.add_argument(
             "--deepseek-v4-mega-moe-max-num-tokens",

@@ -136,7 +136,7 @@ from tokenspeed.runtime.layers.moe.topk import (
     TopK,
 )
 from tokenspeed.runtime.layers.moe.utils import RoutingMethodType, get_moe_backend
-from tokenspeed.runtime.layers.quantization import Fp8Config, Mxfp4Config
+from tokenspeed.runtime.layers.quantization import Mxfp4Config
 from tokenspeed.runtime.layers.quantization.base_config import QuantizationConfig
 from tokenspeed.runtime.layers.rotary_embedding import get_rope
 from tokenspeed.runtime.layers.vocab_parallel_embedding import VocabParallelEmbedding
@@ -157,6 +157,29 @@ _platform = current_platform()
 
 
 logger = get_colorful_logger(__name__)
+
+
+def _deepseek_v4_uses_packed_mxfp4_experts() -> bool:
+    return global_server_args_dict["deepseek_v4_expert_weight_format"] == "mxfp4_e8m0"
+
+
+def _deepseek_v4_indexer_cache_write_overlap_enabled() -> bool:
+    """Whether the DSV4 indexer and SWA write may share the auxiliary stream.
+
+    SM120 reproducibly corrupts CUDA state when the indexer, SWA cache insert,
+    SWA cache write, and compressor-state write overlap during a 4096-token
+    prefill. Keep the independent projection/compressor-GEMM overlap and the
+    compressor-only cache-write overlap, which pass the same capture test, and
+    serialize only the indexer branch on SM120.
+
+    Returns:
+        True when the stateful attention phase may use the auxiliary stream.
+    """
+    return not (
+        _platform.is_nvidia
+        and _platform.arch_version.major == 12
+        and _platform.arch_version.minor == 0
+    )
 
 
 def _deepseek_v4_metadata_matches_tokens(metadata, num_tokens: int) -> bool:
@@ -2614,20 +2637,17 @@ class DeepseekV4MoE(nn.Module):
             )
             self.topk = None
         else:
-            # A block-FP8 checkpoint (quant_method=fp8, ue8m0 block scales, e.g.
-            # DeepSeek-V4-Flash) keeps its own Fp8Config and runs weight-only
-            # through the DeepGEMM block-FP8 grouped MoE (SM90 / Hopper via
-            # DeepEP). Its routed experts carry no GEMM bias -- the noaux_tc
-            # correction bias is a routing-only term applied in TopK. Only the
-            # MXFP4-serialized variant needs the Mxfp4 repack + expert bias.
-            is_block_fp8 = isinstance(quant_config, Fp8Config)
-            if is_block_fp8:
-                routed_quant_config = quant_config
-            else:
+            # DeepSeek-V4-Flash conversions can keep dense/shared tensors in
+            # block FP8 while serializing routed experts as packed E2M1 MXFP4.
+            # The global quantization_config cannot describe that mixed physical
+            # layout, so the packed expert contract is selected explicitly.
+            if _deepseek_v4_uses_packed_mxfp4_experts():
                 routed_quant_config = Mxfp4Config(
                     ignored_layers=quant_config.ignored_layers,
                     is_checkpoint_mxfp4_serialized=True,
                 )
+            else:
+                routed_quant_config = quant_config
             self.experts = MoELayer(
                 top_k=config.num_experts_per_tok,
                 num_experts=config.n_routed_experts
@@ -2643,7 +2663,9 @@ class DeepseekV4MoE(nn.Module):
                 ep_size=mapping.moe.ep_size,
                 activation="swiglu",
                 swiglu_limit=getattr(config, "swiglu_limit", None),
-                with_bias=not is_block_fp8,
+                # DeepSeek V4 expert GEMMs have no bias. The checkpoint's
+                # noaux_tc correction bias belongs to routing in TopK.
+                with_bias=False,
                 routing_config={
                     "routed_scaling_factor": self.routed_scaling_factor,
                     "normalize_topk_weights": config.norm_topk_prob,
@@ -3827,7 +3849,8 @@ class DeepseekV4Attention(nn.Module):
 
         # --- Phase 2: state-update + cache-write overlap ---
         # With GEMMs already done, the remaining work per stream is lightweight
-        # state updates and paged cache writes — safe to overlap.
+        # state updates and paged cache writes. The indexer branch is serialized
+        # on SM120 by the capability gate below; compressor-only layers overlap.
         topk_indices = None
         if self.indexer is not None:
             if self.compressor is None:
@@ -3843,7 +3866,10 @@ class DeepseekV4Attention(nn.Module):
                 )
 
             with self.stream_fork.scope(
-                enable=self.stream_fork.aux_stream is not None
+                enable=(
+                    self.stream_fork.aux_stream is not None
+                    and _deepseek_v4_indexer_cache_write_overlap_enabled()
+                )
             ) as fork:
                 with nvtx_range(f"{profile_prefix}_indexer"):
                     topk_indices = self.indexer(
@@ -4315,10 +4341,13 @@ class DeepseekV4ForCausalLM(BaseCausalLM):
         if ".ffn.gate.bias" in name:
             name = name.replace(".ffn.gate.bias", ".ffn.gate.e_score_correction_bias")
         if re.search(r"\.experts\.\d+\.w[123]\.scale$", name):
-            # MegaMoE experts register block scales as ``w{13,2}_weight_scale``;
-            # the generic block-FP8 MoELayer (non-mega, Hopper DeepEP path)
-            # registers ``..._weight_scale_inv`` via create_fp8_block_scale_inverses.
-            if get_moe_backend().is_mega_moe():
+            # MegaMoE and packed MXFP4 experts store raw E8M0 scales as
+            # ``w{13,2}_weight_scale``. Generic block-FP8 experts register
+            # inverse scales via create_fp8_block_scale_inverses.
+            if (
+                get_moe_backend().is_mega_moe()
+                or _deepseek_v4_uses_packed_mxfp4_experts()
+            ):
                 name = name.replace(".scale", ".weight_scale")
             else:
                 name = name.replace(".scale", ".weight_scale_inv")

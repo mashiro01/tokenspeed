@@ -95,7 +95,11 @@ from tokenspeed.runtime.layers.attention.kv_cache.recipes.spec import (
     PagedCacheGroupSpec,
 )
 from tokenspeed.runtime.layers.layernorm import FusedRMSNorm, RMSNorm
-from tokenspeed.runtime.layers.quantization import QUANTIZATION_METHODS
+from tokenspeed.runtime.layers.quantization import (
+    QUANTIZATION_METHODS,
+    Fp8Config,
+    Mxfp4Config,
+)
 from tokenspeed.runtime.models import deepseek_v4 as deepseek_v4_model
 from tokenspeed.runtime.models.deepseek_v4 import (
     DeepseekV4Indexer,
@@ -537,6 +541,121 @@ class TestDeepseekV4Config(unittest.TestCase):
             DeepseekV4MoE(config, mapping, quant_config, 0, "model.layers.0.mlp")
 
         self.assertIsNone(captured.get("routing_mode"))
+        self.assertIs(captured["quant_config"], quant_config)
+        self.assertFalse(captured["with_bias"])
+
+    def test_deepseek_v4_moe_uses_explicit_packed_mxfp4_expert_contract(self):
+        captured = {}
+
+        class FakeGate(torch.nn.Module):
+            def __init__(self, *_args, **_kwargs):
+                super().__init__()
+                self.e_score_correction_bias = None
+
+        class FakeExperts(torch.nn.Module):
+            def __init__(self, **kwargs):
+                super().__init__()
+                captured.update(kwargs)
+                self.topk_output_format = object()
+
+        class FakeTopK(torch.nn.Module):
+            def __init__(self, **_kwargs):
+                super().__init__()
+
+        config = SimpleNamespace(
+            n_shared_experts=None,
+            routed_scaling_factor=1.0,
+            scoring_func="sqrtsoftplus",
+            n_routed_experts=256,
+            num_experts_per_tok=6,
+            hidden_size=4096,
+            moe_intermediate_size=2048,
+            norm_topk_prob=True,
+        )
+        mapping = SimpleNamespace(
+            moe=SimpleNamespace(tp_rank=0, tp_size=4, ep_rank=0, ep_size=1)
+        )
+        backend = SimpleNamespace(is_mega_moe=lambda: False)
+        quant_config = Fp8Config(
+            is_checkpoint_fp8_serialized=True,
+            activation_scheme="dynamic",
+            weight_block_size=[128, 128],
+            scale_fmt="ue8m0",
+        )
+        snapshot = dict(global_server_args_dict)
+        try:
+            global_server_args_dict["deepseek_v4_expert_weight_format"] = "mxfp4_e8m0"
+            with (
+                patch.object(
+                    deepseek_v4_model, "get_moe_backend", return_value=backend
+                ),
+                patch.object(deepseek_v4_model, "DeepseekV4MoEGate", FakeGate),
+                patch.object(deepseek_v4_model, "MoELayer", FakeExperts),
+                patch.object(deepseek_v4_model, "TopK", FakeTopK),
+            ):
+                DeepseekV4MoE(config, mapping, quant_config, 0, "model.layers.0.ffn")
+        finally:
+            global_server_args_dict.clear()
+            global_server_args_dict.update(snapshot)
+
+        self.assertIsInstance(captured["quant_config"], Mxfp4Config)
+        self.assertTrue(captured["quant_config"].is_checkpoint_mxfp4_serialized)
+        self.assertFalse(captured["with_bias"])
+
+    def test_deepseek_v4_packed_mxfp4_expert_scales_map_to_raw_e8m0(self):
+        snapshot = dict(global_server_args_dict)
+        backend = SimpleNamespace(is_mega_moe=lambda: False)
+        try:
+            global_server_args_dict["deepseek_v4_expert_weight_format"] = "mxfp4_e8m0"
+            with patch.object(
+                deepseek_v4_model, "get_moe_backend", return_value=backend
+            ):
+                mapped = deepseek_v4_model.DeepseekV4ForCausalLM._map_weight_name(
+                    "layers.1.ffn.experts.7.w1.scale"
+                )
+        finally:
+            global_server_args_dict.clear()
+            global_server_args_dict.update(snapshot)
+
+        self.assertEqual(
+            mapped,
+            "model.layers.1.ffn.experts.7.w1.weight_scale",
+        )
+
+    def test_deepseek_v4_sm120_disables_indexer_cache_write_overlap(self):
+        cases = (
+            (
+                SimpleNamespace(
+                    is_nvidia=True, arch_version=SimpleNamespace(major=12, minor=0)
+                ),
+                False,
+            ),
+            (
+                SimpleNamespace(
+                    is_nvidia=True, arch_version=SimpleNamespace(major=12, minor=1)
+                ),
+                True,
+            ),
+            (
+                SimpleNamespace(
+                    is_nvidia=True, arch_version=SimpleNamespace(major=10, minor=0)
+                ),
+                True,
+            ),
+            (
+                SimpleNamespace(
+                    is_nvidia=False, arch_version=SimpleNamespace(major=12, minor=0)
+                ),
+                True,
+            ),
+        )
+        for platform, expected in cases:
+            with self.subTest(platform=platform, expected=expected):
+                with patch.object(deepseek_v4_model, "_platform", platform):
+                    self.assertEqual(
+                        deepseek_v4_model._deepseek_v4_indexer_cache_write_overlap_enabled(),
+                        expected,
+                    )
 
     def test_spec_helpers_preserve_non_v4_backend_contracts(self):
         seq_lens = object()
@@ -1175,6 +1294,7 @@ class TestDeepseekV4Config(unittest.TestCase):
 
     def test_deepseek_v4_server_args_cli_flags_round_trip(self):
         # Defaults match dataclass declaration
+        self.assertEqual(ServerArgs.deepseek_v4_expert_weight_format, "model_config")
         self.assertEqual(ServerArgs.deepseek_v4_mega_moe_max_num_tokens, 0)
         self.assertEqual(ServerArgs.deepseek_v4_indexer_prefill_max_logits_mb, 512)
         self.assertEqual(ServerArgs.deepseek_v4_prefill_chunk_size, 4)
@@ -1194,12 +1314,14 @@ class TestDeepseekV4Config(unittest.TestCase):
             [
                 "--model=stub",
                 "--deepseek-v4-mega-moe-max-num-tokens=128",
+                "--deepseek-v4-expert-weight-format=mxfp4_e8m0",
                 "--deepseek-v4-indexer-prefill-max-logits-mb=256",
                 "--deepseek-v4-prefill-chunk-size=8",
             ]
         )
         args = ServerArgs.from_cli_args(ns)
         self.assertEqual(args.deepseek_v4_mega_moe_max_num_tokens, 128)
+        self.assertEqual(args.deepseek_v4_expert_weight_format, "mxfp4_e8m0")
         self.assertEqual(args.deepseek_v4_indexer_prefill_max_logits_mb, 256)
         self.assertEqual(args.deepseek_v4_prefill_chunk_size, 8)
 
@@ -1209,6 +1331,10 @@ class TestDeepseekV4Config(unittest.TestCase):
             global_server_args_dict_update(args)
             self.assertEqual(
                 global_server_args_dict["deepseek_v4_mega_moe_max_num_tokens"], 128
+            )
+            self.assertEqual(
+                global_server_args_dict["deepseek_v4_expert_weight_format"],
+                "mxfp4_e8m0",
             )
             self.assertEqual(
                 global_server_args_dict["deepseek_v4_indexer_prefill_max_logits_mb"],
@@ -1660,8 +1786,8 @@ class TestDeepseekV4Config(unittest.TestCase):
         self.assertIsNone(model._map_checkpoint_name("mtp.3.norm.weight"))
 
     def test_dspark_expert_scale_mapping_follows_moe_backend(self):
-        # Expert block scales land on `w{13,2}_weight_scale` params only under
-        # the mega-MoE backend; every other backend registers
+        # Expert block scales land on `w{13,2}_weight_scale` for MegaMoE and
+        # explicitly packed MXFP4 checkpoints. Generic block-FP8 registers
         # `..._weight_scale_inv` via create_fp8_block_scale_inverses.
         model = object.__new__(DeepseekV4ForCausalLMDSpark)
         model.model = SimpleNamespace(num_stages=3)
@@ -1684,6 +1810,21 @@ class TestDeepseekV4Config(unittest.TestCase):
                 model._map_checkpoint_name("mtp.1.ffn.experts.7.w1.scale"),
                 "model.stages.1.block.ffn.experts.7.w1.weight_scale_inv",
             )
+
+        snapshot = dict(global_server_args_dict)
+        try:
+            global_server_args_dict["deepseek_v4_expert_weight_format"] = "mxfp4_e8m0"
+            with patch(
+                "tokenspeed.runtime.models.deepseek_v4_dspark.get_moe_backend",
+                return_value=non_mega,
+            ):
+                self.assertEqual(
+                    model._map_checkpoint_name("mtp.1.ffn.experts.7.w1.scale"),
+                    "model.stages.1.block.ffn.experts.7.w1.weight_scale",
+                )
+        finally:
+            global_server_args_dict.clear()
+            global_server_args_dict.update(snapshot)
 
     def test_dspark_attention_contract_uses_checkpoint_namespace(self):
         self.assertIn("attn.attn_sink", _ATTENTION_CHECKPOINT_TENSORS)

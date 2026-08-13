@@ -29,10 +29,13 @@ stale table.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from importlib.util import find_spec
+from types import SimpleNamespace
 
 import pytest
 from tokenspeed_kernel.ops.tuning import (
+    autotune,
     flashinfer_tuning_cache_filename,
     load_flashinfer_tuning_cache,
     set_autotune_process_group,
@@ -100,6 +103,43 @@ def test_set_autotune_process_group_sets_and_clears() -> None:
 def test_set_autotune_process_group_tolerates_missing_backend() -> None:
     # Like autotune(), a no-op without flashinfer installed.
     set_autotune_process_group(None)
+
+
+@requires_flashinfer
+def test_sm120_autotune_skips_unsafe_flashinfer_fused_moe_preparation(
+    monkeypatch,
+) -> None:
+    import flashinfer.autotuner as flashinfer_autotuner
+    import tokenspeed_kernel.ops.tuning as tuning
+
+    calls = []
+
+    @contextmanager
+    def fake_autotune(**kwargs):
+        calls.append(kwargs)
+        yield
+
+    monkeypatch.setattr(
+        tuning,
+        "current_platform",
+        lambda: SimpleNamespace(
+            is_nvidia=True,
+            arch_version=SimpleNamespace(major=12, minor=0),
+        ),
+    )
+    monkeypatch.setattr(flashinfer_autotuner, "autotune", fake_autotune)
+
+    with autotune():
+        pass
+
+    assert calls == [
+        {
+            "skip_ops": {
+                "trtllm::fused_moe::gemm1",
+                "trtllm::fused_moe::gemm2",
+            }
+        }
+    ]
 
 
 @requires_flashinfer

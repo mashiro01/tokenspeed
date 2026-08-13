@@ -52,6 +52,8 @@ import logging
 import os
 from collections.abc import Generator
 
+from tokenspeed_kernel.platform import current_platform
+
 __all__ = [
     "autotune",
     "flashinfer_tuning_cache_filename",
@@ -65,8 +67,35 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _DEFAULT_AUTOTUNE_MAX_NUM_TOKENS = 8192
+_SM120_UNSAFE_FLASHINFER_TUNING_OPS = frozenset(
+    {
+        "trtllm::fused_moe::gemm1",
+        "trtllm::fused_moe::gemm2",
+    }
+)
 
 _autotune_max_num_tokens = _DEFAULT_AUTOTUNE_MAX_NUM_TOKENS
+
+
+def _flashinfer_autotune_skip_ops() -> set[str]:
+    """Return FlashInfer profiling operations that are unsafe on this device.
+
+    FlashInfer 0.6.16 prepares CUTLASS fused-MoE tuning with ``tactic=-1``
+    outside its per-tactic exception boundary. On SM120 the TMA-WS
+    preparation raises an internal kernel error and can leave an asynchronous
+    illegal-instruction error behind. Skipping only those profiling operations
+    keeps the same native CUTLASS fused-MoE kernel on its supported heuristic
+    tactic while allowing every other operation to tune normally.
+    """
+    platform = current_platform()
+    if (
+        platform.is_nvidia
+        and platform.arch_version is not None
+        and platform.arch_version.major == 12
+        and platform.arch_version.minor == 0
+    ):
+        return set(_SM120_UNSAFE_FLASHINFER_TUNING_OPS)
+    return set()
 
 
 def flashinfer_tuning_cache_filename(
@@ -142,7 +171,7 @@ def autotune() -> Generator[None]:
     except ImportError:
         yield
         return
-    with flashinfer.autotuner.autotune():
+    with flashinfer.autotuner.autotune(skip_ops=_flashinfer_autotune_skip_ops()):
         yield
 
 
