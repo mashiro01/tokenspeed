@@ -163,23 +163,33 @@ def _deepseek_v4_uses_packed_mxfp4_experts() -> bool:
     return global_server_args_dict["deepseek_v4_expert_weight_format"] == "mxfp4_e8m0"
 
 
-def _deepseek_v4_indexer_cache_write_overlap_enabled() -> bool:
+def _deepseek_v4_indexer_cache_write_overlap_enabled(
+    forward_mode: ForwardMode,
+) -> bool:
     """Whether the DSV4 indexer and SWA write may share the auxiliary stream.
 
     SM120 reproducibly corrupts CUDA state when the indexer, SWA cache insert,
     SWA cache write, and compressor-state write overlap during a 4096-token
     prefill. Keep the independent projection/compressor-GEMM overlap and the
     compressor-only cache-write overlap, which pass the same capture test, and
-    serialize only the indexer branch on SM120.
+    serialize only prefill or mixed indexer branches on SM120. Decode does not
+    reproduce the corruption and keeps the overlap that matters to token
+    latency.
 
     Returns:
         True when the stateful attention phase may use the auxiliary stream.
     """
-    return not (
+    return forward_mode.is_decode_or_idle() or not (
         _platform.is_nvidia
         and _platform.arch_version.major == 12
         and _platform.arch_version.minor == 0
     )
+
+
+def _deepseek_v4_supports_bf16_fp32_gemm() -> bool:
+    """Return whether the platform supports the DSV3 BF16-to-FP32 GEMM path."""
+
+    return _platform.is_nvidia and _platform.is_hopper_plus
 
 
 def _deepseek_v4_metadata_matches_tokens(metadata, num_tokens: int) -> bool:
@@ -269,7 +279,7 @@ def _deepseek_v4_router_gemm(
         and hidden_states.is_cuda
         and hidden_states.dtype == torch.bfloat16
         and weight.dtype in (torch.bfloat16, torch.float32)
-        and (_platform.is_hopper or _platform.is_blackwell)
+        and _deepseek_v4_supports_bf16_fp32_gemm()
     ):
         return dsv3_router_gemm(
             hidden_states,
@@ -299,7 +309,7 @@ def _deepseek_v4_bf16_linear_fp32(
         and weight.dtype == torch.bfloat16
         and weight.dim() == 2
         and hidden_states.shape[1] == weight.shape[1]
-        and (_platform.is_hopper or _platform.is_blackwell)
+        and _deepseek_v4_supports_bf16_fp32_gemm()
     ):
         return dsv3_router_gemm(
             hidden_states,
@@ -1393,9 +1403,20 @@ def _deepseek_v4_indexer_decode_schedule_metadata(
         if indexer_metadata is None
         else indexer_metadata.decode_schedule_metadata_cache
     )
+    refreshed_keys = (
+        None
+        if indexer_metadata is None
+        else indexer_metadata.decode_schedule_metadata_refreshed_keys
+    )
     schedule_metadata = (
         schedule_cache.get(schedule_key) if schedule_cache is not None else None
     )
+    if (
+        schedule_metadata is not None
+        and refreshed_keys is not None
+        and schedule_key in refreshed_keys
+    ):
+        return schedule_metadata
 
     with nvtx_range("indexer_decode_schedule_metadata"):
         refreshed = deep_gemm.get_paged_mqa_logits_metadata(
@@ -1403,6 +1424,8 @@ def _deepseek_v4_indexer_decode_schedule_metadata(
             cache_block_size,
             deep_gemm.get_num_sms(),
         )
+    if refreshed_keys is not None:
+        refreshed_keys.add(schedule_key)
     if schedule_metadata is not None:
         if (
             schedule_metadata.shape == refreshed.shape
@@ -3868,7 +3891,9 @@ class DeepseekV4Attention(nn.Module):
             with self.stream_fork.scope(
                 enable=(
                     self.stream_fork.aux_stream is not None
-                    and _deepseek_v4_indexer_cache_write_overlap_enabled()
+                    and _deepseek_v4_indexer_cache_write_overlap_enabled(
+                        ctx.forward_mode
+                    )
                 )
             ) as fork:
                 with nvtx_range(f"{profile_prefix}_indexer"):

@@ -107,6 +107,9 @@ class DeepseekV4IndexerMetadata:
     decode_schedule_metadata_cache: dict[tuple[int, int, int], torch.Tensor] = field(
         default_factory=dict
     )
+    decode_schedule_metadata_refreshed_keys: set[tuple[int, int, int]] = field(
+        default_factory=set
+    )
     decode_plan_cache: dict[tuple[int, int, int], DeepseekV4IndexerDecodePlan] = field(
         default_factory=dict
     )

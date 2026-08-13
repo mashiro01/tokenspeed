@@ -622,38 +622,76 @@ class TestDeepseekV4Config(unittest.TestCase):
             "model.layers.1.ffn.experts.7.w1.weight_scale",
         )
 
-    def test_deepseek_v4_sm120_disables_indexer_cache_write_overlap(self):
+    def test_deepseek_v4_sm120_disables_only_prefill_indexer_cache_write_overlap(
+        self,
+    ):
         cases = (
             (
                 SimpleNamespace(
                     is_nvidia=True, arch_version=SimpleNamespace(major=12, minor=0)
                 ),
+                ForwardMode.EXTEND,
                 False,
+            ),
+            (
+                SimpleNamespace(
+                    is_nvidia=True, arch_version=SimpleNamespace(major=12, minor=0)
+                ),
+                ForwardMode.MIXED,
+                False,
+            ),
+            (
+                SimpleNamespace(
+                    is_nvidia=True, arch_version=SimpleNamespace(major=12, minor=0)
+                ),
+                ForwardMode.DECODE,
+                True,
             ),
             (
                 SimpleNamespace(
                     is_nvidia=True, arch_version=SimpleNamespace(major=12, minor=1)
                 ),
+                ForwardMode.EXTEND,
                 True,
             ),
             (
                 SimpleNamespace(
                     is_nvidia=True, arch_version=SimpleNamespace(major=10, minor=0)
                 ),
+                ForwardMode.EXTEND,
                 True,
             ),
             (
                 SimpleNamespace(
                     is_nvidia=False, arch_version=SimpleNamespace(major=12, minor=0)
                 ),
+                ForwardMode.EXTEND,
                 True,
             ),
+        )
+        for platform, forward_mode, expected in cases:
+            with self.subTest(
+                platform=platform, forward_mode=forward_mode, expected=expected
+            ):
+                with patch.object(deepseek_v4_model, "_platform", platform):
+                    self.assertEqual(
+                        deepseek_v4_model._deepseek_v4_indexer_cache_write_overlap_enabled(
+                            forward_mode
+                        ),
+                        expected,
+                    )
+
+    def test_deepseek_v4_bf16_fp32_gemm_supports_all_nvidia_sm90_plus(self):
+        cases = (
+            (SimpleNamespace(is_nvidia=True, is_hopper_plus=True), True),
+            (SimpleNamespace(is_nvidia=True, is_hopper_plus=False), False),
+            (SimpleNamespace(is_nvidia=False, is_hopper_plus=True), False),
         )
         for platform, expected in cases:
             with self.subTest(platform=platform, expected=expected):
                 with patch.object(deepseek_v4_model, "_platform", platform):
                     self.assertEqual(
-                        deepseek_v4_model._deepseek_v4_indexer_cache_write_overlap_enabled(),
+                        deepseek_v4_model._deepseek_v4_supports_bf16_fp32_gemm(),
                         expected,
                     )
 
@@ -4756,6 +4794,62 @@ class TestDeepseekV4Config(unittest.TestCase):
                 torch.full((2, 1), 9, dtype=torch.int32),
             )
         )
+        self.assertEqual(
+            metadata.indexer.decode_schedule_metadata_refreshed_keys,
+            {key},
+        )
+
+    def test_deepseek_v4_indexer_schedule_metadata_refreshes_once_per_step(self):
+        calls = []
+
+        def fake_get_metadata(context_lens, cache_block_size, num_sms):
+            calls.append((context_lens.clone(), cache_block_size, num_sms))
+            return torch.full((2, 1), len(calls), dtype=torch.int32)
+
+        fake_deep_gemm = SimpleNamespace(
+            get_paged_mqa_logits_metadata=fake_get_metadata,
+            get_num_sms=lambda: 123,
+        )
+        metadata = _make_deepseek_v4_forward_metadata(
+            page_size=64,
+            req_pool_indices=torch.tensor([0, 1], dtype=torch.int32),
+            block_table=torch.tensor([[0], [0]], dtype=torch.int32),
+            seq_lens=torch.tensor([5, 4], dtype=torch.int32),
+            query_lens=torch.tensor([1, 1], dtype=torch.int32),
+            query_start_loc=torch.tensor([0, 1, 2], dtype=torch.int32),
+            token_to_req_indices=torch.tensor([0, 1], dtype=torch.int32),
+        )
+        context_lens = torch.tensor([[1], [1]], dtype=torch.int32)
+        kwargs = {
+            "positions": torch.tensor([4, 3], dtype=torch.int64),
+            "cache_block_size": 64,
+            "compress_ratio": 4,
+            "metadata": metadata,
+            "context_lens": context_lens,
+        }
+
+        with patch.object(deepseek_v4_model, "deep_gemm", fake_deep_gemm):
+            first = deepseek_v4_model._deepseek_v4_indexer_decode_schedule_metadata(
+                **kwargs
+            )
+            second = deepseek_v4_model._deepseek_v4_indexer_decode_schedule_metadata(
+                **kwargs
+            )
+
+        self.assertIs(second, first)
+        self.assertEqual(len(calls), 1)
+
+        with (
+            patch.object(deepseek_v4_backend, "deep_gemm", fake_deep_gemm),
+            patch.object(deepseek_v4_model, "deep_gemm", fake_deep_gemm),
+        ):
+            deepseek_v4_backend._refresh_decode_indexer_schedule_metadata(metadata)
+            third = deepseek_v4_model._deepseek_v4_indexer_decode_schedule_metadata(
+                **kwargs
+            )
+
+        self.assertIs(third, first)
+        self.assertEqual(len(calls), 2)
 
     def test_deepseek_v4_cuda_graph_decode_uses_packed_metadata(self):
         backend = DeepseekV4AttentionBackend(

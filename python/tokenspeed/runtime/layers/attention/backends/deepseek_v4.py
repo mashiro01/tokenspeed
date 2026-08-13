@@ -183,6 +183,8 @@ def _refresh_decode_indexer_schedule_metadata(
     metadata: DeepseekV4ForwardMetadata,
 ) -> None:
     indexer_metadata = metadata.indexer
+    refreshed_keys = indexer_metadata.decode_schedule_metadata_refreshed_keys
+    refreshed_keys.clear()
     if not indexer_metadata.decode_schedule_metadata_cache:
         return
     if deep_gemm is None:
@@ -240,6 +242,7 @@ def _refresh_decode_indexer_schedule_metadata(
                 schedule_metadata.copy_(refreshed)
         else:
             indexer_metadata.decode_schedule_metadata_cache[key] = refreshed
+        refreshed_keys.add(key)
 
 
 class DeepseekV4AttentionBackend(AttentionBackend):
