@@ -47,6 +47,8 @@ trtllm_batch_context_with_kv_cache = error_fn
 trtllm_batch_decode_with_kv_cache = error_fn
 trtllm_batch_decode_with_kv_cache_mla = error_fn
 trtllm_batch_decode_sparse_mla_dsv4 = error_fn
+_SparseMLASegment = ErrorClass
+_trtllm_batch_decode_sparse_mla_sm120 = error_fn
 trtllm_ragged_attention_deepseek = error_fn
 
 if platform.is_nvidia:
@@ -71,6 +73,10 @@ if platform.is_blackwell or platform.is_hopper:
 
 if platform.is_nvidia and platform.arch_version >= ArchVersion(12, 0):
     from flashinfer.mla import trtllm_batch_decode_sparse_mla_dsv4
+    from flashinfer.mla._core import (
+        _SparseMLASegment,
+        _trtllm_batch_decode_sparse_mla_sm120,
+    )
 
 
 # ------------------------------------------------------------------------------
@@ -150,27 +156,54 @@ def _flashinfer_dsv4_sparse_mla_decode(
     compressed_topk_lens: torch.Tensor | None,
     softmax_scale: float,
     sinks: torch.Tensor | None,
+    return_lse: bool,
     out: torch.Tensor | None,
-) -> torch.Tensor:
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     if trtllm_batch_decode_sparse_mla_dsv4 is error_fn:
         raise RuntimeError(
             "FlashInfer was built without the SM120 DeepSeek V4 sparse MLA API"
         )
-    return trtllm_batch_decode_sparse_mla_dsv4(
-        query=q,
-        swa_kv_cache=swa_kv_cache,
+    if not return_lse:
+        return trtllm_batch_decode_sparse_mla_dsv4(
+            query=q,
+            swa_kv_cache=swa_kv_cache,
+            workspace_buffer=_get_dsa_sparse_workspace(q.device),
+            sparse_indices=swa_indices,
+            compressed_kv_cache=compressed_kv_cache,
+            swa_topk_lens=swa_topk_lens,
+            extra_sparse_indices=compressed_indices,
+            extra_sparse_topk_lens=compressed_topk_lens,
+            out=out,
+            bmm1_scale=float(softmax_scale),
+            bmm2_scale=1.0,
+            sinks=sinks,
+            kv_layout="NHD",
+        )
+
+    query = q.unsqueeze(1)
+    output = out.unsqueeze(1) if out is not None else None
+    segments = [_SparseMLASegment(indices=swa_indices, lengths=swa_topk_lens)]
+    if compressed_indices is not None:
+        segments.append(
+            _SparseMLASegment(
+                indices=compressed_indices,
+                lengths=compressed_topk_lens,
+                kv_cache=compressed_kv_cache,
+            )
+        )
+    result, lse = _trtllm_batch_decode_sparse_mla_sm120(
+        query=query,
+        kv_cache=swa_kv_cache,
         workspace_buffer=_get_dsa_sparse_workspace(q.device),
-        sparse_indices=swa_indices,
-        compressed_kv_cache=compressed_kv_cache,
-        swa_topk_lens=swa_topk_lens,
-        extra_sparse_indices=compressed_indices,
-        extra_sparse_topk_lens=compressed_topk_lens,
-        out=out,
-        bmm1_scale=float(softmax_scale),
-        bmm2_scale=1.0,
+        sparse_mla_segments=segments,
+        out=output,
+        sm_scale=float(softmax_scale),
         sinks=sinks,
-        kv_layout="NHD",
+        lse=None,
+        return_lse=True,
+        kv_scale_format="auto",
     )
+    return result.squeeze(1), lse.squeeze(1)
 
 
 if (
@@ -195,6 +228,7 @@ if (
             "swa_page_size": frozenset({64}),
             "compressed_page_size": frozenset({0, 2, 64}),
             "support_sinks": frozenset({False, True}),
+            "return_lse": frozenset({False, True}),
         },
     )(_flashinfer_dsv4_sparse_mla_decode)
 

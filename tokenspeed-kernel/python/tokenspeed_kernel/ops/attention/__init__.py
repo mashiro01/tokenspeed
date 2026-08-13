@@ -2675,10 +2675,11 @@ def dsv4_sparse_mla_decode(
     compressed_topk_lens: torch.Tensor | None = None,
     softmax_scale: float,
     sinks: torch.Tensor | None = None,
+    return_lse: bool = False,
     out: torch.Tensor | None = None,
     override: str | None = None,
     solution: str | None = None,
-) -> torch.Tensor:
+) -> AttentionResult:
     """Run DeepSeek V4 sparse MLA over its SWA and compressed KV pools.
 
     Args:
@@ -2696,13 +2697,16 @@ def dsv4_sparse_mla_decode(
             provided together.
         softmax_scale: Scale applied to query-key logits before softmax.
         sinks: Optional FP32 attention sink logits with shape ``[heads]``.
+        return_lse: Return natural-log LSE alongside the attention output.
         out: Optional BF16 output buffer with the same shape as ``q``.
         override: Optional registered kernel name to force during selection.
         solution: Optional kernel solution family to select.
 
     Returns:
-        The BF16 attention result with shape ``[tokens, heads, 512]``. When
-        ``out`` is provided, the selected kernel writes to and returns it.
+        The BF16 attention result with shape ``[tokens, heads, 512]``, or an
+        ``(output, lse)`` pair when ``return_lse`` is true. LSE has shape
+        ``[tokens, heads]`` and uses natural-log units. When ``out`` is
+        provided, the selected kernel writes to and returns it.
     """
     if q.dim() != 3:
         raise ValueError(f"q must be [tokens, heads, 512], got {tuple(q.shape)}")
@@ -2739,6 +2743,7 @@ def dsv4_sparse_mla_decode(
         "swa_page_size": int(swa_kv_cache.shape[1]),
         "compressed_page_size": compressed_page_size,
         "support_sinks": sinks is not None,
+        "return_lse": return_lse,
     }
     signature = _attention_format_signature(q=q)
     kernel = select_kernel(
@@ -2784,6 +2789,7 @@ def dsv4_sparse_mla_decode(
             compressed_topk_lens=compressed_topk_lens,
             softmax_scale=softmax_scale,
             sinks=sinks,
+            return_lse=return_lse,
             out=out,
         )
 

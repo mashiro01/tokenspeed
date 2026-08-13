@@ -199,6 +199,7 @@ if (
             "swa_page_size": frozenset({64}),
             "compressed_page_size": frozenset({0, 2, 64}),
             "support_sinks": frozenset({False, True}),
+            "return_lse": frozenset({False}),
         },
     )
     def flashmla_dsv4_sparse_mla_decode(
@@ -211,8 +212,13 @@ if (
         compressed_topk_lens: torch.Tensor | None,
         softmax_scale: float,
         sinks: torch.Tensor | None,
+        return_lse: bool,
         out: torch.Tensor | None,
     ) -> torch.Tensor:
+        if return_lse:
+            raise RuntimeError(
+                "FlashMLA DeepSeek V4 sparse decode does not support LSE"
+            )
         q_kernel = q.unsqueeze(1)
         result, _ = flash_mla_with_kvcache(
             q=q_kernel,

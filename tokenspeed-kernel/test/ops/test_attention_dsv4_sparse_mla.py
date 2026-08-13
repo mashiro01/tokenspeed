@@ -83,6 +83,7 @@ def test_dsv4_sparse_mla_decode_dispatches_dual_cache_contract(monkeypatch) -> N
                 "swa_page_size": 64,
                 "compressed_page_size": 2,
                 "support_sinks": True,
+                "return_lse": False,
             },
             "solution": None,
             "override": None,
@@ -119,6 +120,7 @@ def test_flashinfer_dsv4_sparse_mla_forwards_both_cache_segments(monkeypatch) ->
         compressed_topk_lens=inputs["compressed_topk_lens"],
         softmax_scale=512**-0.5,
         sinks=inputs["sinks"],
+        return_lse=False,
         out=None,
     )
 
@@ -127,3 +129,80 @@ def test_flashinfer_dsv4_sparse_mla_forwards_both_cache_segments(monkeypatch) ->
     assert call["compressed_kv_cache"] is inputs["compressed_kv_cache"]
     assert call["extra_sparse_indices"] is inputs["compressed_indices"]
     assert call["kv_layout"] == "NHD"
+
+
+def test_dsv4_sparse_mla_decode_requests_natural_log_lse(monkeypatch) -> None:
+    inputs = _inputs()
+    expected_out = torch.empty_like(inputs["q"])
+    expected_lse = torch.empty(inputs["q"].shape[:2], dtype=torch.float32)
+    selected = _SelectedKernel((expected_out, expected_lse))
+    selection: dict[str, object] = {}
+
+    def fake_select_kernel(family, mode, signature, **kwargs):
+        selection.update(kwargs)
+        return selected
+
+    monkeypatch.setattr(attention_ops, "select_kernel", fake_select_kernel)
+    actual = attention_ops.dsv4_sparse_mla_decode(
+        inputs["q"],
+        inputs["swa_kv_cache"],
+        inputs["swa_indices"],
+        inputs["swa_topk_lens"],
+        compressed_kv_cache=inputs["compressed_kv_cache"],
+        compressed_indices=inputs["compressed_indices"],
+        compressed_topk_lens=inputs["compressed_topk_lens"],
+        softmax_scale=512**-0.5,
+        sinks=inputs["sinks"],
+        return_lse=True,
+    )
+
+    assert isinstance(actual, tuple)
+    assert actual[0].data_ptr() == expected_out.data_ptr()
+    assert actual[1].data_ptr() == expected_lse.data_ptr()
+    assert selection["traits"]["return_lse"] is True
+    assert selected.calls[0]["return_lse"] is True
+
+
+def test_flashinfer_dsv4_sparse_mla_returns_natural_log_lse(monkeypatch) -> None:
+    inputs = _inputs()
+    expected_out = torch.empty_like(inputs["q"])
+    expected_lse = torch.empty(inputs["q"].shape[:2], dtype=torch.float32)
+    workspace = torch.empty(1, dtype=torch.uint8)
+    call: dict[str, object] = {}
+
+    class Segment:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    def fake_sparse_mla(**kwargs):
+        call.update(kwargs)
+        return expected_out.unsqueeze(1), expected_lse.unsqueeze(1)
+
+    monkeypatch.setattr(flashinfer_ops, "_SparseMLASegment", Segment)
+    monkeypatch.setattr(
+        flashinfer_ops,
+        "_trtllm_batch_decode_sparse_mla_sm120",
+        fake_sparse_mla,
+    )
+    monkeypatch.setattr(
+        flashinfer_ops, "_get_dsa_sparse_workspace", lambda _device: workspace
+    )
+
+    actual = flashinfer_ops._flashinfer_dsv4_sparse_mla_decode(
+        q=inputs["q"],
+        swa_kv_cache=inputs["swa_kv_cache"],
+        swa_indices=inputs["swa_indices"],
+        swa_topk_lens=inputs["swa_topk_lens"],
+        compressed_kv_cache=inputs["compressed_kv_cache"],
+        compressed_indices=inputs["compressed_indices"],
+        compressed_topk_lens=inputs["compressed_topk_lens"],
+        softmax_scale=512**-0.5,
+        sinks=inputs["sinks"],
+        return_lse=True,
+        out=None,
+    )
+
+    assert actual[0].data_ptr() == expected_out.data_ptr()
+    assert actual[1].data_ptr() == expected_lse.data_ptr()
+    assert call["return_lse"] is True
+    assert call["kv_scale_format"] == "auto"
