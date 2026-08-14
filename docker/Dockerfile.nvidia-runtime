@@ -25,9 +25,14 @@ USER root
 WORKDIR /workspace
 
 # Reuse an image whose compiled kernel and scheduler packages match the current
-# checkout, then replace only the vendor-neutral Python runtime. This keeps
-# runtime-only DCP iteration reproducible without rebuilding CUDA extensions.
+# checkout, then replace the vendor-neutral runtime and Python/JIT kernel layer.
+# Native kernel objects already present in site-packages are retained, so a
+# Triton-only change does not trigger an unrelated CUDA extension rebuild.
 COPY python /workspace/python
 RUN python3 -m pip install ./python --no-build-isolation --no-deps --force-reinstall
+
+COPY tokenspeed-kernel/python/tokenspeed_kernel /tmp/tokenspeed_kernel
+RUN python3 -c 'import importlib.util, pathlib, shutil; spec = importlib.util.find_spec("tokenspeed_kernel"); target = pathlib.Path(next(iter(spec.submodule_search_locations))); shutil.copytree("/tmp/tokenspeed_kernel", target, dirs_exist_ok=True)' \
+    && rm -rf /tmp/tokenspeed_kernel
 
 CMD ["/bin/bash"]
