@@ -385,10 +385,17 @@ def merge_dcp_attention_states(
         out=local_weight,
     )
     rs_input = workspace.reduce_scatter_input[:, :, :local_output_heads, :head_dim]
-    corrected = (
-        rs_input[:, :rows].permute(1, 0, 2, 3).reshape(rows, group_heads, head_dim)
+    local_out_by_destination = local_out.view(
+        rows, len(group), local_output_heads, head_dim
+    ).permute(1, 0, 2, 3)
+    local_weight_by_destination = (
+        local_weight[:rows].view(rows, len(group), local_output_heads).permute(1, 0, 2)
     )
-    torch.mul(local_out, local_weight[:rows].unsqueeze(-1), out=corrected)
+    torch.mul(
+        local_out_by_destination,
+        local_weight_by_destination.unsqueeze(-1),
+        out=rs_input[:, :rows],
+    )
     if rows < rs_input.shape[1]:
         rs_input[:, rows:].zero_()
     rs_output = workspace.reduce_scatter_output[:, :local_output_heads, :head_dim]

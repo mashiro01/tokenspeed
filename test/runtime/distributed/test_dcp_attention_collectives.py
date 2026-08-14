@@ -160,3 +160,48 @@ def test_merge_empty_shards_produces_zero_output_and_negative_infinite_lse() -> 
 
     torch.testing.assert_close(out, torch.zeros_like(out))
     assert torch.isneginf(lse).all()
+
+
+def test_merge_stages_every_prefill_row_in_reduce_scatter_workspace() -> None:
+    workspace = DcpAttentionWorkspace.allocate(
+        dcp_size=2,
+        max_rows=2,
+        local_heads=1,
+        head_dim=1,
+        dtype=torch.float32,
+        device="cpu",
+    )
+    partial_out = torch.tensor([[[1.0], [10.0]], [[2.0], [20.0]]])
+    partial_lse = torch.zeros((2, 2))
+    staged: list[torch.Tensor] = []
+
+    def fake_gather(out, local, _group):
+        out.copy_(torch.stack((local, local)))
+
+    def fake_reduce_scatter(out, current, _group):
+        staged.append(current.clone())
+        out.copy_(current.sum(dim=0))
+
+    with (
+        patch(
+            "tokenspeed.runtime.distributed.dcp._all_gather_into_dcp_major",
+            side_effect=fake_gather,
+        ),
+        patch(
+            "tokenspeed.runtime.distributed.dcp._reduce_scatter_dcp_heads",
+            side_effect=fake_reduce_scatter,
+        ),
+    ):
+        merge_dcp_attention_states(
+            partial_out,
+            partial_lse,
+            group=(0, 1),
+            dcp_rank=0,
+            local_output_heads=1,
+            workspace=workspace,
+        )
+
+    torch.testing.assert_close(
+        staged[0],
+        torch.tensor([[[[0.5]], [[1.0]]], [[[5.0]], [[10.0]]]]),
+    )

@@ -61,8 +61,11 @@ def test_restore_global_rows_is_inverse_with_nonzero_local_base(
     dcp_size: int,
     interleave_size: int,
 ) -> None:
-    local_row_base = 2 * interleave_size + 1
-    relative_local_rows = torch.arange(2 * interleave_size + 3).reshape(1, -1)
+    local_row_base = torch.tensor(
+        [[2 * interleave_size + 1], [5 * interleave_size]],
+        dtype=torch.int64,
+    )
+    relative_local_rows = torch.arange(2 * interleave_size + 3).repeat(2, 1)
 
     for dcp_rank in range(dcp_size):
         absolute_local_rows = relative_local_rows + local_row_base
