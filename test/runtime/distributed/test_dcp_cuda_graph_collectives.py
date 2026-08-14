@@ -101,9 +101,9 @@ def _expected(
 ) -> tuple[torch.Tensor, ...]:
     q_by_rank = torch.stack(
         [
-            torch.arange(rows * local_heads * head_dim, device=device).reshape(
-                rows, local_heads, head_dim
-            ).to(torch.float32)
+            torch.arange(rows * local_heads * head_dim, device=device)
+            .reshape(rows, local_heads, head_dim)
+            .to(torch.float32)
             + source_rank * 100
             + pattern * 10
             for source_rank in range(_WORLD_SIZE)
@@ -116,17 +116,17 @@ def _expected(
     group_heads = _WORLD_SIZE * local_heads
     out_by_rank = torch.stack(
         [
-            torch.arange(rows * group_heads * head_dim, device=device).reshape(
-                rows, group_heads, head_dim
-            ).to(torch.float32)
+            torch.arange(rows * group_heads * head_dim, device=device)
+            .reshape(rows, group_heads, head_dim)
+            .to(torch.float32)
             + source_rank * 100
             + pattern * 10
             for source_rank in range(_WORLD_SIZE)
         ]
     )
-    weights = torch.tensor(
-        [1.0 + pattern, 3.0 + pattern * 2.0], device=device
-    ).reshape(_WORLD_SIZE, 1, 1, 1)
+    weights = torch.tensor([1.0 + pattern, 3.0 + pattern * 2.0], device=device).reshape(
+        _WORLD_SIZE, 1, 1, 1
+    )
     expected_merged = (out_by_rank * weights).sum(dim=0) / weights.sum()
     head_start = rank * local_heads
     expected_local_out = expected_merged[:, head_start : head_start + local_heads]
@@ -138,7 +138,8 @@ def _expected(
 
     score_by_rank = torch.stack(
         [
-            torch.arange(rows * topk, device=device).reshape(rows, topk)
+            torch.arange(rows * topk, device=device)
+            .reshape(rows, topk)
             .to(torch.float32)
             + source_rank * 100
             + pattern * 10
