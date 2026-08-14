@@ -107,6 +107,39 @@ def test_restore_global_rows_preserves_invalid_candidate_sentinel() -> None:
     torch.testing.assert_close(restored, torch.tensor([[-1, 21, 28]]))
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_restore_global_rows_is_cuda_graph_safe_with_scalar_base() -> None:
+    local_rows = torch.tensor([[-1, 0, 1]], dtype=torch.int32, device="cuda")
+    capture_stream = torch.cuda.Stream()
+
+    with torch.cuda.stream(capture_stream):
+        for _ in range(3):
+            restored = dcp.restore_dcp_global_rows(
+                local_rows,
+                dcp_size=2,
+                dcp_rank=1,
+                interleave_size=1,
+                local_row_base=3,
+            )
+    capture_stream.synchronize()
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        restored = dcp.restore_dcp_global_rows(
+            local_rows,
+            dcp_size=2,
+            dcp_rank=1,
+            interleave_size=1,
+            local_row_base=3,
+        )
+    graph.replay()
+
+    torch.testing.assert_close(
+        restored,
+        torch.tensor([[-1, 7, 9]], dtype=torch.int64, device="cuda"),
+    )
+
+
 def test_gather_indexer_candidates_materializes_only_dcp_times_local_topk() -> None:
     group = (4, 7, 9, 12)
     local_scores = torch.tensor([[4.0, 3.0], [2.0, 1.0]])

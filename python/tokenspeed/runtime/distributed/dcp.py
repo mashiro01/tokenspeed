@@ -210,11 +210,13 @@ def restore_dcp_global_rows(
 
     _validate_dcp_sharding(dcp_size, dcp_rank, interleave_size)
     valid = local_rows >= 0
-    absolute_local = local_rows.to(torch.int64) + torch.as_tensor(
-        local_row_base,
-        dtype=torch.int64,
-        device=local_rows.device,
-    )
+    if isinstance(local_row_base, torch.Tensor):
+        if local_row_base.device != local_rows.device:
+            raise ValueError("DCP local row base must be on the candidate-row device")
+        local_row_base = local_row_base.to(torch.int64)
+    else:
+        local_row_base = int(local_row_base)
+    absolute_local = local_rows.to(torch.int64) + local_row_base
     cycle = dcp_size * interleave_size
     global_rows = (
         torch.div(absolute_local, interleave_size, rounding_mode="floor") * cycle
