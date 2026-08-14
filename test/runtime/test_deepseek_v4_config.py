@@ -102,6 +102,7 @@ from tokenspeed.runtime.layers.quantization import (
 )
 from tokenspeed.runtime.models import deepseek_v4 as deepseek_v4_model
 from tokenspeed.runtime.models.deepseek_v4 import (
+    DeepseekV4Attention,
     DeepseekV4Indexer,
     DeepseekV4MLP,
     DeepseekV4Model,
@@ -118,6 +119,7 @@ from tokenspeed.runtime.models.deepseek_v4 import (
     _deepseek_v4_indexer_token_split,
     _deepseek_v4_indexer_topk_from_logits,
     _deepseek_v4_launch_indexer_topk_prefill,
+    _deepseek_v4_load_attention_sink,
     _deepseek_v4_mega_moe_max_num_tokens,
     _deepseek_v4_reorder_c4_ape_2604,
     _DeepseekV4TopKBuffer,
@@ -5445,9 +5447,6 @@ class TestDeepseekV4Config(unittest.TestCase):
                 deepseek_v4_backend, "gather_dcp_queries", return_value=gathered_q
             ) as gather_queries,
             patch.object(
-                deepseek_v4_backend, "gather_dcp_sinks", return_value=gathered_sink
-            ) as gather_sinks,
-            patch.object(
                 deepseek_v4_backend,
                 "dsv4_sparse_mla_decode",
                 return_value=(partial_out, partial_lse),
@@ -5470,14 +5469,12 @@ class TestDeepseekV4Config(unittest.TestCase):
                 head_dim=4,
                 window_size=4,
                 softmax_scale=1.0,
-                attn_sink=torch.zeros(8, dtype=torch.float32),
+                attn_sink=gathered_sink,
                 topk_indices=None,
             )
 
         self.assertIs(actual, merged)
         gather_queries.assert_called_once()
-        gather_sinks.assert_called_once()
-        self.assertEqual(gather_sinks.call_args.kwargs["dcp_rank"], 0)
         self.assertIs(sparse_decode.call_args.kwargs["q"], gathered_q)
         self.assertIs(sparse_decode.call_args.kwargs["sinks"], gathered_sink)
         self.assertTrue(sparse_decode.call_args.kwargs["return_lse"])
@@ -5653,11 +5650,6 @@ class TestDeepseekV4Config(unittest.TestCase):
             ),
             patch.object(
                 deepseek_v4_backend,
-                "gather_dcp_sinks",
-                return_value=torch.zeros(16, dtype=torch.float32),
-            ),
-            patch.object(
-                deepseek_v4_backend,
                 "dsv4_sparse_mla_decode",
                 return_value=(partial_out, partial_lse),
             ) as sparse_decode,
@@ -5679,7 +5671,7 @@ class TestDeepseekV4Config(unittest.TestCase):
                 head_dim=4,
                 window_size=4,
                 softmax_scale=1.0,
-                attn_sink=torch.zeros(8, dtype=torch.float32),
+                attn_sink=torch.zeros(16, dtype=torch.float32),
                 topk_indices=None,
             )
 
@@ -5858,6 +5850,71 @@ class TestDeepseekV4Config(unittest.TestCase):
         self.assertEqual(first.data_ptr(), second.data_ptr())
         self.assertEqual(third.shape, (4, 3))
         self.assertGreaterEqual(buffer.buffer.shape[0], 4)
+
+    def test_deepseek_v4_attention_sink_loader_keeps_global_and_local_views(self):
+        local_sink = torch.nn.Parameter(
+            torch.full((64,), -torch.inf, dtype=torch.float32),
+            requires_grad=False,
+        )
+        full_sink = torch.full((8,), -torch.inf, dtype=torch.float32)
+        loaded_sink = torch.arange(8, dtype=torch.float32)
+
+        _deepseek_v4_load_attention_sink(
+            local_sink,
+            loaded_sink,
+            full_sink=full_sink,
+            tp_rank=2,
+            num_local_heads=2,
+        )
+
+        self.assertTrue(torch.equal(full_sink, loaded_sink))
+        self.assertTrue(torch.equal(local_sink[:2], torch.tensor([4.0, 5.0])))
+        self.assertTrue(torch.isneginf(local_sink[2:]).all())
+
+    def test_deepseek_v4_attention_selects_static_dcp_subgroup_sink(self):
+        def make_attention(global_rank: int, tp_rank: int):
+            attention = object.__new__(DeepseekV4Attention)
+            torch.nn.Module.__init__(attention)
+            attention._global_rank = global_rank
+            attention._attn_tp_group = (10, 11, 20, 21)
+            attention.num_local_heads = 2
+            attention.attn_sink = torch.nn.Parameter(
+                torch.full((64,), -torch.inf, dtype=torch.float32),
+                requires_grad=False,
+            )
+            attention.register_buffer(
+                "attn_sink_full",
+                torch.full((8,), -torch.inf, dtype=torch.float32),
+                persistent=False,
+            )
+            attention.register_buffer(
+                "_disabled_dcp_attn_sink",
+                torch.full((8,), -torch.inf, dtype=torch.float32),
+                persistent=False,
+            )
+            _deepseek_v4_load_attention_sink(
+                attention.attn_sink,
+                torch.arange(8, dtype=torch.float32),
+                full_sink=attention.attn_sink_full,
+                tp_rank=tp_rank,
+                num_local_heads=2,
+            )
+            return attention
+
+        owner = make_attention(global_rank=20, tp_rank=2)
+        non_owner = make_attention(global_rank=21, tp_rank=3)
+
+        owner_sink = owner._attention_sink_for_backend(
+            SimpleNamespace(dcp_world_size=2, dcp_rank=0, dcp_group=(20, 21))
+        )
+        non_owner_sink = non_owner._attention_sink_for_backend(
+            SimpleNamespace(dcp_world_size=2, dcp_rank=1, dcp_group=(20, 21))
+        )
+
+        self.assertTrue(torch.equal(owner_sink, torch.tensor([4.0, 5.0, 6.0, 7.0])))
+        self.assertTrue(torch.isneginf(non_owner_sink).all())
+        self.assertNotIn("attn_sink_full", owner.state_dict())
+        self.assertNotIn("_disabled_dcp_attn_sink", owner.state_dict())
 
     def test_deepseek_v4_dcp_indexer_merges_scored_global_candidates(self):
         self_obj = SimpleNamespace(

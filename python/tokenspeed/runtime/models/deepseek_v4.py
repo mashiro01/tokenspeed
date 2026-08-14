@@ -2310,9 +2310,9 @@ class _DeepseekV4TopKBuffer:
         workspace = getattr(self, name)
         if (
             workspace is None
-            or workspace.local_scores.device != device
-            or workspace.local_scores.shape[0] < num_tokens
-            or workspace.gathered_scores.shape[0] != dcp_size
+            or workspace.local_candidates.device != device
+            or workspace.local_candidates.shape[0] < num_tokens
+            or workspace.gathered_candidates.shape[0] != dcp_size
         ):
             if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
                 raise RuntimeError(
@@ -2327,6 +2327,30 @@ class _DeepseekV4TopKBuffer:
             )
             setattr(self, name, workspace)
         return workspace
+
+
+def _deepseek_v4_load_attention_sink(
+    param: nn.Parameter,
+    loaded_weight: torch.Tensor,
+    *,
+    full_sink: torch.Tensor,
+    tp_rank: int,
+    num_local_heads: int,
+) -> None:
+    """Load the global learned sinks and this TP rank's padded local shard."""
+
+    loaded_sink = loaded_weight.reshape(-1)
+    if loaded_sink.numel() != full_sink.numel():
+        raise ValueError(
+            "DeepSeek V4 attention sink checkpoint shape does not match the "
+            f"global head count: got {loaded_sink.numel()}, expected "
+            f"{full_sink.numel()}"
+        )
+    local_start = tp_rank * num_local_heads
+    local_end = local_start + num_local_heads
+    with torch.no_grad():
+        full_sink.copy_(loaded_sink)
+        param[:num_local_heads].copy_(full_sink[local_start:local_end])
 
 
 def _deepseek_v4_padded_heads(num_local_heads: int) -> int:
@@ -3930,16 +3954,33 @@ class DeepseekV4Attention(nn.Module):
         self.o_groups = config.o_groups
         self.num_local_groups = self.o_groups // tp_size
         num_local = self.num_local_heads
+        self._global_rank = mapping.rank
+        self._attn_tp_group = tuple(tp_group)
         self.attn_sink = nn.Parameter(
             torch.full((self.padded_heads,), -float("inf"), dtype=torch.float32),
             requires_grad=False,
         )
+        self.register_buffer(
+            "attn_sink_full",
+            torch.full((self.num_heads,), -float("inf"), dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_disabled_dcp_attn_sink",
+            torch.full((self.num_heads,), -float("inf"), dtype=torch.float32),
+            persistent=False,
+        )
         set_weight_attrs(
             self.attn_sink,
             {
-                "weight_loader": lambda param, loaded_weight: param.data.__setitem__(
-                    slice(num_local),
-                    loaded_weight[tp_rank * num_local : (tp_rank + 1) * num_local],
+                "weight_loader": lambda param, loaded_weight: (
+                    _deepseek_v4_load_attention_sink(
+                        param,
+                        loaded_weight,
+                        full_sink=self.attn_sink_full,
+                        tp_rank=tp_rank,
+                        num_local_heads=num_local,
+                    )
                 ),
             },
         )
@@ -4022,6 +4063,34 @@ class DeepseekV4Attention(nn.Module):
             )
         else:
             self.indexer = None
+
+    def _attention_sink_for_backend(self, backend) -> torch.Tensor:
+        dcp_size = int(backend.dcp_world_size)
+        if dcp_size <= 1:
+            return self.attn_sink
+
+        dcp_group = tuple(backend.dcp_group)
+        if len(dcp_group) != dcp_size:
+            raise RuntimeError("DeepSeek V4 DCP sink group is unresolved")
+        try:
+            tp_index = self._attn_tp_group.index(self._global_rank)
+        except ValueError as exc:
+            raise RuntimeError(
+                "DeepSeek V4 rank is missing from its attention TP group"
+            ) from exc
+        dcp_start = tp_index // dcp_size * dcp_size
+        expected_group = self._attn_tp_group[dcp_start : dcp_start + dcp_size]
+        dcp_rank = int(backend.dcp_rank)
+        if dcp_group != expected_group or not 0 <= dcp_rank < dcp_size:
+            raise RuntimeError("DeepSeek V4 DCP sink group is inconsistent")
+        if dcp_group[dcp_rank] != self._global_rank:
+            raise RuntimeError("DeepSeek V4 DCP sink rank is inconsistent")
+
+        group_heads = dcp_size * self.num_local_heads
+        if dcp_rank != 0:
+            return self._disabled_dcp_attn_sink[:group_heads]
+        head_start = dcp_start * self.num_local_heads
+        return self.attn_sink_full[head_start : head_start + group_heads]
 
     def _project_q_kv(
         self, hidden_states: torch.Tensor
@@ -4291,6 +4360,7 @@ class DeepseekV4Attention(nn.Module):
         forward_mode = ctx.forward_mode
         if forward_mode is None:
             raise RuntimeError("DeepSeek V4 attention requires forward mode")
+        attn_sink = self._attention_sink_for_backend(ctx.attn_backend)
         if forward_mode.is_mixed():
             with nvtx_range(f"{profile_prefix}_mixed_backend"):
                 attn_output = ctx.attn_backend.forward_deepseek_v4_mixed(
@@ -4305,7 +4375,7 @@ class DeepseekV4Attention(nn.Module):
                     head_dim=self.head_dim,
                     window_size=self.swa_window,
                     softmax_scale=self.scale,
-                    attn_sink=self.attn_sink,
+                    attn_sink=attn_sink,
                     topk_indices=topk_indices,
                 )
         elif forward_mode.is_decode():
@@ -4322,7 +4392,7 @@ class DeepseekV4Attention(nn.Module):
                     head_dim=self.head_dim,
                     window_size=self.swa_window,
                     softmax_scale=self.scale,
-                    attn_sink=self.attn_sink,
+                    attn_sink=attn_sink,
                     topk_indices=topk_indices,
                 )
         elif forward_mode.is_extend_or_mixed():
@@ -4339,7 +4409,7 @@ class DeepseekV4Attention(nn.Module):
                     head_dim=self.head_dim,
                     window_size=self.swa_window,
                     softmax_scale=self.scale,
-                    attn_sink=self.attn_sink,
+                    attn_sink=attn_sink,
                     topk_indices=topk_indices,
                 )
         else:

@@ -145,6 +145,7 @@ __all__ = [
     "dsa_prefill",
     "dsa_decode",
     "dsv4_sparse_mla_decode",
+    "dcp_attn_merge_rs",
     "prebuild_dsv4_sparse_mla",
     "dsa_prefill_topk",
     "dsa_decode_topk",
@@ -3359,6 +3360,136 @@ def attn_merge_state(
             lse_scale_log2=lse_scale_log2,
             inplace=inplace,
             enable_pdl=enable_pdl,
+        )
+
+
+def dcp_attn_merge_rs(
+    local_out: torch.Tensor,
+    gathered_lse: torch.Tensor,
+    *,
+    dcp_rank: int,
+    rs_staging: torch.Tensor | None = None,
+    merged_lse_out: torch.Tensor | None = None,
+    override: str | None = None,
+    solution: str | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Merge DCP attention states into destination-major reduce-scatter input.
+
+    Args:
+        local_out: This DCP rank's partial attention output, shaped
+            ``[rows, dcp_size * local_heads, head_dim]``.
+        gathered_lse: Natural-log LSE from every DCP rank, shaped
+            ``[dcp_size, capacity_rows, dcp_size * local_heads]`` with
+            ``capacity_rows >= rows``. NaN and infinite inputs are treated as
+            empty partial states.
+        dcp_rank: Rank whose partial output is supplied in ``local_out``.
+        rs_staging: Optional caller-owned destination-major output shaped
+            ``[dcp_size, capacity_rows, local_heads, head_dim]``.
+        merged_lse_out: Optional caller-owned FP32 merged LSE shaped
+            ``[capacity_rows, dcp_size * local_heads]``.
+        override: Optional exact registered kernel name.
+        solution: Optional registered solution name.
+
+    Returns:
+        ``(rs_staging, merged_lse)``. Each destination slice contains this
+        source rank's corrected partial output and is ready for a sum
+        reduce-scatter. The LSE output covers every gathered query head.
+
+    Supplying both output buffers makes the operator allocation-free and safe
+    to invoke during CUDA graph capture. This public operator has no fallback:
+    unsupported platforms or layouts fail kernel selection.
+    """
+
+    if local_out.ndim != 3 or not local_out.is_contiguous():
+        raise ValueError("local_out must be contiguous [rows, group_heads, head_dim]")
+    if gathered_lse.ndim != 3 or gathered_lse.stride(2) != 1:
+        raise ValueError("gathered_lse must be dense in its head dimension")
+    if gathered_lse.dtype != torch.float32:
+        raise TypeError("gathered_lse must use torch.float32")
+    if gathered_lse.device != local_out.device:
+        raise ValueError("gathered_lse and local_out must be on the same device")
+    dcp_size, capacity_rows, group_heads = gathered_lse.shape
+    rows = local_out.shape[0]
+    if dcp_size <= 1:
+        raise ValueError("dcp_size must be greater than one")
+    if local_out.shape[1] != group_heads or capacity_rows < rows:
+        raise ValueError("local_out and gathered_lse row/head dimensions disagree")
+    if group_heads % dcp_size != 0:
+        raise ValueError("group_heads must be divisible by dcp_size")
+    if isinstance(dcp_rank, bool) or not isinstance(dcp_rank, int):
+        raise TypeError("dcp_rank must be an integer")
+    if not 0 <= dcp_rank < dcp_size:
+        raise ValueError(f"dcp_rank must be in [0, {dcp_size}), got {dcp_rank}")
+
+    local_heads = group_heads // dcp_size
+    expected_staging = (dcp_size, capacity_rows, local_heads, local_out.shape[-1])
+    if rs_staging is None:
+        rs_staging = local_out.new_empty(expected_staging)
+    elif (
+        tuple(rs_staging.shape) != expected_staging
+        or rs_staging.dtype != local_out.dtype
+        or rs_staging.device != local_out.device
+        or not rs_staging.is_contiguous()
+    ):
+        raise ValueError(
+            "rs_staging must be contiguous, colocated with local_out, and have "
+            f"shape {expected_staging} and dtype {local_out.dtype}"
+        )
+    expected_lse = (capacity_rows, group_heads)
+    if merged_lse_out is None:
+        merged_lse_out = torch.empty(
+            expected_lse, dtype=torch.float32, device=local_out.device
+        )
+    elif (
+        tuple(merged_lse_out.shape) != expected_lse
+        or merged_lse_out.dtype != torch.float32
+        or merged_lse_out.device != local_out.device
+        or not merged_lse_out.is_contiguous()
+    ):
+        raise ValueError(
+            "merged_lse_out must be contiguous FP32, colocated with local_out, "
+            f"and have shape {expected_lse}"
+        )
+
+    signature = _attention_format_signature(local_out=local_out)
+    kernel = select_kernel(
+        "attention",
+        "dcp_attn_merge_rs",
+        signature,
+        traits={
+            "dcp_size": dcp_size,
+            "local_heads": local_heads,
+            "head_dim": local_out.shape[-1],
+        },
+        solution=solution,
+        override=override,
+    )
+    shape_params = {
+        "rows": rows,
+        "dcp_size": dcp_size,
+        "local_heads": local_heads,
+        "head_dim": local_out.shape[-1],
+    }
+    ShapeCapture.get().record(
+        "attention",
+        "dcp_attn_merge_rs",
+        kernel.name,
+        local_out.dtype,
+        shape_params,
+    )
+    with kernel_scope(
+        "attention",
+        "dcp_attn_merge_rs",
+        local_out.dtype,
+        kernel_name=kernel.name,
+        **shape_params,
+    ):
+        return kernel(
+            local_out=local_out,
+            gathered_lse=gathered_lse,
+            dcp_rank=dcp_rank,
+            rs_staging=rs_staging,
+            merged_lse_out=merged_lse_out,
         )
 
 

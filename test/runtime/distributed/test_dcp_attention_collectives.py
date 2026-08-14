@@ -25,9 +25,43 @@ import torch
 from tokenspeed.runtime.distributed.dcp import (
     DcpAttentionWorkspace,
     gather_dcp_queries,
-    gather_dcp_sinks,
     merge_dcp_attention_states,
 )
+
+
+def _fake_dcp_attn_merge_rs(
+    local_out,
+    gathered_lse,
+    *,
+    dcp_rank,
+    rs_staging,
+    merged_lse_out,
+):
+    rows = local_out.shape[0]
+    clean_lse = torch.where(
+        torch.isfinite(gathered_lse),
+        gathered_lse,
+        torch.full_like(gathered_lse, -torch.inf),
+    )
+    max_lse = clean_lse.amax(dim=0)
+    safe_max = torch.nan_to_num(max_lse, nan=0.0, posinf=0.0, neginf=0.0)
+    all_weights = torch.exp(clean_lse - safe_max.unsqueeze(0))
+    denom = all_weights.sum(dim=0)
+    merged_lse = torch.log(denom) + safe_max
+    weights = all_weights[dcp_rank, :rows] / denom[:rows].clamp_min(
+        torch.finfo(torch.float32).tiny
+    )
+    dcp_size = gathered_lse.shape[0]
+    local_heads = local_out.shape[1] // dcp_size
+    corrected = local_out * weights.unsqueeze(-1)
+    rs_staging.zero_()
+    rs_staging[:, :rows].copy_(
+        corrected.view(rows, dcp_size, local_heads, local_out.shape[-1]).permute(
+            1, 0, 2, 3
+        )
+    )
+    merged_lse_out.copy_(merged_lse)
+    return rs_staging, merged_lse_out
 
 
 def _workspace(local_heads: int = 1) -> DcpAttentionWorkspace:
@@ -56,33 +90,6 @@ def test_gather_queries_preserves_dcp_major_head_order() -> None:
         )
 
     torch.testing.assert_close(gathered.flatten(), torch.tensor([1.0, 2.0, 3.0, 4.0]))
-
-
-def test_sink_is_present_on_exactly_one_kv_partition() -> None:
-    workspace = _workspace(local_heads=2)
-
-    def fake_gather(out, local, _group):
-        out.copy_(torch.stack((local, local + 2)))
-
-    with patch(
-        "tokenspeed.runtime.distributed.dcp._all_gather_into_dcp_major",
-        side_effect=fake_gather,
-    ):
-        owner = gather_dcp_sinks(
-            torch.tensor([1.0, 2.0]),
-            group=(0, 1),
-            dcp_rank=0,
-            workspace=workspace,
-        ).clone()
-        non_owner = gather_dcp_sinks(
-            torch.tensor([1.0, 2.0]),
-            group=(0, 1),
-            dcp_rank=1,
-            workspace=workspace,
-        ).clone()
-
-    torch.testing.assert_close(owner, torch.tensor([1.0, 2.0, 3.0, 4.0]))
-    assert torch.isneginf(non_owner).all()
 
 
 def test_merge_uses_natural_lse_and_reduce_scatters_heads() -> None:
@@ -116,6 +123,10 @@ def test_merge_uses_natural_lse_and_reduce_scatters_heads() -> None:
                 "tokenspeed.runtime.distributed.dcp._reduce_scatter_dcp_heads",
                 side_effect=fake_reduce_scatter,
             ),
+            patch(
+                "tokenspeed.runtime.distributed.dcp.dcp_attn_merge_rs",
+                side_effect=_fake_dcp_attn_merge_rs,
+            ),
         ):
             out, lse = merge_dcp_attention_states(
                 partial_out_by_rank[active_rank],
@@ -147,6 +158,10 @@ def test_merge_empty_shards_produces_zero_output_and_negative_infinite_lse() -> 
         patch(
             "tokenspeed.runtime.distributed.dcp._reduce_scatter_dcp_heads",
             side_effect=fake_reduce_scatter,
+        ),
+        patch(
+            "tokenspeed.runtime.distributed.dcp.dcp_attn_merge_rs",
+            side_effect=_fake_dcp_attn_merge_rs,
         ),
     ):
         out, lse = merge_dcp_attention_states(
@@ -190,6 +205,10 @@ def test_merge_stages_every_prefill_row_in_reduce_scatter_workspace() -> None:
         patch(
             "tokenspeed.runtime.distributed.dcp._reduce_scatter_dcp_heads",
             side_effect=fake_reduce_scatter,
+        ),
+        patch(
+            "tokenspeed.runtime.distributed.dcp.dcp_attn_merge_rs",
+            side_effect=_fake_dcp_attn_merge_rs,
         ),
     ):
         merge_dcp_attention_states(

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
+from tokenspeed_kernel.ops.attention import dcp_attn_merge_rs
 
 from tokenspeed.runtime.distributed.mapping import Group
 from tokenspeed.runtime.distributed.process_group_manager import (
@@ -39,17 +40,9 @@ class DcpAttentionWorkspace:
 
     local_q: torch.Tensor
     gathered_q: torch.Tensor
-    local_sink: torch.Tensor
-    gathered_sink: torch.Tensor
-    kernel_sink: torch.Tensor
     local_lse: torch.Tensor
     gathered_lse: torch.Tensor
-    lse_weights: torch.Tensor
-    lse_max: torch.Tensor
-    lse_safe_max: torch.Tensor
-    lse_denom: torch.Tensor
     merged_lse: torch.Tensor
-    local_weight: torch.Tensor
     reduce_scatter_input: torch.Tensor
     reduce_scatter_output: torch.Tensor
 
@@ -78,11 +71,6 @@ class DcpAttentionWorkspace:
                 dtype=dtype,
                 device=device,
             ),
-            local_sink=torch.empty((local_heads,), dtype=torch.float32, device=device),
-            gathered_sink=torch.empty(
-                (dcp_size, local_heads), dtype=torch.float32, device=device
-            ),
-            kernel_sink=torch.empty((group_heads,), dtype=torch.float32, device=device),
             local_lse=torch.empty(
                 (max_rows, group_heads), dtype=torch.float32, device=device
             ),
@@ -91,24 +79,7 @@ class DcpAttentionWorkspace:
                 dtype=torch.float32,
                 device=device,
             ),
-            lse_weights=torch.empty(
-                (dcp_size, max_rows, group_heads),
-                dtype=torch.float32,
-                device=device,
-            ),
-            lse_max=torch.empty(
-                (max_rows, group_heads), dtype=torch.float32, device=device
-            ),
-            lse_safe_max=torch.empty(
-                (max_rows, group_heads), dtype=torch.float32, device=device
-            ),
-            lse_denom=torch.empty(
-                (max_rows, group_heads), dtype=torch.float32, device=device
-            ),
             merged_lse=torch.empty(
-                (max_rows, group_heads), dtype=torch.float32, device=device
-            ),
-            local_weight=torch.empty(
                 (max_rows, group_heads), dtype=torch.float32, device=device
             ),
             reduce_scatter_input=torch.empty(
@@ -126,10 +97,9 @@ class DcpAttentionWorkspace:
 class DcpIndexerCandidateWorkspace:
     """Fixed-shape buffers for O(DCP x K) sparse-indexer candidate exchange."""
 
-    local_scores: torch.Tensor
-    local_rows: torch.Tensor
-    gathered_scores: torch.Tensor
-    gathered_rows: torch.Tensor
+    local_candidates: torch.Tensor
+    gathered_candidates: torch.Tensor
+    candidate_records: torch.Tensor
     candidate_scores: torch.Tensor
     candidate_rows: torch.Tensor
     candidate_offsets: torch.Tensor
@@ -151,15 +121,14 @@ class DcpIndexerCandidateWorkspace:
         if min(dcp_size, max_rows, topk) <= 0:
             raise ValueError("DCP indexer workspace dimensions must be positive")
         return cls(
-            local_scores=torch.empty(
-                (max_rows, topk), dtype=torch.float32, device=device
+            local_candidates=torch.empty(
+                (max_rows, topk), dtype=torch.int64, device=device
             ),
-            local_rows=torch.empty((max_rows, topk), dtype=torch.int32, device=device),
-            gathered_scores=torch.empty(
-                (dcp_size, max_rows, topk), dtype=torch.float32, device=device
+            gathered_candidates=torch.empty(
+                (dcp_size, max_rows, topk), dtype=torch.int64, device=device
             ),
-            gathered_rows=torch.empty(
-                (dcp_size, max_rows, topk), dtype=torch.int32, device=device
+            candidate_records=torch.empty(
+                (max_rows, dcp_size * topk), dtype=torch.int64, device=device
             ),
             candidate_scores=torch.empty(
                 (max_rows, dcp_size * topk), dtype=torch.float32, device=device
@@ -233,7 +202,13 @@ def gather_dcp_indexer_candidates(
     group: Group,
     workspace: DcpIndexerCandidateWorkspace,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """All-gather only local top-K scores/rows and materialize rank-major candidates."""
+    """Exchange score/row records with one DCP all-gather.
+
+    Each candidate is transferred as one opaque 64-bit record containing the
+    exact float32 score bits followed by the int32 global row. This halves the
+    latency-sensitive indexer collectives without changing score ordering or
+    row values.
+    """
 
     _validate_group(group)
     if local_scores.ndim != 2 or local_rows.shape != local_scores.shape:
@@ -243,34 +218,39 @@ def gather_dcp_indexer_candidates(
     if local_scores.dtype != torch.float32 or local_rows.dtype != torch.int32:
         raise TypeError("DCP indexer candidates require float32 scores and int32 rows")
     rows, topk = local_scores.shape
-    if len(group) != workspace.gathered_scores.shape[0]:
+    if len(group) != workspace.gathered_candidates.shape[0]:
         raise ValueError("DCP group and indexer workspace sizes disagree")
     if (
-        rows > workspace.local_scores.shape[0]
-        or topk != workspace.local_scores.shape[1]
+        rows > workspace.local_candidates.shape[0]
+        or topk != workspace.local_candidates.shape[1]
     ):
         raise ValueError("DCP indexer candidates exceed the preallocated workspace")
 
-    workspace.local_scores[:rows].copy_(local_scores)
-    workspace.local_rows[:rows].copy_(local_rows)
-    if rows < workspace.local_scores.shape[0]:
-        workspace.local_scores[rows:].fill_(-torch.inf)
-        workspace.local_rows[rows:].fill_(-1)
-    _all_gather_into_dcp_major(
-        workspace.gathered_scores,
-        workspace.local_scores,
-        group,
+    local_fields = workspace.local_candidates.view(torch.int32).view(
+        *workspace.local_candidates.shape, 2
     )
+    local_fields[:rows, :, 0].copy_(local_scores.view(torch.int32))
+    local_fields[:rows, :, 1].copy_(local_rows)
+    if rows < workspace.local_candidates.shape[0]:
+        # IEEE-754 float32 -inf bit pattern followed by the invalid row sentinel.
+        local_fields[rows:, :, 0].fill_(-0x800000)
+        local_fields[rows:, :, 1].fill_(-1)
     _all_gather_into_dcp_major(
-        workspace.gathered_rows,
-        workspace.local_rows,
+        workspace.gathered_candidates,
+        workspace.local_candidates,
         group,
     )
     for rank in range(len(group)):
         start = rank * topk
         end = start + topk
-        workspace.candidate_scores[:, start:end].copy_(workspace.gathered_scores[rank])
-        workspace.candidate_rows[:, start:end].copy_(workspace.gathered_rows[rank])
+        workspace.candidate_records[:, start:end].copy_(
+            workspace.gathered_candidates[rank]
+        )
+    candidate_fields = workspace.candidate_records.view(torch.int32).view(
+        *workspace.candidate_records.shape, 2
+    )
+    workspace.candidate_scores.view(torch.int32).copy_(candidate_fields[:, :, 0])
+    workspace.candidate_rows.copy_(candidate_fields[:, :, 1])
     return workspace.candidate_scores[:rows], workspace.candidate_rows[:rows]
 
 
@@ -295,34 +275,6 @@ def gather_dcp_queries(
     gathered = workspace.gathered_q[:, :, :local_heads, :head_dim]
     _all_gather_into_dcp_major(gathered, local, group)
     return gathered[:, :rows].permute(1, 0, 2, 3).reshape(rows, -1, head_dim)
-
-
-def gather_dcp_sinks(
-    sink: torch.Tensor,
-    *,
-    group: Group,
-    dcp_rank: int,
-    workspace: DcpAttentionWorkspace,
-    owner_rank: int = 0,
-) -> torch.Tensor:
-    """Gather TP-head sinks and expose them on exactly one KV partition."""
-
-    _validate_group(group)
-    if not 0 <= dcp_rank < len(group) or not 0 <= owner_rank < len(group):
-        raise ValueError("DCP sink rank must be inside the DCP group")
-    local_heads = workspace.local_sink.shape[0]
-    if sink.numel() < local_heads:
-        raise ValueError("DCP attention sink has fewer than local TP heads")
-    workspace.local_sink.copy_(sink[:local_heads].to(torch.float32))
-    _all_gather_into_dcp_major(
-        workspace.gathered_sink,
-        workspace.local_sink,
-        group,
-    )
-    workspace.kernel_sink.copy_(workspace.gathered_sink.reshape(-1))
-    if dcp_rank != owner_rank:
-        workspace.kernel_sink.fill_(-torch.inf)
-    return workspace.kernel_sink
 
 
 def merge_dcp_attention_states(
@@ -358,46 +310,15 @@ def merge_dcp_attention_states(
     gathered_lse = workspace.gathered_lse[:, :, :group_heads]
     _all_gather_into_dcp_major(gathered_lse, staged_lse, group)
 
-    weights = workspace.lse_weights[:, :, :group_heads]
-    lse_max = workspace.lse_max[:, :group_heads]
-    safe_max = workspace.lse_safe_max[:, :group_heads]
-    denom = workspace.lse_denom[:, :group_heads]
     merged_lse = workspace.merged_lse[:, :group_heads]
-    torch.nan_to_num(
-        gathered_lse,
-        nan=-torch.inf,
-        posinf=-torch.inf,
-        neginf=-torch.inf,
-        out=weights,
-    )
-    torch.amax(weights, dim=0, out=lse_max)
-    torch.nan_to_num(lse_max, nan=0.0, posinf=0.0, neginf=0.0, out=safe_max)
-    weights.sub_(safe_max.unsqueeze(0))
-    torch.exp(weights, out=weights)
-    torch.sum(weights, dim=0, out=denom)
-    torch.log(denom, out=merged_lse)
-    merged_lse.add_(safe_max)
-
-    local_weight = workspace.local_weight[:, :group_heads]
-    torch.div(
-        weights[dcp_rank],
-        denom.clamp_min_(torch.finfo(torch.float32).tiny),
-        out=local_weight,
-    )
     rs_input = workspace.reduce_scatter_input[:, :, :local_output_heads, :head_dim]
-    local_out_by_destination = local_out.view(
-        rows, len(group), local_output_heads, head_dim
-    ).permute(1, 0, 2, 3)
-    local_weight_by_destination = (
-        local_weight[:rows].view(rows, len(group), local_output_heads).permute(1, 0, 2)
+    dcp_attn_merge_rs(
+        local_out,
+        gathered_lse,
+        dcp_rank=dcp_rank,
+        rs_staging=rs_input,
+        merged_lse_out=merged_lse,
     )
-    torch.mul(
-        local_out_by_destination,
-        local_weight_by_destination.unsqueeze(-1),
-        out=rs_input[:, :rows],
-    )
-    if rows < rs_input.shape[1]:
-        rs_input[:, rows:].zero_()
     rs_output = workspace.reduce_scatter_output[:, :local_output_heads, :head_dim]
     _reduce_scatter_dcp_heads(rs_output, rs_input, group)
     head_start = dcp_rank * local_output_heads
@@ -513,7 +434,6 @@ __all__ = [
     "dcp_owned_prefix_lengths",
     "gather_dcp_indexer_candidates",
     "gather_dcp_queries",
-    "gather_dcp_sinks",
     "merge_dcp_attention_states",
     "restore_dcp_global_rows",
     "shard_dcp_logical_rows",

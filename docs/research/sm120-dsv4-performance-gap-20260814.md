@@ -11,6 +11,7 @@
 3. **1M 支持是四层能力，不是一个布尔开关：** 配置接受 1M、KV 容量容纳实际 1M、attention/cache writer 在实际深度正确、调度与图执行在冷 1M prefill 后仍稳定。DGX Spark 的社区 runbook 证明 1M 可以跑通，但它们也公开了 256K 冷 prefill 主机重启、32K decode 补丁回退、600K cache dispatch 回退等问题；“启动显示 1M”不等于完整闭环。
 4. **应先工程化分支，再继续性能实验。** 以更新后的 `main` 为唯一基线，在 `dev` 集成分支维护可复现的 feature stack；每个能力从独立 feature 分支进入，并携带 correctness、graph coverage、实际上下文和性能 gate。不要把旧 PR 整包 cherry-pick，也不要继续在远端节点上堆不可追溯 patch。
 5. **工程顺序与吞吐收益顺序必须分开。** 先完成实际 1M compact NVFP4 correctness 合同，再做性能优化；就吞吐潜力而言，把已合入 TokenSpeed 的 Week-0 DSpark 做成 SM120 完整全图实现最有价值。RTX PRO 6000 数据显示 speculative 的收益可很大，但它完全受 acceptance 和 verify step 支配；仅加载 drafter、没有高 acceptance 或存在 eager break，甚至会倒退。严格 graph coverage、长 KV indexer、MoE/verify 和 DCP 都必须实现，但要以独立实验臂进入，不能用一个混合配置掩盖因果。
+6. **本轮 TP4/DCP2 已跨过 correctness gate，但当前实现明显受通信/launch latency 限制。** exact-1M 容量 receipt 为 6.85 GB/rank；2-GPU NCCL CUDA graph primitive 64/64 replay 通过；4095-token prompt 固定输出 64 tokens 的 20 次服务请求 hash 全同且与 DCP1 相同。但同服务 4095/256 C1 decode 三次只有 46.9/47.0/47.8 tok/s。按 43 层和 21 个 c4 层展开，现路径约有 214 次 DCP collective/token；静态 sink、重复 candidate gather 与未融合 LSE merge 是首先要消除的结构性成本。
 
 ## 当前分支的真实能力
 
@@ -25,7 +26,7 @@
 | CUDA graph decode | 有基础能力 | 目标模型 decode 可进图；主线已有 DFLASH/DSPARK padding 和 breakable-prefill 基础设施，但当前 dispatch 仍以 decode 为门槛，非 decode 路径会退回普通 forward。 |
 | DSpark | 功能性实现，不是高性能完成态 | [#940](https://github.com/lightseekorg/tokenspeed/pull/940) 与 [#1048](https://github.com/lightseekorg/tokenspeed/pull/1048) 已在主线：同 checkpoint drafter、canonical paged cache、graph-safe replay。当前实现明确为 Week-0，只接受 TP，proposal/sampling 仍偏 PyTorch/greedy，缺少外部快栈的生产级 drafter kernels、概率采样、动态深度和完整图资格。 |
 | 真 compact NVFP4 DS-MLA KV | 上游分支缺失；本地 integration prototype 已运行 | 当前上游 attention cache 仍是 FP8 DS-MLA；MXFP4 indexer cache 不是 compressed MLA KV。旧本地 integration tree 已实现显式 `dsv4_nvfp4_368` writer/reader/dual-cache ABI，并在 59/8030 的 exact-1M 服务运行，但仍未整理到新 `dev`，也未达到目标 decode 性能。 |
-| DCP / sequence parallel | 上游 runtime 缺失；本地 correctness-first DCP2 已短请求验证 | #364 只有 kernel primitive。旧本地 integration tree 已有 DCP subgroup、物理 token stripe、Q/O/LSE collective、prefill/indexer reconstruction 和 graph telemetry；59 的 DCP2 profile 通过短请求启动资格，但 capability table 仍把 target-GPU graph collectives 标为未正式晋级，且全历史 reconstruction 明确是 correctness-first，不是最终高性能算法。 |
+| DCP / sequence parallel | 本地 TP4/DCP2 correctness-first 路线已通过容量、graph primitive 与短请求正确性 gate，性能未闭环 | #364 只有 kernel primitive；当前分支已补 DCP subgroup、物理 token stripe、Q/O/LSE collective、prefill/indexer reconstruction 和固定 workspace。`max_model_len=1,048,576` 的容量 receipt 为每 rank 6.85 GB，2-GPU NCCL CUDA graph primitive 连续 replay 64 次通过；同一 4095-token prompt 固定生成 64 tokens，DCP2 重复 20 次输出 hash 全同，且与 matched DCP1 hash 相同。该证据不等于实际 1M prompt 已完成，也不等于性能达标：4095/256 C1 decode 三次只有 46.9/47.0/47.8 tok/s。 |
 | ADP / DP attention | **缺失** | 没有可 cherry-pick 的 TokenSpeed 上游实现。它主要针对高并发 KV 去重，不应作为 C1 低延迟的第一优化。 |
 | P/D cache handoff | 未纳入 | [#997](https://github.com/lightseekorg/tokenspeed/pull/997) 仍开放，已做 4×SM120、TP2/EP2 的 P/D smoke；更新的 [#1057](https://github.com/lightseekorg/tokenspeed/pull/1057) 正在统一 cache recipe/plan 和异构 TP 合同。不是当前单服务 TP4 的必要依赖。 |
 | SM120 启动期调优与 DSV4 cache-write overlap | 已现场闭环 | FlashInfer 0.6.16 的 fused-MoE `tactic=-1` preparation 在异常边界外，SM120 TMA-WS 会污染 CUDA 状态；启动期继续跳过这两个不安全 profiling op，但离线完整枚举显式 profile ID，并按 GPU、CC、FlashInfer、CUTLASS tactic ABI、Torch/CUDA、MoE shape、TP/EP 与 PDL 精确绑定 21-bucket 表。另以四臂 A/B 确认 Phase-2 indexer/SWA/compressor-state 双流并发会触发 4096-token prefill IMA；只在 SM120 的 prefill/mixed indexer 分支串行，decode 恢复 overlap，保留 Phase-1 projection/compressor-GEMM 与 compressor-only cache-write overlap。 |
@@ -43,9 +44,9 @@
 | 53/8000 | vLLM | TP4/DCP2、FP8 DS-MLA、B12X attention/MoE/linear、target-only、exact max 1M |
 | 53/8001 | vLLM | TP4/DCP1、padded NVFP4 DS-MLA、B12X、DSpark K5、exact max 1M |
 | 59/8030 | TokenSpeed 旧私有镜像 | TP4/DCP1、exact-368 NVFP4、B12X W4A16、target-only、strict graph route、exact max 1M |
-| 59/8040 | TokenSpeed 新上游栈 | TP4/DCP1、FP8 DS-MLA、FlashInfer MXFP8×MXFP4、target-only、exact max 1M、decode + prefill graph |
+| 59/8040 | TokenSpeed 新上游栈 | TP4/DCP2、FP8 DS-MLA、FlashInfer MXFP8×MXFP4、target-only、exact max 1M、decode + breakable prefill graph |
 
-这里最关键的工程事实是：59/8030 运行的是 `tokenspeed:deepseek-v4-1m-tp4-nvfp4-graphfix`，**不是**当前 `feat/sm120-upstream-stack`；59/8040 才是 #948/#992 新路径。53/8000 的镜像则明确使用 CUDA 13.2、`TORCH_CUDA_ARCH_LIST=12.0a`、`FLASHINFER_CUDA_ARCH_LIST=12.0f`、B12X A8、DCP2 与 PCIe-local-inference collective；59 新镜像是 baseline `sm_120`、CUDA 13.0、FlashInfer CUTLASS、DCP1。因此 53/59 不是单一 kernel A/B，而是完整 target stack A/B。
+这里最关键的工程事实是：59/8030 运行的是 `tokenspeed:deepseek-v4-1m-tp4-nvfp4-graphfix`，**不是**当前 `feat/sm120-upstream-stack`；59/8040 才是 #948/#992 新路径。53/8000 的镜像则明确使用 CUDA 13.2、`TORCH_CUDA_ARCH_LIST=12.0a`、`FLASHINFER_CUDA_ARCH_LIST=12.0f`、B12X A8、DCP2 与 PCIe-local-inference collective；59 新镜像是 `sm_120f`、CUDA 13.0、FlashInfer CUTLASS、DCP2。因此 53/59 不是单一 kernel A/B，而是完整 target stack A/B。
 
 新分支镜像 `tokenspeed:sm120-native-c0f2882` 在 59 的 0--3 卡首次启动时，四个 rank 均在第 0/48 shard 以 `start (0) + length (512) exceeds dimension size (4)` 退出。现场检查确认 0731 checkpoint 虽在 `config.json` 声明 `quant_method=fp8`，expert `weight` 实际为 packed half-width MXFP4，scale 为 E8M0 K/32。新增 `--deepseek-v4-expert-weight-format mxfp4_e8m0` 后，dense/shared tensors 仍遵循模型 FP8 config，只有 routed experts 按 serialized MXFP4 创建并把 scale 映射到 raw `weight_scale`；48/48 shards 在四 rank 全部加载。这个显式合同没有 shape 猜测、兼容层或静默 fallback。
 
@@ -78,6 +79,39 @@ PDL=true 微基准中，单 token 的稳健策略把 spread/concentrated 从 164
 53/8001 的历史 speculative acceptance 只有 `94 / 21,130 = 0.445%`，平均 decode 约 77.6 tok/s，慢于无 speculative 的 53/8000 约 107.3 tok/s。因此**当前 53 的优势不是 DSpark**；它来自 FP8+DCP2+B12X/vLLM 这一整套 target path。DSpark 仍有很高的后续收益潜力，但必须先修 acceptance 与 full graph，不能把开关状态当成能力完成。
 
 同集群此前保留的 r33 原始 JSON 又给出一个更强的硬件上限证据：55 上 TP4、131K 上限、DSpark/B12X 的单服务持续 decode 为 C1 222.7、C4 478.3、C8 637.9 aggregate tok/s；另一轮双服务并行时该臂为 221.4/495.3/510.2。它不是 exact-1M 合同，不能拿来替代最终服务，但证明 6000D 上 200+ C1、500+ aggregate 已经在本集群真实出现过。当前 exact-1M TokenSpeed 的 70 tok/s 不是硬件上限。
+
+### TP4/DCP2 本轮实测基线与根因
+
+下面只记录 2026-08-14 当前 DCP feature stack 的现场结果。容量、collective primitive、端到端正确性和端到端吞吐是四种不同口径，不能互相替代：
+
+| 验证层 | 精确口径 | 结果 | 能证明什么 / 不能证明什么 |
+|---|---|---|---|
+| exact-1M 容量 receipt | DeepSeek-V4-Flash-0731，TP4/DCP2，`max_model_len=1,048,576`；按当前 DSV4 hybrid-cache recipe 对完整模型层数做物理分片和启动期容量核算 | **6.85 GB/rank**；保留 receipt 原始 GB 单位，不换算 GiB | 证明 DCP2 的每-rank cache allocation 能按 exact-1M 配置建立；这不是一条实际 1M-token prompt 的 prefill/decode 成功记录。 |
+| 真实 NCCL CUDA graph primitive | 2 张 GPU、DCP world size 2；attention tensor 为 BF16、LSE/candidate score 为 FP32、candidate row 为 INT32；`rows=2`、local heads 2、head dim 4、top-k 3；3 次 warmup 后 capture，输入在两种 pattern 间交替；graph 内同时执行 Q all-gather、fused LSE/output merge + reduce-scatter、packed indexer candidate all-gather/top-k | **64/64 replays 通过**，每次均与显式 reference 一致 | 证明 `c99217c` 修复后的固定 workspace和新的 A/B/C 组合可被 capture/replay，并覆盖 multi-row RS 布局；它是小 shape 的 distributed primitive gate，不是 43 层生产服务 full-graph 性能证明。 |
+| 端到端确定性 | TP4/DCP2 服务；同一 tokenizer 产生的实际 4095-token prompt、相同生成参数、固定输出 64 tokens；连续重复 20 次，并与 matched DCP1 输出比较 | **20/20 完成且输出 hash 全同；该 hash 与 DCP1 相同** | 证明该短请求上 DCP2 的 cache sharding、indexer reconstruction 和 attention merge 语义与 DCP1 一致；不外推到实际 256K--1M 深度或非确定性采样。 |
+| 端到端 C1 decode | 同一 TP4/DCP2 服务、同一实际 4095-token prompt、固定输出 256 tokens、单并发；沿用 matched harness 的 decode-only 口径，不含 TTFT；连续 3 次完整请求 | **46.9 / 47.0 / 47.8 tok/s**，平均 47.23、median 47.0 tok/s | 这是当前 DCP2 性能基线，不是目标值。此前同栈 DCP1 热态约 79.97 tok/s、53 的 vLLM TP4/DCP2 约 107 tok/s 只能作为方向性参照；由于 feature stack/backend 不完全相同，不能把差值全部归因于 DCP degree。 |
+
+本轮还定位了一个独立的 **multi-row correctness root cause**。旧 `merge_dcp_attention_states()` 先取 `reduce_scatter_input[:, :rows]`，再执行 `permute(1, 0, 2, 3).reshape(rows, group_heads, head_dim)`，把结果当作 `torch.mul(..., out=corrected)` 的 destination。当 `rows > 1` 时，该 permute 后的 stride 无法按目标 shape 表示为 view，`reshape` 会物化临时 tensor；乘法写进临时 tensor，而后续 NCCL reduce-scatter 读取的原 `reduce_scatter_input` 没有被写入。`rows=1` 恰好可形成 view，所以普通 C1 decode 会掩盖问题。当前修复按 destination rank 显式 view/permute `local_out` 与 weight，并直接 `out=reduce_scatter_input[:, :rows]`；上述 2-GPU、multi-row、64-replay test 是该修复的 graph correctness gate。这个 bug 解释旧 multi-row 错误，**不解释修复后 C1 仍只有约 47 tok/s**。
+
+修复后的 C1 性能问题首先是 collective/launch latency，而不是 PCIe payload bandwidth。官方 0731 配置有 43 个 attention 层、64 heads、head dim 512；TP4 每 rank 为 16 local heads，DCP2 kernel 覆盖 32 group heads。43 层中有 21 个 c4 indexer 层。当前每个生成 token 的 DCP hot path 为：
+
+- 每个 attention 层执行 Q all-gather、sink all-gather、LSE all-gather 和 output reduce-scatter，共 `43 × 4 = 172` 次 collective；
+- 每个 c4 层分别 all-gather top-k scores 和 rows，共 `21 × 2 = 42` 次；
+- 合计约 **214 次 DCP collective/token**。该数目不包含 TP linear/MoE 已有的 all-reduce，也不包含进程级 barrier。
+
+在 C1、BF16 output/FP32 LSE 下，每 rank 每层的逻辑 peer payload 只有约 16 KiB Q、64 B sink、128 B LSE 和约 16 KiB output contribution；21 个 c4 层的 scores/rows 约再增加 84 KiB/token。总量约 1.4--1.5 MB/token，47 tok/s 只对应约 70 MB/s，远低于 PCIe Gen5 x16 的可用带宽。相反，47.23 tok/s 是约 21.17 ms/decode step，79.97 tok/s 是约 12.50 ms/step；把两者约 8.67 ms 的差额仅作为诊断估算摊到 214 次 collective，约为 40.5 µs/次，符合小报文 collective、stream ordering 和 launch latency 的量级。该换算不是逐 kernel profiler 归因，但足以否定“先继续调大通信 chunk 就会解决”的方向。
+
+此外，当前 sink 是每层静态参数，却在每个 decode step 做一次 all-gather；c4 candidate 的同一 `[rows, topk]` 记录被拆成 scores/rows 两次 all-gather；LSE merge 又由 `nan_to_num/amax/sub/exp/sum/log/div/mul` 等约 10 个 PyTorch CUDA op 组成，然后才进入 reduce-scatter。这三项共同造成大量小同步点。后续按下列 A--E 顺序推进，每一步都保留独立 correctness 与 matched performance gate：
+
+| 阶段 | 最小改造 | hot-path 影响 | 必须通过的 gate |
+|---|---|---|---|
+| A：静态 sink | 利用 checkpoint loader 已经看到完整 `attn_sink` 的事实，为每层保留完整 global sink；owner rank 直接取所属 DCP subgroup view，非 owner 使用预分配全 `-inf` tensor。不要在第一次 graph capture 中懒初始化，也不要每步 copy/fill。 | 去掉 43 次 sink all-gather，约 `214 → 171` collectives/token。 | DCP1/DCP2 sink head slice、owner 语义、全层输出 hash；capture 前地址固定。 |
+| B：合并 indexer candidate | 把一个 candidate 的 score bits 与 global row 组成一个 8-byte record，一次 all-gather 后再由 fused/materialize kernel拆出；不改变 global top-k 语义。 | 每个 c4 层 2 次 all-gather 变 1 次，再少 21 次，约 `171 → 150` collectives/token。 | FP32 score 的 bit-exact round trip、无效 row、tie/top-k 次序、prefill/decode 和 graph replay。 |
+| C：融合 LSE 与 RS-layout writer | 在 `tokenspeed-kernel` 的 attention merge-state family 新增一个 kernel：从 gathered LSE 做 nan-safe max/exp/sum/log，计算本 rank partial weight，并直接写 destination-major RS input，同时写 merged LSE。runtime 仍保留 NCCL LSE all-gather 与 RS。 | collective 数仍约 150，但每层约 10 个小 CUDA op 收敛为 1 个，并从结构上固定 multi-row RS layout。 | DCP2/4、rows 1/多行、head dim 512、NaN/+inf/-inf/all-`-inf`、预分配 output 地址与 64 次 graph replay。 |
+| D：DCP-group IPC collective | 为 DCP group 建独立 CUDA-IPC/TRTLLM one-shot workspace，替换精确小 shape 的 Q all-gather/RS；不能复用当前 TP4 全局 workspace，也不能在配置启用后静默回退 NCCL。 | 先减少每次 collective 的固定延迟；调用次数不因替换 backend 自动下降。 | 本机 P2P/IPC qualification、进程重启与资源释放、graph replay generation、NCCL matched 数值和逐 shape CUDA-event A/B。 |
+| E：peer-read fused state merge | FlashInfer attention 把 partial output/LSE 写入固定 IPC shared buffer；单个 kernel peer-read 两个 DCP rank 的 state，完成 online-softmax merge并只写本 rank heads，取代 LSE all-gather + correction + RS。 | 在 A/B 后再移除 `43 × 2 = 86` 次 LSE/RS collective，剩约 43 次 Q gather + 21 次 candidate gather，即约 **64 collectives/token**，另有每层一次 merge/barrier kernel。 | Lamport/barrier 代际、graph replay、peer lifetime、empty partition/all-`-inf`、长上下文一致性，以及故障时 fail-closed。 |
+
+A+B 合计只移除 64/214、约 30% 的 DCP collective。若粗略按上述 latency 线性估算，只可能回收约 2--2.7 ms/step，对应约 53 tok/s 的量级；这是规划估算而非实测，不能写成收益承诺。要从约 47 追回 DCP1 的约 80，至少需要 C 的 launch fusion，并很可能需要 D/E 的 IPC 与 peer-read merge。每阶段必须分别记录 Q gather、attention kernel、LSE merge、RS 和 indexer candidate gather 的 CUDA-event/NVTX 时间，不能只看一个端到端 tok/s 猜根因。
 
 ### 对新分支的判定方法
 
@@ -279,7 +313,7 @@ DCP 按 DCP degree 分摊 sequence/KV，直接改善 1M 容量和长上下文 at
 
 1. 对实际 6000D 主机采集 `nvidia-smi topo -m` 和 P2P read/write/atomics，按 root-port/switch 岛构建拓扑合同。
 2. 同合同 A/B NCCL、当前 RSAG/FlashInfer 和 topology-scoped protocol；先 TP4，再考虑 TP8。禁止把 TP8 +20% 外推到 TP4。
-3. 完成 DCP2 prototype：先证明 KV capacity 近似按 degree 改善、长上下文结果一致，再测 C1/C4 与实际 256K/512K/900K decode。DCP4 和 SP 后置。
+3. 当前 DCP2 prototype 已证明 exact-1M 容量 receipt、2-GPU graph primitive 和 4095-token 短请求结果一致，但 4095/256 C1 只有 46.9/47.0/47.8 tok/s。下一步按本报告 A--E 路线先消除静态/重复 collective 与 LSE 小 kernel，再测 C1/C4 和实际 256K/512K/900K decode；DCP4 和 SP 后置。
 4. ADP/DP attention 仅在高并发、KV capacity 确实是瓶颈时进入路线；它不解决 DSpark verify/MoE 的 C1 主耗时。
 
 ## 推荐优先级：cherry-pick 与重实现
@@ -326,7 +360,7 @@ DCP 按 DCP degree 分摊 sequence/KV，直接改善 1M 容量和长上下文 at
 - P2P/collective backend、拓扑、TP/EP/DCP、CUDA graph capture sizes；
 - engine crash、OOM、Xid、timeout、错误输出和 needle/quality 结果。
 
-只有满足这套合同，才能回答“53 为什么更快”和“SM120 最优组合是什么”。依据当前一手证据，最值得先验证的目标组合是：**TP4/DCP1 + #992 SM120 sparse MLA/MXFP4 MoE + 真 compact NVFP4 KV + fixed probabilistic DSpark K5 + target/draft/context-KV strict FULL graph**。DCP2 是其后的 1M 容量/长深度实验臂，不应在尚未确认 DSpark、graph 和 cache consumer 的情况下先承担所有性能预期。
+只有满足这套合同，才能回答“53 为什么更快”和“SM120 最优组合是什么”。依据当前一手证据，最值得先验证的目标组合是：**TP4/DCP1 + #992 SM120 sparse MLA/MXFP4 MoE + 真 compact NVFP4 KV + fixed probabilistic DSpark K5 + target/draft/context-KV strict FULL graph**。DCP2 已经是可运行的 1M 容量/correctness 实验臂，但当前 4095/256 的约 47 tok/s 说明它还不是性能完成态；在 A--E 通信路线和实际长深度矩阵闭环前，不应让 DCP2 独自承担所有吞吐预期。
 
 ## 资料索引
 

@@ -34,7 +34,6 @@ from tokenspeed.runtime.distributed.dcp import (
     DcpAttentionWorkspace,
     dcp_owned_prefix_lengths,
     gather_dcp_queries,
-    gather_dcp_sinks,
     merge_dcp_attention_states,
     shard_dcp_logical_rows,
 )
@@ -1535,13 +1534,23 @@ class DeepseekV4AttentionBackend(AttentionBackend):
                 "FlashInfer SM120 sparse MLA does not support the DCP gathered "
                 f"query-head count {q_group.shape[1]}"
             )
-        group_sink = gather_dcp_sinks(
-            attn_sink,
-            group=self.dcp_group,
-            dcp_rank=self.dcp_rank,
-            workspace=workspace,
-        )
-        return q_group, group_sink, workspace
+        group_heads = q_group.shape[1]
+        if tuple(attn_sink.shape) != (group_heads,):
+            raise RuntimeError(
+                "DeepSeek V4 DCP requires a static subgroup attention sink with "
+                f"shape ({group_heads},), got {tuple(attn_sink.shape)}"
+            )
+        if attn_sink.dtype != torch.float32:
+            raise TypeError(
+                "DeepSeek V4 DCP attention sink must be float32, got "
+                f"{attn_sink.dtype}"
+            )
+        if attn_sink.device != q.device or not attn_sink.is_contiguous():
+            raise RuntimeError(
+                "DeepSeek V4 DCP attention sink must be contiguous on the query "
+                "device"
+            )
+        return q_group, attn_sink, workspace
 
     def _merge_dcp_attention_output(
         self,

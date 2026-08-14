@@ -103,7 +103,7 @@ def _expected(
         [
             torch.arange(rows * local_heads * head_dim, device=device)
             .reshape(rows, local_heads, head_dim)
-            .to(torch.float32)
+            .to(torch.bfloat16)
             + source_rank * 100
             + pattern * 10
             for source_rank in range(_WORLD_SIZE)
@@ -118,7 +118,7 @@ def _expected(
         [
             torch.arange(rows * group_heads * head_dim, device=device)
             .reshape(rows, group_heads, head_dim)
-            .to(torch.float32)
+            .to(torch.bfloat16)
             + source_rank * 100
             + pattern * 10
             for source_rank in range(_WORLD_SIZE)
@@ -127,7 +127,10 @@ def _expected(
     weights = torch.tensor([1.0 + pattern, 3.0 + pattern * 2.0], device=device).reshape(
         _WORLD_SIZE, 1, 1, 1
     )
-    expected_merged = (out_by_rank * weights).sum(dim=0) / weights.sum()
+    corrected_partials = (
+        out_by_rank.float() * (weights / weights.sum(dim=0, keepdim=True))
+    ).to(torch.bfloat16)
+    expected_merged = corrected_partials.sum(dim=0, dtype=torch.bfloat16)
     head_start = rank * local_heads
     expected_local_out = expected_merged[:, head_start : head_start + local_heads]
     expected_lse = torch.full(
@@ -185,7 +188,7 @@ def _run_graph_replay_case(
         max_rows=rows,
         local_heads=local_heads,
         head_dim=head_dim,
-        dtype=torch.float32,
+        dtype=torch.bfloat16,
         device=device,
     )
     indexer_workspace = dcp.DcpIndexerCandidateWorkspace.allocate(
@@ -194,9 +197,11 @@ def _run_graph_replay_case(
         topk=topk,
         device=device,
     )
-    q = torch.empty((rows, local_heads, head_dim), device=device)
+    q = torch.empty((rows, local_heads, head_dim), dtype=torch.bfloat16, device=device)
     partial_out = torch.empty(
-        (rows, _WORLD_SIZE * local_heads, head_dim), device=device
+        (rows, _WORLD_SIZE * local_heads, head_dim),
+        dtype=torch.bfloat16,
+        device=device,
     )
     partial_lse = torch.empty((rows, _WORLD_SIZE * local_heads), device=device)
     local_scores = torch.empty((rows, topk), device=device)

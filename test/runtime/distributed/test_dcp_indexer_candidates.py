@@ -179,12 +179,12 @@ def test_gather_indexer_candidates_materializes_only_dcp_times_local_topk() -> N
     ) -> None:
         assert actual_group == group
         gathered_inputs.append(current.clone())
-        source = scores_by_rank if current.is_floating_point() else rows_by_rank
-        if current.is_floating_point():
-            output.fill_(-torch.inf)
-        else:
-            output.fill_(-1)
-        output[:, : source.shape[1]].copy_(source)
+        output_fields = output.view(torch.int32).view(*output.shape, 2)
+        output_fields[:, :, :, 0].fill_(-0x800000)
+        output_fields[:, :, :, 1].fill_(-1)
+        source_rows = scores_by_rank.shape[1]
+        output_fields[:, :source_rows, :, 0].copy_(scores_by_rank.view(torch.int32))
+        output_fields[:, :source_rows, :, 1].copy_(rows_by_rank)
 
     with patch(
         "tokenspeed.runtime.distributed.dcp._all_gather_into_dcp_major",
@@ -197,20 +197,31 @@ def test_gather_indexer_candidates_materializes_only_dcp_times_local_topk() -> N
             workspace=workspace,
         )
 
-    assert gather.call_count == 2
-    torch.testing.assert_close(gathered_inputs[0][:2], local_scores)
-    torch.testing.assert_close(gathered_inputs[1][:2], local_rows)
-    assert torch.isneginf(gathered_inputs[0][2]).all()
-    assert gathered_inputs[1][2].eq(-1).all()
+    assert gather.call_count == 1
+    gathered_fields = (
+        gathered_inputs[0].view(torch.int32).view(*gathered_inputs[0].shape, 2)
+    )
+    torch.testing.assert_close(
+        gathered_fields[:2, :, 0].view(torch.float32), local_scores
+    )
+    torch.testing.assert_close(gathered_fields[:2, :, 1], local_rows)
+    assert torch.isneginf(gathered_fields[2, :, 0].view(torch.float32)).all()
+    assert gathered_fields[2, :, 1].eq(-1).all()
     assert candidate_scores.shape == (2, len(group) * local_scores.shape[1])
     assert candidate_rows.shape == candidate_scores.shape
-    assert workspace.gathered_scores.numel() == len(group) * 3 * local_scores.shape[1]
-    assert workspace.gathered_rows.numel() == len(group) * 3 * local_rows.shape[1]
+    assert workspace.gathered_candidates.numel() == (
+        len(group) * 3 * local_scores.shape[1]
+    )
+    assert workspace.candidate_records.numel() == len(group) * 3 * local_rows.shape[1]
     assert workspace.candidate_scores.numel() == len(group) * 3 * local_scores.shape[1]
     assert workspace.candidate_rows.numel() == len(group) * 3 * local_rows.shape[1]
     torch.testing.assert_close(
         candidate_scores,
         scores_by_rank.permute(1, 0, 2).reshape(2, -1),
+    )
+    assert torch.equal(
+        candidate_scores.view(torch.int32),
+        scores_by_rank.permute(1, 0, 2).reshape(2, -1).view(torch.int32),
     )
     torch.testing.assert_close(
         candidate_rows,
